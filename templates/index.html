@@ -209,6 +209,11 @@
         <div class="field"><label>ஏற்கனவே வழங்கப்பட்ட தேதி</label><input id="proc-existingdate" class="readonly" readonly></div>
       </div>
 
+      <div id="proc-fybox" style="display:none; background:#eef3fb; border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:13px;">
+        <strong style="color:var(--navy);">இந்த நிதி ஆண்டில் ஏற்கனவே வழங்கப்பட்டவை:</strong>
+        <div id="proc-fyrows" style="margin-top:6px;"></div>
+      </div>
+
       <div class="grid">
         <div class="field">
           <label>வழங்கப்படாத எண்ணிக்கை (Non Supply)</label>
@@ -222,7 +227,10 @@
 
       <div class="grid">
         <div class="field"><label>தொகை வழங்கும் தேதி</label><input id="proc-paymentdate" type="date"></div>
-        <div class="field"><label>Bill Set எண்</label><input id="proc-billset"></div>
+        <div class="field">
+          <label>Bill Set எண்</label>
+          <select id="proc-billset"><option value="">-- தேர்வு செய்க --</option></select>
+        </div>
       </div>
 
       <div class="field"><label>குறிப்பு (Remarks)</label><input id="proc-remarks"></div>
@@ -311,9 +319,9 @@
         <div class="field"><label>Language</label><input id="add-language" type="text" placeholder="Tamil / English"></div>
         <div class="field"><label>Periodicity</label><input id="add-periodicity" type="text" placeholder="Weekly / Monthly"></div>
         <div class="field"><label>Quarter * (எ.கா 2026-2027-Q2)</label><input id="add-quarter" type="text" placeholder="2026-2027-Q2"></div>
-        <div class="field"><label>Price</label><input id="add-price" type="number" step="0.01"></div>
-        <div class="field"><label>Discount</label><input id="add-discount" type="number" step="0.01"></div>
-        <div class="field"><label>After Discount (Issue Price)</label><input id="add-issueprice" type="number" step="0.01"></div>
+        <div class="field"><label>Issue Price</label><input id="add-price" type="number" step="0.01"></div>
+        <div class="field"><label>Discount Percentage (%)</label><input id="add-discount" type="number" step="0.01"></div>
+        <div class="field"><label>Price after Discount</label><input id="add-issueprice" type="number" step="0.01"></div>
         <div class="field"><label>Subscription (No. of Libraries)</label><input id="add-libraries" type="number"></div>
       </div>
       <div class="actions"><button class="btn btn-primary" id="add-btn">சேர்</button></div>
@@ -325,6 +333,30 @@
       <div id="mag-table" class="muted">ஏற்றப்படுகிறது…</div>
     </div>
   </section>
+
+  <!-- ===================== Edit Magazine Modal ===================== -->
+  <div id="edit-modal" style="display:none; position:fixed; inset:0; background:rgba(15,35,71,.55); z-index:50; align-items:flex-start; justify-content:center; overflow-y:auto; padding:30px 16px;">
+    <div class="card" style="max-width:640px; width:100%; margin:0;">
+      <h2 id="edit-title">இதழ் திருத்து</h2>
+      <div class="grid">
+        <div class="field"><label>Language</label><input id="edit-language" type="text"></div>
+        <div class="field"><label>Periodicity</label><input id="edit-periodicity" type="text"></div>
+        <div class="field"><label>Issue Price</label><input id="edit-price" type="number" step="0.01"></div>
+        <div class="field"><label>Discount Percentage (%)</label><input id="edit-discount" type="number" step="0.01"></div>
+        <div class="field"><label>Price after Discount</label><input id="edit-issueprice" type="number" step="0.01"></div>
+        <div class="field"><label>Subscription (No. of Libraries)</label><input id="edit-libraries" type="number"></div>
+      </div>
+      <div class="field">
+        <label>Applicable to (இந்த புதிய விலை எந்த Quarter-களுக்கு பொருந்தும் — தேர்வு செய்யாதவை பழையபடியே இருக்கும்)</label>
+        <div id="edit-quarters" style="display:grid; grid-template-columns:repeat(4,1fr); gap:6px; max-height:220px; overflow-y:auto; border:1px solid var(--line); border-radius:7px; padding:10px; font-size:12.5px;"></div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" id="edit-save">சேமி</button>
+        <button class="btn btn-ghost" id="edit-cancel">ரத்து செய்</button>
+      </div>
+      <div class="status" id="edit-status"></div>
+    </div>
+  </div>
 
 </main>
 
@@ -413,26 +445,33 @@ $('inv-submit').addEventListener('click', async () => {
   const quarter = $('inv-quarter').value;
   if (!magazine || !quarter) { showStatus('inv-status', false, 'Quarter மற்றும் இதழ் பெயர் தேர்வு செய்யவும்.'); return; }
 
-  const dup = await api('/api/payments/check-duplicate?magazine=' + encodeURIComponent(magazine) + '&quarter=' + encodeURIComponent(quarter));
-
-  const payload = {
-    magazine, quarter,
-    issuePrice: Number($('inv-issueprice').value) || 0,
-    noOfLibraries: Number($('inv-libraries').value) || 0,
-    qtrIssues: Number($('inv-qtrissues').value) || 0,
-    nonSupply: Number($('inv-nonsupply').value) || 0,
-    invoiceNo: $('inv-invoiceno').value,
-    invoiceDate: $('inv-invoicedate').value || null,
-    requestedAmt: Number($('inv-requested').value) || 0,
-  };
+  const btn = $('inv-submit');
+  const originalText = btn.textContent;
+  btn.disabled = true; btn.textContent = 'சரிபார்க்கிறது…';
 
   try {
+    const dup = await api('/api/payments/check-duplicate?magazine=' + encodeURIComponent(magazine) + '&quarter=' + encodeURIComponent(quarter));
+    btn.textContent = dup.exists ? 'புதுப்பிக்கிறது…' : 'சேமிக்கிறது…';
+
+    const payload = {
+      magazine, quarter,
+      issuePrice: Number($('inv-issueprice').value) || 0,
+      noOfLibraries: Number($('inv-libraries').value) || 0,
+      qtrIssues: Number($('inv-qtrissues').value) || 0,
+      nonSupply: Number($('inv-nonsupply').value) || 0,
+      invoiceNo: $('inv-invoiceno').value,
+      invoiceDate: $('inv-invoicedate').value || null,
+      requestedAmt: Number($('inv-requested').value) || 0,
+    };
+
     const res = await api('/api/payments' + (dup.exists ? '?update=true' : ''), {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
     });
     showStatus('inv-status', res.success, res.message || (res.success ? 'சேமிக்கப்பட்டது' : 'பிழை'));
   } catch (e) {
     showStatus('inv-status', false, 'பிழை: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = originalText;
   }
 });
 
@@ -445,14 +484,26 @@ $('inv-reset').addEventListener('click', () => {
 });
 
 // ============ Payment processing form ============
-let procMaster = {};
+// Bill Set dropdown 1..20 நிரப்பு
+$('proc-billset').innerHTML += Array.from({length: 20}, (_, i) => i + 1)
+  .map(n => `<option value="${n}">${n}</option>`).join('');
+
+function todayISO() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
 $('proc-quarter').addEventListener('change', async () => {
   const q = $('proc-quarter').value;
   const sel = $('proc-magazine');
   sel.innerHTML = '<option value="">ஏற்றுகிறது...</option>';
+  $('proc-fybox').style.display = 'none';
   if (!q) { sel.innerHTML = '<option value="">முதலில் Quarter தேர்வு செய்க</option>'; return; }
-  const data = await api('/api/magazines?quarter=' + encodeURIComponent(q));
-  procMaster = data.master;
+  const data = await api('/api/payments/magazines-for-quarter?quarter=' + encodeURIComponent(q));
+  if (!data.magazines.length) {
+    sel.innerHTML = '<option value="">இந்த Quarter-ல் Invoice பதிவு செய்யப்பட்ட இதழ்கள் இல்லை</option>';
+    return;
+  }
   sel.innerHTML = '<option value="">-- தேர்வு செய்க --</option>' +
     data.magazines.map(m => `<option value="${m}">${m}</option>`).join('');
 });
@@ -460,15 +511,30 @@ $('proc-quarter').addEventListener('change', async () => {
 $('proc-magazine').addEventListener('change', async () => {
   const mag = $('proc-magazine').value;
   const q = $('proc-quarter').value;
-  if (!mag) return;
+  if (!mag) { $('proc-fybox').style.display = 'none'; return; }
   const details = await api('/api/payments/details?quarter=' + encodeURIComponent(q) + '&magazine=' + encodeURIComponent(mag));
   $('proc-requested').value = details.requestedAmt || 0;
   $('proc-existingdate').value = details.paymentDate || 'இன்னும் வழங்கப்படவில்லை';
   $('proc-billset').value = details.billSetNo || '';
+  $('proc-paymentdate').value = details.paymentDate ? isoFromDMY(details.paymentDate) : todayISO();
 
   const ns = await api('/api/despatch/non-supply?quarter=' + encodeURIComponent(q) + '&magazine=' + encodeURIComponent(mag));
   $('proc-nonsupply').value = ns.nonSupply || 0;
+
+  const fy = await api('/api/payments/fy-summary?magazine=' + encodeURIComponent(mag) + '&quarter=' + encodeURIComponent(q));
+  if (fy.rows && fy.rows.length) {
+    $('proc-fyrows').innerHTML = fy.rows.map(r => `<div>${r.quarter} — ${money(r.paidAmt)}</div>`).join('');
+    $('proc-fybox').style.display = 'block';
+  } else {
+    $('proc-fybox').style.display = 'none';
+  }
 });
+
+function isoFromDMY(dmy) {
+  // "dd/mm/yyyy" -> "yyyy-mm-dd"
+  const p = dmy.split('/');
+  return p.length === 3 ? `${p[2]}-${p[1]}-${p[0]}` : todayISO();
+}
 
 $('proc-submit').addEventListener('click', async () => {
   const magazine = $('proc-magazine').value;
@@ -488,6 +554,9 @@ $('proc-submit').addEventListener('click', async () => {
     billSetNo: $('proc-billset').value,
   };
 
+  const btn = $('proc-submit');
+  const originalText = btn.textContent;
+  btn.disabled = true; btn.textContent = 'பதிவு செய்கிறது…';
   try {
     const res = await api('/api/payments/process', {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
@@ -495,6 +564,8 @@ $('proc-submit').addEventListener('click', async () => {
     showStatus('proc-status', res.success, res.message);
   } catch (e) {
     showStatus('proc-status', false, 'பிழை: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = originalText;
   }
 });
 
@@ -580,6 +651,16 @@ $('import-btn').addEventListener('click', async () => {
   }
 });
 
+function autoCalcAfterDiscount(priceId, discountId, resultId) {
+  [priceId, discountId].forEach(id => $(id).addEventListener('input', () => {
+    const price = Number($(priceId).value) || 0;
+    const discount = Number($(discountId).value) || 0;
+    $(resultId).value = (price - (price * discount / 100)).toFixed(2);
+  }));
+}
+autoCalcAfterDiscount('add-price', 'add-discount', 'add-issueprice');
+autoCalcAfterDiscount('edit-price', 'edit-discount', 'edit-issueprice');
+
 $('add-btn').addEventListener('click', async () => {
   const payload = {
     name: $('add-name').value.trim(),
@@ -621,16 +702,93 @@ async function loadMagazines() {
   try {
     const data = await api('/api/admin/magazines-list');
     if (!data.success || !data.rows.length) { el.textContent = 'இதழ்கள் இல்லை.'; return; }
-    let html = '<table><thead><tr><th>பெயர்</th><th>மொழி</th><th>Periodicity</th><th>Quarters</th><th>சமீபத்தியது</th></tr></thead><tbody>';
+    let html = '<table><thead><tr><th>பெயர்</th><th>மொழி</th><th>Periodicity</th><th>Quarters</th><th>சமீபத்தியது</th><th></th></tr></thead><tbody>';
     data.rows.forEach(r => {
-      html += `<tr><td>${r.name}</td><td>${r.language}</td><td>${r.periodicity}</td><td>${r.quarterCount}</td><td>${r.latestQuarter}</td></tr>`;
+      html += `<tr><td>${r.name}</td><td>${r.language}</td><td>${r.periodicity}</td><td>${r.quarterCount}</td><td>${r.latestQuarter}</td>
+        <td><button class="btn btn-ghost edit-mag-btn" data-name="${r.name}" style="padding:5px 12px; font-size:12.5px;">Edit</button></td></tr>`;
     });
     html += '</tbody></table>';
     el.innerHTML = html;
+    el.querySelectorAll('.edit-mag-btn').forEach(btn => {
+      btn.addEventListener('click', () => openEditModal(btn.dataset.name));
+    });
   } catch (err) {
     el.textContent = 'பிழை: ' + err.message;
   }
 }
+
+// 2025-2026-Q1 முதல் 2031-2032-Q4 வரை அனைத்து Quarter-களும்
+function allQuarters() {
+  const list = [];
+  for (let fy = 2025; fy <= 2031; fy++) {
+    for (let q = 1; q <= 4; q++) list.push(`${fy}-${fy+1}-Q${q}`);
+  }
+  return list;
+}
+
+async function openEditModal(name) {
+  $('edit-title').textContent = 'இதழ் திருத்து — ' + name;
+  $('edit-status').style.display = 'none';
+  const data = await api('/api/admin/magazine-detail?name=' + encodeURIComponent(name));
+  if (!data.success) { alert(data.message || 'ஏற்ற முடியவில்லை'); return; }
+
+  $('edit-language').value = data.language || '';
+  $('edit-periodicity').value = data.periodicity || '';
+
+  const existingQuarters = Object.keys(data.quarters).sort();
+  const latest = existingQuarters.length ? data.quarters[existingQuarters[existingQuarters.length - 1]] : null;
+  $('edit-price').value = latest ? latest.price : '';
+  $('edit-discount').value = latest ? latest.discount : '';
+  $('edit-issueprice').value = latest ? latest.issuePrice : '';
+  $('edit-libraries').value = latest ? latest.noOfLibraries : '';
+
+  const box = $('edit-quarters');
+  box.innerHTML = allQuarters().map(q => {
+    const checked = data.quarters[q] ? 'checked' : '';
+    const info = data.quarters[q] ? ` (₹${data.quarters[q].issuePrice})` : '';
+    return `<label style="font-weight:400; display:flex; align-items:center; gap:4px;">
+      <input type="checkbox" value="${q}" ${checked}> ${q}${info}</label>`;
+  }).join('');
+
+  $('edit-modal').dataset.name = name;
+  $('edit-modal').style.display = 'flex';
+}
+
+$('edit-cancel').addEventListener('click', () => { $('edit-modal').style.display = 'none'; });
+
+$('edit-save').addEventListener('click', async () => {
+  const name = $('edit-modal').dataset.name;
+  const quarters = Array.from($('edit-quarters').querySelectorAll('input[type=checkbox]:checked')).map(cb => cb.value);
+  if (!quarters.length) { showStatus('edit-status', false, 'குறைந்தது ஒரு Quarter தேர்வு செய்யவும்.'); return; }
+
+  const payload = {
+    name,
+    language: $('edit-language').value.trim(),
+    periodicity: $('edit-periodicity').value.trim(),
+    price: $('edit-price').value,
+    discount: $('edit-discount').value,
+    issuePrice: $('edit-issueprice').value,
+    noOfLibraries: $('edit-libraries').value,
+    quarters,
+  };
+
+  const btn = $('edit-save');
+  btn.disabled = true; btn.textContent = 'சேமிக்கிறது…';
+  try {
+    const data = await api('/api/admin/update-magazine', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    showStatus('edit-status', data.success, data.message);
+    if (data.success) {
+      loadMagazines();
+      setTimeout(() => { $('edit-modal').style.display = 'none'; }, 700);
+    }
+  } catch (err) {
+    showStatus('edit-status', false, 'பிழை: ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'சேமி';
+  }
+});
 
 // Master Data tab-ஐ முதல் முறை திறக்கும்போது பட்டியலை ஏற்றவும்
 document.querySelector('#tabs button[data-tab="master"]').addEventListener('click', () => {
