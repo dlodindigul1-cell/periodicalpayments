@@ -53,9 +53,25 @@ def requires_auth(f):
 
 @app.before_request
 def global_auth():
+    # Render health checks hit this path without credentials — no login here.
+    if request.path == "/healthz":
+        return
     auth = request.authorization
     if not auth or not check_auth(auth.username, auth.password):
         return authenticate()
+
+
+@app.route("/healthz")
+def healthz():
+    """Render health-check endpoint. Also confirms the DB connection is alive."""
+    try:
+        conn = get_conn()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        conn.close()
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"status": "error", "message": str(e)}), 503
 
 
 # --------------------------------------------------------------------------- #
