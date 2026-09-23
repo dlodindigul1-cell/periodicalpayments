@@ -115,18 +115,19 @@ def api_magazines():
     try:
         with conn.cursor() as cur:
             if quarter:
-                # அந்த quarter-க்கான price/subscription உள்ள இதழ்கள் மட்டும்
+                # இதழ் ஒவ்வொன்றுக்கும் உள்ள Quarter விலைகள் அனைத்தும் எடுக்கிறோம் —
+                # தேர்ந்தெடுத்த quarter-க்கு exact விலை இருந்தால் அதை; இல்லையெனில்
+                # அதற்கு முந்தைய மிக அண்மைய quarter-ன் விலையை carry-forward செய்வோம்.
                 cur.execute(
                     """
                     SELECT m.name, m.periodicity, m.language,
-                           q.issue_price, q.price, q.discount, q.no_of_libraries
+                           q.quarter, q.issue_price, q.price, q.discount, q.no_of_libraries
                     FROM magazine_quarters q
                     JOIN magazines m ON m.id = q.magazine_id
-                    WHERE q.quarter = %s
-                    ORDER BY m.name
-                    """,
-                    (quarter,),
+                    ORDER BY m.name, q.quarter
+                    """
                 )
+                rows = cur.fetchall()
             else:
                 # quarter குறிப்பிடாவிட்டால் — அனைத்து இதழ்களும் (price 0-உடன்)
                 cur.execute(
@@ -134,20 +135,58 @@ def api_magazines():
                     "NULL AS price, NULL AS discount, NULL AS no_of_libraries "
                     "FROM magazines ORDER BY name"
                 )
-            rows = cur.fetchall()
+                rows = cur.fetchall()
 
         magazines = []
         master = {}
-        for r in rows:
-            magazines.append(r["name"])
-            master[r["name"]] = {
-                "issuePrice": float(r["issue_price"] or 0),
-                "noOfLibraries": int(r["no_of_libraries"] or 0),
-                "periodicity": r["periodicity"] or "",
-                "language": r["language"] or "",
-                "price": float(r["price"] or 0),
-                "discount": float(r["discount"] or 0),
-            }
+
+        if quarter:
+            best = {}  # name -> (rank, key, row)   rank 0=exact, 1=முந்தைய அண்மையது, 2=பிந்தைய அண்மையது
+            for r in rows:
+                name = r["name"]
+                q = r["quarter"]
+                if q == quarter:
+                    rank, key = 0, q
+                elif q < quarter:
+                    rank, key = 1, q
+                else:
+                    rank, key = 2, q
+                cur_best = best.get(name)
+                if cur_best is None:
+                    best[name] = (rank, key, r)
+                    continue
+                brank, bkey, _ = cur_best
+                if rank < brank:
+                    best[name] = (rank, key, r)
+                elif rank == brank:
+                    if rank == 1 and key > bkey:      # முந்தையதில் — quarter-க்கு மிக அண்மையதைத் தேர்வு (பெரியது)
+                        best[name] = (rank, key, r)
+                    elif rank == 2 and key < bkey:     # பிந்தையதில் — மிக அண்மையதைத் தேர்வு (சிறியது)
+                        best[name] = (rank, key, r)
+
+            for name, (rank, key, r) in best.items():
+                magazines.append(name)
+                master[name] = {
+                    "issuePrice": float(r["issue_price"] or 0),
+                    "noOfLibraries": int(r["no_of_libraries"] or 0),
+                    "periodicity": r["periodicity"] or "",
+                    "language": r["language"] or "",
+                    "price": float(r["price"] or 0),
+                    "discount": float(r["discount"] or 0),
+                    "priceQuarter": key,
+                    "isCarriedForward": rank != 0,
+                }
+        else:
+            for r in rows:
+                magazines.append(r["name"])
+                master[r["name"]] = {
+                    "issuePrice": float(r["issue_price"] or 0),
+                    "noOfLibraries": int(r["no_of_libraries"] or 0),
+                    "periodicity": r["periodicity"] or "",
+                    "language": r["language"] or "",
+                    "price": float(r["price"] or 0),
+                    "discount": float(r["discount"] or 0),
+                }
 
         return jsonify({"success": True, "magazines": sorted(magazines), "master": master})
     finally:
@@ -806,6 +845,105 @@ def api_admin_update_magazine():
                 upsert_quarter_rows(cur, magazine_id, quarters, price, discount, issue_price, no_of_libraries)
             conn.commit()
         return jsonify({"success": True, "message": f"'{name}' புதுப்பிக்கப்பட்டது ({len(quarters)} quarter(s))."})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/delete-magazine-quarters", methods=["POST"])
+def api_admin_delete_magazine_quarters():
+    """இதழ்கள் நீக்குதல் — Master விலைப் பதிவுகளை மட்டும் நீக்கும் (Invoice/Payment records தொடாது).
+    scope='one'    -> தேர்ந்தெடுத்த ஒரே quarter-க்கான விலைப் பதிவு நீக்கப்படும்.
+    scope='onward' -> தேர்ந்தெடுத்த quarter முதல் அதற்குப் பிறகுள்ள அனைத்து quarter விலைப் பதிவுகளும் நீக்கப்படும்.
+    """
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    quarter = (data.get("quarter") or "").strip()
+    scope = (data.get("scope") or "one").strip()
+    if not name or not quarter:
+        return jsonify({"success": False, "message": "Magazine Name மற்றும் Quarter அவசியம்."}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM magazines WHERE name=%s", (name,))
+            mag = cur.fetchone()
+            if not mag:
+                return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை"}), 404
+
+            if scope == "onward":
+                cur.execute(
+                    "DELETE FROM magazine_quarters WHERE magazine_id=%s AND quarter>=%s",
+                    (mag["id"], quarter),
+                )
+            else:
+                cur.execute(
+                    "DELETE FROM magazine_quarters WHERE magazine_id=%s AND quarter=%s",
+                    (mag["id"], quarter),
+                )
+            deleted = cur.rowcount
+            conn.commit()
+        return jsonify(
+            {
+                "success": True,
+                "deleted": deleted,
+                "message": f"'{name}' — {deleted} quarter விலைப் பதிவு(கள்) நீக்கப்பட்டன. "
+                           f"ஏற்கனவே பதிவான Invoice/Payment தரவுகள் தொடரவில்லை.",
+            }
+        )
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/payment-delete", methods=["POST"])
+def api_admin_payment_delete():
+    """Payment Details Delete — தொகை வழங்கியதை (Payment stage) மட்டும் நீக்கி,
+    பதிவை மீண்டும் 'Invoice மட்டும் பதிவான' நிலைக்கு கொண்டு செல்லும்.
+    Invoice details (invoice_no/invoice_date/requested_amt) தொடப்படாது."""
+    data = request.get_json(force=True)
+    magazine = (data.get("magazine") or "").strip()
+    quarter = (data.get("quarter") or "").strip()
+    if not magazine or not quarter:
+        return jsonify({"success": False, "message": "இதழ் பெயர் மற்றும் Quarter அவசியம்."}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, paid_amt FROM payments WHERE magazine=%s AND quarter=%s",
+                (magazine, quarter),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"success": False, "message": "பதிவு கிடைக்கவில்லை."}), 404
+
+            cur.execute(
+                """
+                UPDATE payments SET
+                    paid_amt=0, payment_date=NULL, transaction_no=NULL,
+                    voucher_no=NULL, bill_set_no=NULL, remarks=NULL,
+                    mail_sent=FALSE, pdf_url=NULL, updated_at=now()
+                WHERE magazine=%s AND quarter=%s
+                """,
+                (magazine, quarter),
+            )
+            cur.execute(
+                "DELETE FROM vouchers WHERE magazine=%s AND quarter=%s",
+                (magazine, quarter),
+            )
+            conn.commit()
+        return jsonify(
+            {
+                "success": True,
+                "message": f"'{magazine}' ({quarter}) — Payment விவரங்கள் நீக்கப்பட்டு, மீண்டும் "
+                           f"Invoice பதிவு நிலைக்கு சென்றது. Invoice விவரங்கள் மாறவில்லை.",
+            }
+        )
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500

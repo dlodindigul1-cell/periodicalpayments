@@ -205,8 +205,12 @@
       </div>
 
       <div class="grid">
-        <div class="field"><label>கோரப்பட்ட தொகை</label><input id="proc-requested" class="readonly" readonly></div>
+        <div class="field"><label>இன்வாய்சில் உள்ள தொகை (Requested)</label><input id="proc-requested" class="readonly" readonly></div>
+        <div class="field"><label>நிகரத் தொகை (Net Payable)</label><input id="proc-netpayable" class="readonly" readonly></div>
+      </div>
+      <div class="grid">
         <div class="field"><label>ஏற்கனவே வழங்கப்பட்ட தேதி</label><input id="proc-existingdate" class="readonly" readonly></div>
+        <div></div>
       </div>
 
       <div id="proc-fybox" style="display:none; background:#eef3fb; border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:13px;">
@@ -292,23 +296,12 @@
 
   <!-- ===================== TAB 5: Master Data ===================== -->
   <section id="panel-master" class="panel">
+
     <div class="card">
-      <h2>1) பழைய இதழ்கள் — CSV Bulk Import</h2>
-      <p class="muted" style="font-size:12.5px; line-height:1.5; margin:0 0 14px;">
-        Google Sheet-ஐ (DATA-2026-27) File → Download → CSV ஆக Export செய்யவும். கீழே file-ஐ தேர்வு
-        செய்யவும் அல்லது CSV உள்ளடக்கத்தை நேரடியாக paste செய்யவும். முதல் row column headers ஆக இருக்க
-        வேண்டும்: <code>S.NO, LANGUAGE, MAGAZINE NAME, PERIODICITY, PRICE, DISCOUNT, AFTER DISCOUNT, SUBSCRIPTION, YEAR AND QUARTER</code>.
-        ஒரே இதழ் பெயர் ஏற்கனவே இருந்தால் புதுப்பிக்கப்படும்; "YEAR AND QUARTER"-ல் உள்ள ஒவ்வொரு quarter-க்கும்
-        தனித்தனியாக price/subscription சேமிக்கப்படும்.
-      </p>
-      <div class="field">
-        <input type="file" id="csv-file" accept=".csv,text/csv" style="background:none; border:none; padding:0; width:auto;">
-      </div>
-      <div class="field">
-        <textarea id="csv-text" rows="7" style="width:100%; font-family:'Courier New',monospace; font-size:12.5px; padding:9px 11px; border:1px solid var(--line); border-radius:7px;" placeholder="S.NO,LANGUAGE,MAGAZINE NAME,PERIODICITY,PRICE,DISCOUNT,AFTER DISCOUNT,SUBSCRIPTION,YEAR AND QUARTER"></textarea>
-      </div>
-      <div class="actions"><button class="btn btn-primary" id="import-btn">Import செய்யவும்</button></div>
-      <div class="status" id="import-status"></div>
+      <h2>1) தற்போதைய இதழ்கள்</h2>
+      <p class="muted" style="font-size:12.5px; margin:0 0 14px;">பட்டியலைக் காண கீழே உள்ள பட்டனை அழுத்தவும்.</p>
+      <div class="actions"><button class="btn btn-ghost" id="mag-show-btn">இதழ்கள் பட்டியலைக் காட்டு</button></div>
+      <div id="mag-table" class="muted" style="margin-top:12px;"></div>
     </div>
 
     <div class="card">
@@ -329,8 +322,71 @@
     </div>
 
     <div class="card">
-      <h2>தற்போதைய இதழ்கள்</h2>
-      <div id="mag-table" class="muted">ஏற்றப்படுகிறது…</div>
+      <h2>3) இதழ்கள் நீக்குதல்</h2>
+      <p class="muted" style="font-size:12.5px; line-height:1.5; margin:0 0 14px;">
+        இதழ் + Quarter தேர்ந்தெடுத்து, அந்த Quarter-க்கான (அல்லது அதற்குப் பின் உள்ள அனைத்து Quarter-களுக்குமான)
+        Master விலைப் பதிவை மட்டும் நீக்கும். ஏற்கனவே பதிவான Invoice / Payment தரவுகள் இதனால் பாதிக்கப்படாது.
+      </p>
+      <div class="grid">
+        <div class="field"><label>இதழ் பெயர்</label><select id="del-magazine"><option value="">-- தேர்வு செய்க --</option></select></div>
+        <div class="field"><label>Quarter</label>
+          <select id="del-quarter"><option value="">-- தேர்வு செய்க --</option></select>
+        </div>
+      </div>
+      <div class="field">
+        <label>நீக்கும் வரம்பு</label>
+        <select id="del-scope">
+          <option value="one">இந்த Quarter-க்கான விலை பதிவு மட்டும்</option>
+          <option value="onward">இந்த Quarter முதல் இதற்குப் பின் உள்ள அனைத்து Quarter விலை பதிவுகளும்</option>
+        </select>
+      </div>
+      <div class="actions"><button class="btn btn-primary" id="del-btn" style="background:var(--err);">நீக்கு</button></div>
+      <div class="status" id="del-status"></div>
+    </div>
+
+    <div class="card">
+      <h2>4) Payment Details Delete</h2>
+      <p class="muted" style="font-size:12.5px; line-height:1.5; margin:0 0 14px;">
+        இதழ் + Quarter தேர்ந்தெடுத்து Delete செய்தால் — Paid Amount / Payment Date / Transaction No / Voucher
+        முழுவதும் நீக்கப்பட்டு, அந்தப் பதிவு மீண்டும் "Invoice மட்டும் பதிவான" நிலைக்குச் செல்லும்
+        (Invoice No / Date / Requested Amount மாறாது; "தொகை வழங்கல்" tab-ல் மீண்டும் தோன்றும்).
+      </p>
+      <div class="grid">
+        <div class="field"><label>இதழ் பெயர்</label><select id="pd-magazine"><option value="">-- தேர்வு செய்க --</option></select></div>
+        <div class="field"><label>Quarter</label>
+          <select id="pd-quarter">
+            <option value="">-- தேர்வு செய்க --</option>
+            <option>2025-2026-Q4</option>
+            <option>2026-2027-Q1</option>
+            <option>2026-2027-Q2</option>
+            <option>2026-2027-Q3</option>
+            <option>2026-2027-Q4</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions"><button class="btn btn-primary" id="pd-btn" style="background:var(--err);">Payment விவரங்களை நீக்கு</button></div>
+      <div class="status" id="pd-status"></div>
+    </div>
+
+    <div class="card">
+      <h2 style="cursor:pointer;" id="csv-toggle-title">5) பழைய இதழ்கள் — CSV Bulk Import (காட்டு/மறை) ▾</h2>
+      <div id="csv-import-body" style="display:none;">
+        <p class="muted" style="font-size:12.5px; line-height:1.5; margin:0 0 14px;">
+          Google Sheet-ஐ (DATA-2026-27) File → Download → CSV ஆக Export செய்யவும். கீழே file-ஐ தேர்வு
+          செய்யவும் அல்லது CSV உள்ளடக்கத்தை நேரடியாக paste செய்யவும். முதல் row column headers ஆக இருக்க
+          வேண்டும்: <code>S.NO, LANGUAGE, MAGAZINE NAME, PERIODICITY, PRICE, DISCOUNT, AFTER DISCOUNT, SUBSCRIPTION, YEAR AND QUARTER</code>.
+          ஒரே இதழ் பெயர் ஏற்கனவே இருந்தால் புதுப்பிக்கப்படும்; "YEAR AND QUARTER"-ல் உள்ள ஒவ்வொரு quarter-க்கும்
+          தனித்தனியாக price/subscription சேமிக்கப்படும்.
+        </p>
+        <div class="field">
+          <input type="file" id="csv-file" accept=".csv,text/csv" style="background:none; border:none; padding:0; width:auto;">
+        </div>
+        <div class="field">
+          <textarea id="csv-text" rows="7" style="width:100%; font-family:'Courier New',monospace; font-size:12.5px; padding:9px 11px; border:1px solid var(--line); border-radius:7px;" placeholder="S.NO,LANGUAGE,MAGAZINE NAME,PERIODICITY,PRICE,DISCOUNT,AFTER DISCOUNT,SUBSCRIPTION,YEAR AND QUARTER"></textarea>
+        </div>
+        <div class="actions"><button class="btn btn-primary" id="import-btn">Import செய்யவும்</button></div>
+        <div class="status" id="import-status"></div>
+      </div>
     </div>
   </section>
 
@@ -416,6 +472,8 @@ $('inv-magazine').addEventListener('change', async () => {
     $('inv-invoicedate').value = dup.invoiceDateISO || '';
     $('inv-requested').value = dup.requestedAmt || '';
     showStatus('inv-status', true, 'இந்த இதழுக்கு ஏற்கனவே பதிவு உள்ளது — சேமி அழுத்தினால் Update ஆகும்.');
+  } else if (m.isCarriedForward) {
+    showStatus('inv-status', true, `விலை ${m.priceQuarter || 'முந்தைய Quarter'}-இலிருந்து எடுக்கப்பட்டது (இந்த Quarter-க்கு தனி விலை இன்னும் பதிவாகவில்லை). தேவைப்பட்டால் Master Data-வில் புதுப்பிக்கவும்.`);
   } else {
     $('inv-status').style.display = 'none';
   }
@@ -508,18 +566,22 @@ $('proc-quarter').addEventListener('change', async () => {
     data.magazines.map(m => `<option value="${m}">${m}</option>`).join('');
 });
 
+let procDetails = { issuePrice: 0, totalIssues: 0, requestedAmt: 0 };
+
 $('proc-magazine').addEventListener('change', async () => {
   const mag = $('proc-magazine').value;
   const q = $('proc-quarter').value;
   if (!mag) { $('proc-fybox').style.display = 'none'; return; }
   const details = await api('/api/payments/details?quarter=' + encodeURIComponent(q) + '&magazine=' + encodeURIComponent(mag));
-  $('proc-requested').value = details.requestedAmt || 0;
+  procDetails = details;
+  $('proc-requested').value = money(details.requestedAmt || 0);
   $('proc-existingdate').value = details.paymentDate || 'இன்னும் வழங்கப்படவில்லை';
   $('proc-billset').value = details.billSetNo || '';
   $('proc-paymentdate').value = details.paymentDate ? isoFromDMY(details.paymentDate) : todayISO();
 
   const ns = await api('/api/despatch/non-supply?quarter=' + encodeURIComponent(q) + '&magazine=' + encodeURIComponent(mag));
   $('proc-nonsupply').value = ns.nonSupply || 0;
+  recalcProcNet();
 
   const fy = await api('/api/payments/fy-summary?magazine=' + encodeURIComponent(mag) + '&quarter=' + encodeURIComponent(q));
   if (fy.rows && fy.rows.length) {
@@ -529,6 +591,23 @@ $('proc-magazine').addEventListener('change', async () => {
     $('proc-fybox').style.display = 'none';
   }
 });
+
+// Non Supply மாறும்போது Net Payable-ஐ மறு கணக்கீடு செய்து, இன்வாய்ஸ் தொகை / நிகரத் தொகை
+// — இவற்றில் எது குறைவோ அதை "இப்போது வழங்கும் தொகை"-ல் தானாக நிரப்பும் (பிறகு தேவைப்பட்டால் திருத்தலாம்)
+function recalcProcNet() {
+  const issuePrice = Number(procDetails.issuePrice) || 0;
+  const totalIssues = Number(procDetails.totalIssues) || 0;
+  const nonSupply = Number($('proc-nonsupply').value) || 0;
+  const requestedAmt = Number(procDetails.requestedAmt) || 0;
+
+  const netPayable = Math.max(0, (issuePrice * totalIssues) - (issuePrice * nonSupply));
+  $('proc-netpayable').value = money(netPayable);
+
+  const suggested = Math.min(requestedAmt, netPayable);
+  $('proc-amountpaid').value = suggested.toFixed(2);
+  return netPayable;
+}
+$('proc-nonsupply').addEventListener('input', recalcProcNet);
 
 function isoFromDMY(dmy) {
   // "dd/mm/yyyy" -> "yyyy-mm-dd"
@@ -541,13 +620,13 @@ $('proc-submit').addEventListener('click', async () => {
   const quarter = $('proc-quarter').value;
   if (!magazine || !quarter) { showStatus('proc-status', false, 'Quarter மற்றும் இதழ் பெயர் தேர்வு செய்யவும்.'); return; }
 
-  const requested = Number($('proc-requested').value) || 0;
+  const netPayable = recalcProcNet();
   const amountPaid = Number($('proc-amountpaid').value) || 0;
 
   const payload = {
     magazine, quarter,
     nonSupply: Number($('proc-nonsupply').value) || 0,
-    netPayable: requested,
+    netPayable: netPayable,
     amountNowPaid: amountPaid,
     paymentDate: $('proc-paymentdate').value || null,
     remarks: $('proc-remarks').value,
@@ -695,7 +774,6 @@ $('add-btn').addEventListener('click', async () => {
   }
 });
 
-let masterLoaded = false;
 async function loadMagazines() {
   const el = $('mag-table');
   el.textContent = 'ஏற்றப்படுகிறது…';
@@ -716,6 +794,77 @@ async function loadMagazines() {
     el.textContent = 'பிழை: ' + err.message;
   }
 }
+$('mag-show-btn').addEventListener('click', loadMagazines);
+
+// ---- இதழ் dropdown-களை Delete மற்றும் Payment-Delete card-களுக்கு நிரப்புதல் ----
+let masterMagListLoaded = false;
+async function loadMasterMagazineOptions() {
+  if (masterMagListLoaded) return;
+  masterMagListLoaded = true;
+  try {
+    const data = await api('/api/admin/magazines-list');
+    if (!data.success) return;
+    const opts = '<option value="">-- தேர்வு செய்க --</option>' +
+      data.rows.map(r => `<option value="${r.name}">${r.name}</option>`).join('');
+    $('del-magazine').innerHTML = opts;
+    $('pd-magazine').innerHTML = opts;
+    $('del-quarter').innerHTML = '<option value="">-- தேர்வு செய்க --</option>' +
+      allQuarters().map(q => `<option>${q}</option>`).join('');
+  } catch (err) { /* silent */ }
+}
+
+// ---- இதழ்கள் நீக்குதல் ----
+$('del-btn').addEventListener('click', async () => {
+  const name = $('del-magazine').value;
+  const quarter = $('del-quarter').value;
+  const scope = $('del-scope').value;
+  if (!name || !quarter) { showStatus('del-status', false, 'இதழ் பெயர் மற்றும் Quarter தேர்வு செய்யவும்.'); return; }
+  const scopeText = scope === 'onward' ? `${quarter} முதல் பிறகுள்ள அனைத்து Quarter விலைப் பதிவுகளும்` : `${quarter} விலைப் பதிவு மட்டும்`;
+  if (!confirm(`'${name}' — ${scopeText} நீக்கப்படும். (Invoice/Payment தரவுகள் பாதிக்கப்படாது.) தொடரவா?`)) return;
+
+  const btn = $('del-btn');
+  btn.disabled = true; btn.textContent = 'நீக்குகிறது…';
+  try {
+    const data = await api('/api/admin/delete-magazine-quarters', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ name, quarter, scope })
+    });
+    showStatus('del-status', data.success, data.message);
+    if (data.success) loadMagazines();
+  } catch (err) {
+    showStatus('del-status', false, 'பிழை: ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'நீக்கு';
+  }
+});
+
+// ---- Payment Details Delete ----
+$('pd-btn').addEventListener('click', async () => {
+  const magazine = $('pd-magazine').value;
+  const quarter = $('pd-quarter').value;
+  if (!magazine || !quarter) { showStatus('pd-status', false, 'இதழ் பெயர் மற்றும் Quarter தேர்வு செய்யவும்.'); return; }
+  if (!confirm(`'${magazine}' (${quarter}) — Paid Amount / Payment Date / Transaction No / Voucher நீக்கப்பட்டு, மீண்டும் Invoice நிலைக்குச் செல்லும். தொடரவா?`)) return;
+
+  const btn = $('pd-btn');
+  btn.disabled = true; btn.textContent = 'நீக்குகிறது…';
+  try {
+    const data = await api('/api/admin/payment-delete', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ magazine, quarter })
+    });
+    showStatus('pd-status', data.success, data.message);
+  } catch (err) {
+    showStatus('pd-status', false, 'பிழை: ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Payment விவரங்களை நீக்கு';
+  }
+});
+
+// ---- CSV Import பகுதியை காட்டு/மறை ----
+$('csv-toggle-title').addEventListener('click', () => {
+  const body = $('csv-import-body');
+  body.style.display = body.style.display === 'none' ? 'block' : 'none';
+});
 
 // 2025-2026-Q1 முதல் 2031-2032-Q4 வரை அனைத்து Quarter-களும்
 function allQuarters() {
@@ -790,10 +939,9 @@ $('edit-save').addEventListener('click', async () => {
   }
 });
 
-// Master Data tab-ஐ முதல் முறை திறக்கும்போது பட்டியலை ஏற்றவும்
-document.querySelector('#tabs button[data-tab="master"]').addEventListener('click', () => {
-  if (!masterLoaded) { masterLoaded = true; loadMagazines(); }
-});
+// Master Data tab-ஐ முதல் முறை திறக்கும்போது Delete card-களுக்கான dropdown-களை நிரப்பவும்
+// (இதழ்கள் பட்டியல் table மட்டும் "இதழ்கள் பட்டியலைக் காட்டு" பட்டனை அழுத்தும்போதுதான் ஏற்றப்படும்)
+document.querySelector('#tabs button[data-tab="master"]').addEventListener('click', loadMasterMagazineOptions);
 </script>
 </body>
 </html>
