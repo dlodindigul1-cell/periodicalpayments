@@ -313,6 +313,54 @@ def api_non_supply():
 
 
 # --------------------------------------------------------------------------- #
+# 6a) magazines-for-quarter — அந்த quarter-ல் Invoice பதிவான இதழ்கள் மட்டும் (தொகை வழங்கல் Tab dropdown-க்கு)
+# --------------------------------------------------------------------------- #
+@app.route("/api/payments/magazines-for-quarter")
+def api_magazines_for_quarter():
+    quarter = request.args.get("quarter", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT magazine FROM payments WHERE quarter=%s ORDER BY magazine",
+                (quarter,),
+            )
+            rows = cur.fetchall()
+        return jsonify({"success": True, "magazines": [r["magazine"] for r in rows]})
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# 6b) fy-summary — இந்த நிதி ஆண்டில் (Q1-Q4) இந்த இதழுக்கு ஏற்கனவே தொகை வழங்கப்பட்ட Quarter-கள்
+# --------------------------------------------------------------------------- #
+@app.route("/api/payments/fy-summary")
+def api_fy_summary():
+    magazine = request.args.get("magazine", "").strip()
+    quarter = request.args.get("quarter", "").strip()
+    parts = quarter.split("-")
+    fy_prefix = "-".join(parts[:2]) if len(parts) >= 2 else quarter  # "2026-2027"
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT quarter, paid_amt FROM payments
+                   WHERE magazine=%s AND quarter LIKE %s AND paid_amt > 0
+                   ORDER BY quarter""",
+                (magazine, fy_prefix + "-Q%"),
+            )
+            rows = cur.fetchall()
+        return jsonify(
+            {
+                "success": True,
+                "rows": [{"quarter": r["quarter"], "paidAmt": float(r["paid_amt"] or 0)} for r in rows],
+            }
+        )
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------- #
 # 6) getPaymentDetails
 # --------------------------------------------------------------------------- #
 @app.route("/api/payments/details")
@@ -521,10 +569,7 @@ _CSV_HEADERS = {
 }
 
 
-def upsert_magazine_and_quarters(cur, name, language, periodicity, price, discount,
-                                  issue_price, no_of_libraries, quarters_raw):
-    """ஒரு இதழுக்கான magazines row-ஐ UPSERT செய்து, அதற்கான ஒவ்வொரு
-    quarter-க்கும் magazine_quarters-ல் ஒரு row UPSERT செய்யும்."""
+def upsert_magazine_base(cur, name, language, periodicity):
     cur.execute(
         """
         INSERT INTO magazines (name, language, periodicity)
@@ -535,10 +580,16 @@ def upsert_magazine_and_quarters(cur, name, language, periodicity, price, discou
         """,
         (name, language, periodicity),
     )
-    magazine_id = cur.fetchone()["id"]
+    return cur.fetchone()["id"]
 
-    quarters = [q.strip() for q in (quarters_raw or "").split(",") if q.strip()]
+
+def upsert_quarter_rows(cur, magazine_id, quarters, price, discount, issue_price, no_of_libraries):
+    """quarters-ல் உள்ள ஒவ்வொரு quarter-க்கும் ஒரே price/discount/issue_price/no_of_libraries-உடன்
+    magazine_quarters-ல் UPSERT செய்யும். quarters தேர்வு செய்யாத Quarter-களை இது தொடாது."""
     for quarter in quarters:
+        quarter = quarter.strip()
+        if not quarter:
+            continue
         cur.execute(
             """
             INSERT INTO magazine_quarters
@@ -550,6 +601,14 @@ def upsert_magazine_and_quarters(cur, name, language, periodicity, price, discou
             """,
             (magazine_id, quarter, price, discount, issue_price, no_of_libraries),
         )
+
+
+def upsert_magazine_and_quarters(cur, name, language, periodicity, price, discount,
+                                  issue_price, no_of_libraries, quarters_raw):
+    """CSV import-க்காக — comma-separated quarters string ஏற்கும்."""
+    magazine_id = upsert_magazine_base(cur, name, language, periodicity)
+    quarters = [q.strip() for q in (quarters_raw or "").split(",") if q.strip()]
+    upsert_quarter_rows(cur, magazine_id, quarters, price, discount, issue_price, no_of_libraries)
     return magazine_id, quarters
 
 
@@ -678,6 +737,75 @@ def api_admin_add_magazine():
             )
             conn.commit()
         return jsonify({"success": True, "message": f"'{name}' சேர்க்கப்பட்டது."})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/magazine-detail")
+def api_admin_magazine_detail():
+    name = request.args.get("name", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, language, periodicity FROM magazines WHERE name=%s", (name,))
+            mag = cur.fetchone()
+            if not mag:
+                return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை"}), 404
+            cur.execute(
+                """SELECT quarter, price, discount, issue_price, no_of_libraries
+                   FROM magazine_quarters WHERE magazine_id=%s ORDER BY quarter""",
+                (mag["id"],),
+            )
+            qrows = cur.fetchall()
+        return jsonify(
+            {
+                "success": True,
+                "name": mag["name"],
+                "language": mag["language"] or "",
+                "periodicity": mag["periodicity"] or "",
+                "quarters": {
+                    r["quarter"]: {
+                        "price": float(r["price"] or 0),
+                        "discount": float(r["discount"] or 0),
+                        "issuePrice": float(r["issue_price"] or 0),
+                        "noOfLibraries": int(r["no_of_libraries"] or 0),
+                    }
+                    for r in qrows
+                },
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/update-magazine", methods=["POST"])
+def api_admin_update_magazine():
+    """Master Data Edit — தேர்வு செய்த Quarter-கள் மட்டும் புதிய விலையுடன் புதுப்பிக்கப்படும்;
+    தேர்வு செய்யாத Quarter-களின் பழைய விலை அப்படியே இருக்கும்."""
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    quarters = data.get("quarters") or []
+    if not name:
+        return jsonify({"success": False, "message": "Magazine Name அவசியம்."}), 400
+
+    language = (data.get("language") or "").strip()
+    periodicity = (data.get("periodicity") or "").strip()
+    price = q_num(data.get("price"))
+    discount = q_num(data.get("discount"))
+    issue_price = q_num(data.get("issuePrice"))
+    no_of_libraries = q_int(data.get("noOfLibraries"))
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            magazine_id = upsert_magazine_base(cur, name, language, periodicity)
+            if quarters:
+                upsert_quarter_rows(cur, magazine_id, quarters, price, discount, issue_price, no_of_libraries)
+            conn.commit()
+        return jsonify({"success": True, "message": f"'{name}' புதுப்பிக்கப்பட்டது ({len(quarters)} quarter(s))."})
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
