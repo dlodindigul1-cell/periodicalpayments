@@ -74,3 +74,17 @@ CREATE TABLE IF NOT EXISTS vouchers (
 CREATE INDEX IF NOT EXISTS idx_payments_quarter  ON payments (quarter);
 CREATE INDEX IF NOT EXISTS idx_payments_magazine ON payments (magazine);
 CREATE INDEX IF NOT EXISTS idx_despatch_quarter  ON despatch_nonsupply (quarter);
+
+-- =====================================================================
+-- Vendor / Bank Account விவரங்கள் (2026-09-25) — பழைய "VENDOR BANK ACCOUNT" sheet
+-- tnpfts_code ஏற்கனவே இருந்தது (Vendor Code-ஆக பயன்படுத்தப்படுகிறது); மீதமுள்ள
+-- vendor/bank columns இங்கே சேர்க்கப்படுகின்றன. ஒரு இதழுக்கு ஒரு Vendor என்பதால்
+-- இவை magazines table-லேயே வைக்கப்படுகின்றன.
+-- =====================================================================
+ALTER TABLE magazines ADD COLUMN IF NOT EXISTS vendor_name          TEXT;
+ALTER TABLE magazines ADD COLUMN IF NOT EXISTS bank_account_number  TEXT;
+ALTER TABLE magazines ADD COLUMN IF NOT EXISTS bank_name            TEXT;
+ALTER TABLE magazines ADD COLUMN IF NOT EXISTS bank_place           TEXT;
+ALTER TABLE magazines ADD COLUMN IF NOT EXISTS ifsc_code            TEXT;
+ALTER TABLE magazines ADD COLUMN IF NOT EXISTS payee_name           TEXT;
+ALTER TABLE magazines ADD COLUMN IF NOT EXISTS email_id             TEXT;
