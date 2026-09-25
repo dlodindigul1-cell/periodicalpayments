@@ -9,6 +9,7 @@ Phase 1: Master data + Payment entry + Duplicate check + Quarter view +
 import csv
 import io
 import os
+import re
 from datetime import date, datetime
 from functools import wraps
 
@@ -95,6 +96,19 @@ def q_int(v, default=0):
         return int(v)
     except (TypeError, ValueError):
         return default
+
+
+def classify_vendor_code(code):
+    """Vendor Code இரண்டு வகைகளில் ஒன்று: எண்கள் மட்டும் (BENEFICIARY) அல்லது
+    எண்கள்-V (BUSINESS VENDOR, எ.கா 15317-V). பொருந்தாவிட்டால் None."""
+    code = (code or "").strip().upper()
+    if not code:
+        return None
+    if re.fullmatch(r"\d+", code):
+        return "BENEFICIARY"
+    if re.fullmatch(r"\d+-V", code):
+        return "BUSINESS VENDOR"
+    return "OTHER"
 
 
 # --------------------------------------------------------------------------- #
@@ -414,9 +428,15 @@ def api_payment_details():
                 (magazine, quarter),
             )
             row = cur.fetchone()
+            cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (magazine,))
+            m = cur.fetchone()
+            vendor_code = (m["tnpfts_code"] or "").strip() if m else ""
         if not row:
             return jsonify(
-                {"issuePrice": 0, "totalIssues": 0, "requestedAmt": 0, "paymentDate": None, "billSetNo": ""}
+                {
+                    "issuePrice": 0, "totalIssues": 0, "requestedAmt": 0, "paymentDate": None, "billSetNo": "",
+                    "vendorCode": vendor_code, "vendorType": classify_vendor_code(vendor_code),
+                }
             )
         return jsonify(
             {
@@ -425,6 +445,8 @@ def api_payment_details():
                 "requestedAmt": float(row["requested_amt"] or 0),
                 "paymentDate": row["payment_date"].strftime("%d/%m/%Y") if row["payment_date"] else None,
                 "billSetNo": row["bill_set_no"] or "",
+                "vendorCode": vendor_code,
+                "vendorType": classify_vendor_code(vendor_code),
             }
         )
     finally:
@@ -455,6 +477,42 @@ def api_save_payment_processing():
                 return jsonify({"success": False, "message": "Record not found in PAYMENTS"}), 404
             issue_price = float(row["issue_price"] or 0)
             deduction = issue_price * non_supply
+
+            # Vendor Code கட்டாயம் இருக்க வேண்டும் — இல்லையெனில் தொகை வழங்கல் பதிவு தடுக்கப்படும்
+            cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (magazine,))
+            m = cur.fetchone()
+            vendor_code = (m["tnpfts_code"] or "").strip() if m else ""
+            if not vendor_code:
+                return jsonify(
+                    {"success": False, "message": f"'{magazine}' இதழுக்கு Vendor Code இல்லை. முதலில் Master Data → Vendors-ல் Vendor Code சேர்க்கவும்."}
+                ), 400
+            vendor_type = classify_vendor_code(vendor_code)
+
+            # ஒரே Quarter-க்குள் ஒரே Bill Set-ல் BENEFICIARY மற்றும் BUSINESS VENDOR கலக்கக்கூடாது
+            if bill_set_no:
+                cur.execute(
+                    """
+                    SELECT p.magazine, m.tnpfts_code
+                    FROM payments p
+                    LEFT JOIN magazines m ON m.name = p.magazine
+                    WHERE p.quarter=%s AND p.bill_set_no=%s AND p.magazine != %s
+                    """,
+                    (quarter, bill_set_no, magazine),
+                )
+                others = cur.fetchall()
+                for o in others:
+                    other_type = classify_vendor_code(o["tnpfts_code"])
+                    if other_type and vendor_type and other_type != vendor_type:
+                        return jsonify(
+                            {
+                                "success": False,
+                                "message": (
+                                    f"Bill Set {bill_set_no} ({quarter})-ல் ஏற்கனவே '{o['magazine']}' "
+                                    f"({other_type}) உள்ளது. '{magazine}' ({vendor_type}) — BENEFICIARY மற்றும் "
+                                    f"BUSINESS VENDOR ஒரே Set-ல் கலக்க முடியாது. வேறு Bill Set தேர்வு செய்யவும்."
+                                ),
+                            }
+                        ), 400
 
             cur.execute(
                 """
@@ -942,6 +1000,245 @@ def api_admin_payment_delete():
                 "success": True,
                 "message": f"'{magazine}' ({quarter}) — Payment விவரங்கள் நீக்கப்பட்டு, மீண்டும் "
                            f"Invoice பதிவு நிலைக்கு சென்றது. Invoice விவரங்கள் மாறவில்லை.",
+            }
+        )
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/delete-payment-details", methods=["POST"])
+def api_admin_delete_payment_details():
+    """Payment processing விவரங்களை (paid amt/date/txn/voucher) அழித்து, அந்த Invoice-ஐ
+    மீண்டும் 'தொகை வழங்கப்படாதது' நிலைக்கு கொண்டு வரும். Invoice விவரங்கள் தொடாது."""
+    data = request.get_json(force=True)
+    magazine = (data.get("magazine") or "").strip()
+    quarter = (data.get("quarter") or "").strip()
+    if not magazine or not quarter:
+        return jsonify({"success": False, "message": "இதழ் பெயர் மற்றும் Quarter அவசியம்."}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT sno FROM payments WHERE magazine=%s AND quarter=%s",
+                (magazine, quarter),
+            )
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"success": False, "message": "பதிவு கிடைக்கவில்லை."}), 404
+
+            cur.execute(
+                """
+                UPDATE payments SET
+                    non_supply=0, deduction=0, net_payable=0,
+                    paid_amt=0, payment_date=NULL, transaction_no=NULL,
+                    remarks=NULL, bill_set_no=NULL, mail_sent=FALSE, pdf_url=NULL,
+                    voucher_no=NULL, updated_at=now()
+                WHERE magazine=%s AND quarter=%s
+                """,
+                (magazine, quarter),
+            )
+            cur.execute(
+                "DELETE FROM vouchers WHERE magazine=%s AND quarter=%s",
+                (magazine, quarter),
+            )
+            conn.commit()
+        return jsonify({"success": True, "message": f"'{magazine}' ({quarter}) மீண்டும் Invoice நிலைக்கு மாற்றப்பட்டது."})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# 11) Vendors — magazines table-ல் உள்ள Vendor/Bank columns (tnpfts_code = Vendor Code)
+# --------------------------------------------------------------------------- #
+_VENDOR_CSV_HEADERS = {
+    "magazine": "NAME OF MAGAZINE",
+    "vendor_name": "VENDOR",
+    "code": "CODE",
+    "bank_account_number": "BANK ACCOUNT NUMBER",
+    "bank_name": "BANK NAME",
+    "bank_place": "BANK PLACE",
+    "ifsc_code": "IFSC CODE",
+    "payee_name": "NAME OF PAYEE",
+    "email_id": "EMAIL ID",
+}
+
+
+def upsert_vendor(cur, name, vendor_name, code, bank_account_number, bank_name, bank_place,
+                   ifsc_code, payee_name, email_id):
+    """இதழ் பெயரால் UPSERT — இதழ் இன்னும் magazines-ல் இல்லையெனில் Vendor விவரம் மட்டுமே கொண்ட
+    ஒரு புதிய row உருவாகும் (மற்ற master விவரங்கள் பின்னால் சேர்க்கலாம்)."""
+    cur.execute(
+        """
+        INSERT INTO magazines (name, vendor_name, tnpfts_code, bank_account_number, bank_name,
+                                bank_place, ifsc_code, payee_name, email_id)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        ON CONFLICT (name) DO UPDATE SET
+            vendor_name=EXCLUDED.vendor_name, tnpfts_code=EXCLUDED.tnpfts_code,
+            bank_account_number=EXCLUDED.bank_account_number, bank_name=EXCLUDED.bank_name,
+            bank_place=EXCLUDED.bank_place, ifsc_code=EXCLUDED.ifsc_code,
+            payee_name=EXCLUDED.payee_name, email_id=EXCLUDED.email_id
+        RETURNING id
+        """,
+        (name, vendor_name, code, bank_account_number, bank_name, bank_place, ifsc_code, payee_name, email_id),
+    )
+    return cur.fetchone()["id"]
+
+
+@app.route("/api/admin/vendors-list")
+def api_admin_vendors_list():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT name, vendor_name, tnpfts_code, bank_account_number, bank_name,
+                          bank_place, ifsc_code, payee_name, email_id
+                   FROM magazines ORDER BY name"""
+            )
+            rows = cur.fetchall()
+        return jsonify(
+            {
+                "success": True,
+                "rows": [
+                    {
+                        "name": r["name"],
+                        "vendorName": r["vendor_name"] or "",
+                        "code": r["tnpfts_code"] or "",
+                        "vendorType": classify_vendor_code(r["tnpfts_code"]) or "",
+                        "bankAccountNumber": r["bank_account_number"] or "",
+                        "bankName": r["bank_name"] or "",
+                        "bankPlace": r["bank_place"] or "",
+                        "ifscCode": r["ifsc_code"] or "",
+                        "payeeName": r["payee_name"] or "",
+                        "emailId": r["email_id"] or "",
+                    }
+                    for r in rows
+                ],
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/vendor-detail")
+def api_admin_vendor_detail():
+    name = request.args.get("name", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT name, vendor_name, tnpfts_code, bank_account_number, bank_name,
+                          bank_place, ifsc_code, payee_name, email_id
+                   FROM magazines WHERE name=%s""",
+                (name,),
+            )
+            r = cur.fetchone()
+        if not r:
+            return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை"}), 404
+        return jsonify(
+            {
+                "success": True,
+                "name": r["name"],
+                "vendorName": r["vendor_name"] or "",
+                "code": r["tnpfts_code"] or "",
+                "bankAccountNumber": r["bank_account_number"] or "",
+                "bankName": r["bank_name"] or "",
+                "bankPlace": r["bank_place"] or "",
+                "ifscCode": r["ifsc_code"] or "",
+                "payeeName": r["payee_name"] or "",
+                "emailId": r["email_id"] or "",
+            }
+        )
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/update-vendor", methods=["POST"])
+def api_admin_update_vendor():
+    """புதிய Vendor சேர்ப்பதற்கும், ஏற்கனவே உள்ள ஒன்றை திருத்துவதற்கும் — இரண்டுக்கும் இதுவே."""
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "message": "இதழ் பெயர் அவசியம்."}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            upsert_vendor(
+                cur, name,
+                (data.get("vendorName") or "").strip(),
+                (data.get("code") or "").strip(),
+                (data.get("bankAccountNumber") or "").strip(),
+                (data.get("bankName") or "").strip(),
+                (data.get("bankPlace") or "").strip(),
+                (data.get("ifscCode") or "").strip(),
+                (data.get("payeeName") or "").strip(),
+                (data.get("emailId") or "").strip(),
+            )
+            conn.commit()
+        return jsonify({"success": True, "message": f"'{name}' Vendor விவரம் சேமிக்கப்பட்டது."})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/import-vendors", methods=["POST"])
+def api_admin_import_vendors():
+    """CSV text (Excel Export) படித்து magazines-ல் Vendor/Bank விவரங்களை bulk UPSERT."""
+    payload = request.get_json(force=True)
+    csv_text = (payload.get("csvText") or "").strip()
+    if not csv_text:
+        return jsonify({"success": False, "message": "CSV தரவு காலியாக இருக்கிறது."}), 400
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    if reader.fieldnames:
+        reader.fieldnames = [(h or "").strip().upper() for h in reader.fieldnames]
+
+    required = {"NAME OF MAGAZINE", "CODE"}
+    missing = [h for h in required if h not in (reader.fieldnames or [])]
+    if missing:
+        return jsonify(
+            {"success": False, "message": f"CSV-ல் இந்த columns காணவில்லை: {', '.join(missing)}"}
+        ), 400
+
+    conn = get_conn()
+    imported, errors = 0, []
+    try:
+        with conn.cursor() as cur:
+            for i, row in enumerate(reader, start=2):
+                name = (row.get(_VENDOR_CSV_HEADERS["magazine"]) or "").strip()
+                if not name:
+                    continue
+                try:
+                    upsert_vendor(
+                        cur, name,
+                        (row.get(_VENDOR_CSV_HEADERS["vendor_name"]) or "").strip(),
+                        (row.get(_VENDOR_CSV_HEADERS["code"]) or "").strip(),
+                        (row.get(_VENDOR_CSV_HEADERS["bank_account_number"]) or "").strip(),
+                        (row.get(_VENDOR_CSV_HEADERS["bank_name"]) or "").strip(),
+                        (row.get(_VENDOR_CSV_HEADERS["bank_place"]) or "").strip(),
+                        (row.get(_VENDOR_CSV_HEADERS["ifsc_code"]) or "").strip(),
+                        (row.get(_VENDOR_CSV_HEADERS["payee_name"]) or "").strip(),
+                        (row.get(_VENDOR_CSV_HEADERS["email_id"]) or "").strip(),
+                    )
+                    imported += 1
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"Row {i} ({name}): {e}")
+            conn.commit()
+        return jsonify(
+            {
+                "success": True,
+                "imported": imported,
+                "errors": errors,
+                "message": f"{imported} Vendor பதிவுகள் import ஆயின.",
             }
         )
     except Exception as e:  # noqa: BLE001
