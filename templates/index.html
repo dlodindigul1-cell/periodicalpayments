@@ -213,6 +213,8 @@
         <div></div>
       </div>
 
+      <div id="proc-vendorbox" style="display:none; border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:13px;"></div>
+
       <div id="proc-fybox" style="display:none; background:#eef3fb; border:1px solid var(--line); border-radius:8px; padding:10px 14px; margin-bottom:14px; font-size:13px;">
         <strong style="color:var(--navy);">இந்த நிதி ஆண்டில் ஏற்கனவே வழங்கப்பட்டவை:</strong>
         <div id="proc-fyrows" style="margin-top:6px;"></div>
@@ -369,7 +371,56 @@
     </div>
 
     <div class="card">
-      <h2 style="cursor:pointer;" id="csv-toggle-title">5) பழைய இதழ்கள் — CSV Bulk Import (காட்டு/மறை) ▾</h2>
+      <h2>5) Vendors — Vendor Code &amp; Bank விவரங்கள்</h2>
+      <p class="muted" style="font-size:12.5px; line-height:1.5; margin:0 0 14px;">
+        ஒவ்வொரு இதழுக்கும் Vendor Code (BENEFICIARY எண் அல்லது 15317-V போன்ற BUSINESS VENDOR குறியீடு) மற்றும்
+        Bank விவரங்கள். தொகை வழங்கல் பதிவு செய்ய Vendor Code கட்டாயம் தேவை.
+      </p>
+      <div class="actions"><button class="btn btn-ghost" id="vendor-show-btn">Vendors பட்டியலைக் காட்டு</button></div>
+      <div id="vendor-table" class="muted" style="margin-top:12px; display:none;"></div>
+
+      <h3 style="margin:20px 0 10px; font-size:14px; color:var(--navy);">புதிய Vendor சேர் / திருத்து</h3>
+      <div class="grid">
+        <div class="field"><label>இதழ் பெயர் *</label>
+          <input id="vendor-name" list="vendor-mag-options" type="text" placeholder="இதழ் பெயரை தேர்வு செய்க அல்லது type செய்க">
+          <datalist id="vendor-mag-options"></datalist>
+        </div>
+        <div class="field"><label>Vendor (நிறுவனப் பெயர்)</label><input id="vendor-vendorname" type="text"></div>
+        <div class="field"><label>Code * (எ.கா 19653 அல்லது 15317-V)</label><input id="vendor-code" type="text"></div>
+        <div class="field"><label>Name of Payee</label><input id="vendor-payee" type="text"></div>
+        <div class="field"><label>Bank Account Number</label><input id="vendor-accno" type="text"></div>
+        <div class="field"><label>Bank Name</label><input id="vendor-bankname" type="text"></div>
+        <div class="field"><label>Bank Place</label><input id="vendor-bankplace" type="text"></div>
+        <div class="field"><label>IFSC Code</label><input id="vendor-ifsc" type="text"></div>
+        <div class="field"><label>Email ID</label><input id="vendor-email" type="email"></div>
+      </div>
+      <div class="actions"><button class="btn btn-primary" id="vendor-save-btn">சேமி</button></div>
+      <div class="status" id="vendor-status"></div>
+
+      <details style="margin-top:16px;">
+        <summary style="cursor:pointer; font-size:13px; font-weight:600; color:var(--navy2); padding:6px 0;">
+          Vendors — CSV Bulk Import (Excel-லிருந்து)
+        </summary>
+        <div style="margin-top:10px;">
+          <p class="muted" style="font-size:12.5px; line-height:1.5; margin:0 0 14px;">
+            Excel-ஐ CSV ஆக Export செய்யவும். முதல் row column headers ஆக இருக்க வேண்டும்:
+            <code>S.NO, NAME OF MAGAZINE, VENDOR, CODE, BANK ACCOUNT NUMBER, BANK NAME, BANK PLACE, IFSC CODE, NAME OF PAYEE, EMAIL ID</code>.
+            ஒரே இதழ் பெயர் ஏற்கனவே இருந்தால் அதன் Vendor விவரம் புதுப்பிக்கப்படும்.
+          </p>
+          <div class="field">
+            <input type="file" id="vendor-csv-file" accept=".csv,text/csv" style="background:none; border:none; padding:0; width:auto;">
+          </div>
+          <div class="field">
+            <textarea id="vendor-csv-text" rows="6" style="width:100%; font-family:'Courier New',monospace; font-size:12.5px; padding:9px 11px; border:1px solid var(--line); border-radius:7px;" placeholder="S.NO,NAME OF MAGAZINE,VENDOR,CODE,BANK ACCOUNT NUMBER,BANK NAME,BANK PLACE,IFSC CODE,NAME OF PAYEE,EMAIL ID"></textarea>
+          </div>
+          <div class="actions"><button class="btn btn-primary" id="vendor-import-btn">Import செய்யவும்</button></div>
+          <div class="status" id="vendor-import-status"></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2 style="cursor:pointer;" id="csv-toggle-title">6) பழைய இதழ்கள் — CSV Bulk Import (காட்டு/மறை) ▾</h2>
       <div id="csv-import-body" style="display:none;">
         <p class="muted" style="font-size:12.5px; line-height:1.5; margin:0 0 14px;">
           Google Sheet-ஐ (DATA-2026-27) File → Download → CSV ஆக Export செய்யவும். கீழே file-ஐ தேர்வு
@@ -578,6 +629,24 @@ $('proc-magazine').addEventListener('change', async () => {
   $('proc-existingdate').value = details.paymentDate || 'இன்னும் வழங்கப்படவில்லை';
   $('proc-billset').value = details.billSetNo || '';
   $('proc-paymentdate').value = details.paymentDate ? isoFromDMY(details.paymentDate) : todayISO();
+
+  const vbox = $('proc-vendorbox');
+  const submitBtn = $('proc-submit');
+  if (!details.vendorCode) {
+    vbox.style.display = 'block';
+    vbox.style.background = '#fbeaea';
+    vbox.style.border = '1px solid #e3b8b8';
+    vbox.style.color = 'var(--err)';
+    vbox.innerHTML = `⚠ '${mag}' இதழுக்கு Vendor Code இல்லை. Master Data → Vendors-ல் முதலில் Vendor Code சேர்க்கவும் — அது வரை தொகை வழங்கல் பதிவு செய்ய முடியாது.`;
+    submitBtn.disabled = true;
+  } else {
+    vbox.style.display = 'block';
+    vbox.style.background = '#eef3fb';
+    vbox.style.border = '1px solid var(--line)';
+    vbox.style.color = 'var(--ink)';
+    vbox.innerHTML = `Vendor Code: <strong>${details.vendorCode}</strong> (${details.vendorType === 'BENEFICIARY' ? 'Beneficiary' : details.vendorType === 'BUSINESS VENDOR' ? 'Business Vendor' : 'வடிவம் தெரியவில்லை'})`;
+    submitBtn.disabled = false;
+  }
 
   const ns = await api('/api/despatch/non-supply?quarter=' + encodeURIComponent(q) + '&magazine=' + encodeURIComponent(mag));
   $('proc-nonsupply').value = ns.nonSupply || 0;
@@ -794,7 +863,18 @@ async function loadMagazines() {
     el.textContent = 'பிழை: ' + err.message;
   }
 }
-$('mag-show-btn').addEventListener('click', loadMagazines);
+$('mag-show-btn').addEventListener('click', async () => {
+  const btn = $('mag-show-btn');
+  const el = $('mag-table');
+  if (el.style.display === 'none' || !el.innerHTML.trim()) {
+    el.style.display = '';
+    btn.textContent = 'மறை';
+    await loadMagazines();
+  } else {
+    el.style.display = 'none';
+    btn.textContent = 'இதழ்கள் பட்டியலைக் காட்டு';
+  }
+});
 
 // ---- இதழ் dropdown-களை Delete மற்றும் Payment-Delete card-களுக்கு நிரப்புதல் ----
 let masterMagListLoaded = false;
@@ -808,6 +888,7 @@ async function loadMasterMagazineOptions() {
       data.rows.map(r => `<option value="${r.name}">${r.name}</option>`).join('');
     $('del-magazine').innerHTML = opts;
     $('pd-magazine').innerHTML = opts;
+    $('vendor-mag-options').innerHTML = data.rows.map(r => `<option value="${r.name}">`).join('');
     $('del-quarter').innerHTML = '<option value="">-- தேர்வு செய்க --</option>' +
       allQuarters().map(q => `<option>${q}</option>`).join('');
   } catch (err) { /* silent */ }
@@ -860,7 +941,130 @@ $('pd-btn').addEventListener('click', async () => {
   }
 });
 
-// ---- CSV Import பகுதியை காட்டு/மறை ----
+// ============ Vendors ============
+function vendorTypeLabel(t) {
+  if (t === 'BENEFICIARY') return 'Beneficiary';
+  if (t === 'BUSINESS VENDOR') return 'Business Vendor';
+  if (t === 'OTHER') return 'வடிவம் தெரியவில்லை';
+  return 'Code இல்லை';
+}
+
+async function loadVendors() {
+  const el = $('vendor-table');
+  el.textContent = 'ஏற்றப்படுகிறது…';
+  try {
+    const data = await api('/api/admin/vendors-list');
+    if (!data.success || !data.rows.length) { el.textContent = 'இதழ்கள் இல்லை.'; return; }
+    let html = '<table><thead><tr><th>இதழ்</th><th>Vendor</th><th>Code</th><th>வகை</th><th>Bank</th><th>IFSC</th><th>Email</th><th></th></tr></thead><tbody>';
+    data.rows.forEach(r => {
+      html += `<tr><td>${r.name}</td><td>${r.vendorName}</td><td>${r.code}</td><td>${vendorTypeLabel(r.vendorType)}</td>
+        <td>${r.bankName}</td><td>${r.ifscCode}</td><td>${r.emailId}</td>
+        <td><button class="btn btn-ghost edit-vendor-btn" data-name="${r.name}" style="padding:5px 12px; font-size:12.5px;">Edit</button></td></tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+    el.querySelectorAll('.edit-vendor-btn').forEach(btn => {
+      btn.addEventListener('click', () => openVendorForEdit(btn.dataset.name));
+    });
+  } catch (err) {
+    el.textContent = 'பிழை: ' + err.message;
+  }
+}
+$('vendor-show-btn').addEventListener('click', async () => {
+  const btn = $('vendor-show-btn');
+  const el = $('vendor-table');
+  if (el.style.display === 'none') {
+    el.style.display = '';
+    btn.textContent = 'மறை';
+    await loadVendors();
+  } else {
+    el.style.display = 'none';
+    btn.textContent = 'Vendors பட்டியலைக் காட்டு';
+  }
+});
+
+async function openVendorForEdit(name) {
+  const data = await api('/api/admin/vendor-detail?name=' + encodeURIComponent(name));
+  if (!data.success) { alert(data.message || 'ஏற்ற முடியவில்லை'); return; }
+  $('vendor-name').value = data.name;
+  $('vendor-vendorname').value = data.vendorName;
+  $('vendor-code').value = data.code;
+  $('vendor-payee').value = data.payeeName;
+  $('vendor-accno').value = data.bankAccountNumber;
+  $('vendor-bankname').value = data.bankName;
+  $('vendor-bankplace').value = data.bankPlace;
+  $('vendor-ifsc').value = data.ifscCode;
+  $('vendor-email').value = data.emailId;
+  $('vendor-name').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+$('vendor-save-btn').addEventListener('click', async () => {
+  const name = $('vendor-name').value.trim();
+  const code = $('vendor-code').value.trim();
+  if (!name || !code) { showStatus('vendor-status', false, 'இதழ் பெயர் மற்றும் Code அவசியம்.'); return; }
+
+  const payload = {
+    name,
+    vendorName: $('vendor-vendorname').value.trim(),
+    code,
+    payeeName: $('vendor-payee').value.trim(),
+    bankAccountNumber: $('vendor-accno').value.trim(),
+    bankName: $('vendor-bankname').value.trim(),
+    bankPlace: $('vendor-bankplace').value.trim(),
+    ifscCode: $('vendor-ifsc').value.trim(),
+    emailId: $('vendor-email').value.trim(),
+  };
+
+  const btn = $('vendor-save-btn');
+  btn.disabled = true; btn.textContent = 'சேமிக்கிறது…';
+  try {
+    const data = await api('/api/admin/update-vendor', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    showStatus('vendor-status', data.success, data.message);
+    if (data.success) {
+      ['vendor-name','vendor-vendorname','vendor-code','vendor-payee','vendor-accno','vendor-bankname','vendor-bankplace','vendor-ifsc','vendor-email']
+        .forEach(id => $(id).value = '');
+      if ($('vendor-table').style.display !== 'none') loadVendors();
+    }
+  } catch (err) {
+    showStatus('vendor-status', false, 'பிழை: ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'சேமி';
+  }
+});
+
+$('vendor-csv-file').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => { $('vendor-csv-text').value = reader.result; };
+  reader.readAsText(file, 'UTF-8');
+});
+
+$('vendor-import-btn').addEventListener('click', async () => {
+  const csvText = $('vendor-csv-text').value.trim();
+  if (!csvText) { showStatus('vendor-import-status', false, 'CSV தரவு இல்லை.'); return; }
+  const btn = $('vendor-import-btn');
+  btn.disabled = true; btn.textContent = 'Importing…';
+  try {
+    const data = await api('/api/admin/import-vendors', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ csvText })
+    });
+    let msg = data.message || (data.success ? 'Import முடிந்தது' : 'Import தோல்வி');
+    if (data.errors && data.errors.length) msg += '\n\nபிழைகள்:\n' + data.errors.join('\n');
+    showStatus('vendor-import-status', data.success, msg);
+    if (data.success) {
+      const magData = await api('/api/admin/magazines-list');
+      if (magData.success) $('vendor-mag-options').innerHTML = magData.rows.map(r => `<option value="${r.name}">`).join('');
+      if ($('vendor-table').style.display !== 'none') loadVendors();
+    }
+  } catch (err) {
+    showStatus('vendor-import-status', false, 'பிழை: ' + err.message);
+  } finally {
+    btn.disabled = false; btn.textContent = 'Import செய்யவும்';
+  }
+});
 $('csv-toggle-title').addEventListener('click', () => {
   const body = $('csv-import-body');
   body.style.display = body.style.display === 'none' ? 'block' : 'none';
