@@ -111,6 +111,13 @@ def classify_vendor_code(code):
     return "OTHER"
 
 
+def normalize_csv_header(h):
+    """CSV header ஒப்பீடு நம்பகமாக இருக்க — BOM, non-breaking space, தேவையற்ற
+    இடைவெளிகள், எழுத்து அளவு வேறுபாடு ஆகியவற்றை நீக்கி normalize செய்யும்."""
+    h = (h or "").replace("\ufeff", "").replace("\xa0", " ")
+    return " ".join(h.split()).upper()
+
+
 # --------------------------------------------------------------------------- #
 # Frontend
 # --------------------------------------------------------------------------- #
@@ -757,13 +764,19 @@ def api_admin_import_magazines():
     reader = csv.DictReader(io.StringIO(csv_text))
     # header-களை trim + uppercase செய்து match செய்கிறோம்
     if reader.fieldnames:
-        reader.fieldnames = [ (h or "").strip().upper() for h in reader.fieldnames ]
+        reader.fieldnames = [normalize_csv_header(h) for h in reader.fieldnames]
 
     required = set(_CSV_HEADERS.values()) - {"LANGUAGE"}  # LANGUAGE optional
     missing = [h for h in required if h not in (reader.fieldnames or [])]
     if missing:
         return jsonify(
-            {"success": False, "message": f"CSV-ல் இந்த columns காணவில்லை: {', '.join(missing)}"}
+            {
+                "success": False,
+                "message": (
+                    f"CSV-ல் இந்த columns காணவில்லை: {', '.join(missing)}. "
+                    f"கண்டறியப்பட்ட columns: {', '.join(reader.fieldnames or []) or '(ஏதுமில்லை)'}"
+                ),
+            }
         ), 400
 
     conn = get_conn()
@@ -1200,13 +1213,19 @@ def api_admin_import_vendors():
 
     reader = csv.DictReader(io.StringIO(csv_text))
     if reader.fieldnames:
-        reader.fieldnames = [(h or "").strip().upper() for h in reader.fieldnames]
+        reader.fieldnames = [normalize_csv_header(h) for h in reader.fieldnames]
 
     required = {"NAME OF MAGAZINE", "CODE"}
     missing = [h for h in required if h not in (reader.fieldnames or [])]
     if missing:
         return jsonify(
-            {"success": False, "message": f"CSV-ல் இந்த columns காணவில்லை: {', '.join(missing)}"}
+            {
+                "success": False,
+                "message": (
+                    f"CSV-ல் இந்த columns காணவில்லை: {', '.join(missing)}. "
+                    f"கண்டறியப்பட்ட columns: {', '.join(reader.fieldnames or []) or '(ஏதுமில்லை)'}"
+                ),
+            }
         ), 400
 
     conn = get_conn()
