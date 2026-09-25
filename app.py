@@ -113,9 +113,11 @@ def classify_vendor_code(code):
 
 def normalize_csv_header(h):
     """CSV header ஒப்பீடு நம்பகமாக இருக்க — BOM, non-breaking space, தேவையற்ற
-    இடைவெளிகள், எழுத்து அளவு வேறுபாடு ஆகியவற்றை நீக்கி normalize செய்யும்."""
+    இடைவெளிகள், எழுத்து அளவு வேறுபாடு, முடிவில் உள்ள '.' ஆகியவற்றை நீக்கி normalize செய்யும்
+    (எ.கா: Excel-ல் " EMAIL ID." எனும் column-ஐயும் "EMAIL ID" ஆக அடையாளம் காணும்)."""
     h = (h or "").replace("\ufeff", "").replace("\xa0", " ")
-    return " ".join(h.split()).upper()
+    h = " ".join(h.split()).upper()
+    return h.rstrip(".")
 
 
 # --------------------------------------------------------------------------- #
@@ -1100,7 +1102,18 @@ def _resolve_vendor_csv_headers(fieldnames):
 def upsert_vendor(cur, name, vendor_name, code, bank_account_number, bank_name, bank_place,
                    ifsc_code, payee_name, email_id):
     """இதழ் பெயரால் UPSERT — இதழ் இன்னும் magazines-ல் இல்லையெனில் Vendor விவரம் மட்டுமே கொண்ட
-    ஒரு புதிய row உருவாகும் (மற்ற master விவரங்கள் பின்னால் சேர்க்கலாம்)."""
+    ஒரு புதிய row உருவாகும் (மற்ற master விவரங்கள் பின்னால் சேர்க்கலாம்).
+
+    ஒரே இதழை மீண்டும் மீண்டும் CSV-ல் upload செய்தால் (எழுத்து அளவு / இடைவெளி சிறிது
+    வேறுபட்டாலும்) double entry வராமல், ஏற்கனவே உள்ள அதே இதழ் row-ஐயே கண்டறிந்து அதை
+    UPDATE செய்யும்படி — முதலில் case/space-insensitive ஆக பொருந்தும் பெயரைத் தேடுகிறோம்."""
+    cur.execute(
+        "SELECT name FROM magazines WHERE lower(regexp_replace(name, '\\s+', ' ', 'g')) = lower(%s) LIMIT 1",
+        (name,),
+    )
+    existing = cur.fetchone()
+    match_name = existing["name"] if existing else name
+
     cur.execute(
         """
         INSERT INTO magazines (name, vendor_name, tnpfts_code, bank_account_number, bank_name,
@@ -1113,7 +1126,7 @@ def upsert_vendor(cur, name, vendor_name, code, bank_account_number, bank_name, 
             payee_name=EXCLUDED.payee_name, email_id=EXCLUDED.email_id
         RETURNING id
         """,
-        (name, vendor_name, code, bank_account_number, bank_name, bank_place, ifsc_code, payee_name, email_id),
+        (match_name, vendor_name, code, bank_account_number, bank_name, bank_place, ifsc_code, payee_name, email_id),
     )
     return cur.fetchone()["id"]
 
@@ -1256,7 +1269,7 @@ def api_admin_import_vendors():
                 return (row.get(col) or "").strip() if col else ""
 
             for i, row in enumerate(reader, start=2):
-                name = _val(row, "magazine")
+                name = " ".join(_val(row, "magazine").split())  # extra spaces நீக்கம்
                 if not name:
                     continue
                 try:
