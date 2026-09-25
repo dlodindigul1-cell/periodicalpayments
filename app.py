@@ -1070,17 +1070,31 @@ def api_admin_delete_payment_details():
 # --------------------------------------------------------------------------- #
 # 11) Vendors — magazines table-ல் உள்ள Vendor/Bank columns (tnpfts_code = Vendor Code)
 # --------------------------------------------------------------------------- #
-_VENDOR_CSV_HEADERS = {
-    "magazine": "NAME OF MAGAZINE",
-    "vendor_name": "VENDOR",
-    "code": "CODE",
-    "bank_account_number": "BANK ACCOUNT NUMBER",
-    "bank_name": "BANK NAME",
-    "bank_place": "BANK PLACE",
-    "ifsc_code": "IFSC CODE",
-    "payee_name": "NAME OF PAYEE",
-    "email_id": "EMAIL ID",
+# ஒவ்வொரு field-க்கும் ஏற்கக்கூடிய column பெயர்கள் (Excel-ல் பயன்படுத்துபவர்கள் "VENDOR" மற்றும்
+# "CODE" என தனித்தனியாக வைக்காமல் "VENDOR CODE" என ஒரே column-ஆக வைப்பதும் உண்டு — இரண்டையும்
+# ஏற்றுக்கொள்வோம்).
+_VENDOR_CSV_HEADER_ALIASES = {
+    "magazine": ["NAME OF MAGAZINE"],
+    "vendor_name": ["VENDOR", "VENDOR NAME"],
+    "code": ["CODE", "VENDOR CODE"],
+    "bank_account_number": ["BANK ACCOUNT NUMBER"],
+    "bank_name": ["BANK NAME"],
+    "bank_place": ["BANK PLACE"],
+    "ifsc_code": ["IFSC CODE"],
+    "payee_name": ["NAME OF PAYEE"],
+    "email_id": ["EMAIL ID"],
 }
+
+
+def _resolve_vendor_csv_headers(fieldnames):
+    """CSV-ல் கிடைத்த fieldnames-ஐ வைத்து, ஒவ்வொரு field-க்கும் எந்த actual column
+    பெயர் பொருந்துகிறது என கண்டறிந்து ஒரு dict ஆக தரும் (field -> actual header, அல்லது
+    கிடைக்கவில்லை எனில் None)."""
+    fieldnames = fieldnames or []
+    resolved = {}
+    for field, aliases in _VENDOR_CSV_HEADER_ALIASES.items():
+        resolved[field] = next((a for a in aliases if a in fieldnames), None)
+    return resolved
 
 
 def upsert_vendor(cur, name, vendor_name, code, bank_account_number, bank_name, bank_place,
@@ -1215,8 +1229,13 @@ def api_admin_import_vendors():
     if reader.fieldnames:
         reader.fieldnames = [normalize_csv_header(h) for h in reader.fieldnames]
 
-    required = {"NAME OF MAGAZINE", "CODE"}
-    missing = [h for h in required if h not in (reader.fieldnames or [])]
+    header_map = _resolve_vendor_csv_headers(reader.fieldnames)
+    required_fields = ["magazine", "code"]
+    missing = [
+        " / ".join(_VENDOR_CSV_HEADER_ALIASES[f])
+        for f in required_fields
+        if not header_map.get(f)
+    ]
     if missing:
         return jsonify(
             {
@@ -1232,21 +1251,25 @@ def api_admin_import_vendors():
     imported, errors = 0, []
     try:
         with conn.cursor() as cur:
+            def _val(row, field):
+                col = header_map.get(field)
+                return (row.get(col) or "").strip() if col else ""
+
             for i, row in enumerate(reader, start=2):
-                name = (row.get(_VENDOR_CSV_HEADERS["magazine"]) or "").strip()
+                name = _val(row, "magazine")
                 if not name:
                     continue
                 try:
                     upsert_vendor(
                         cur, name,
-                        (row.get(_VENDOR_CSV_HEADERS["vendor_name"]) or "").strip(),
-                        (row.get(_VENDOR_CSV_HEADERS["code"]) or "").strip(),
-                        (row.get(_VENDOR_CSV_HEADERS["bank_account_number"]) or "").strip(),
-                        (row.get(_VENDOR_CSV_HEADERS["bank_name"]) or "").strip(),
-                        (row.get(_VENDOR_CSV_HEADERS["bank_place"]) or "").strip(),
-                        (row.get(_VENDOR_CSV_HEADERS["ifsc_code"]) or "").strip(),
-                        (row.get(_VENDOR_CSV_HEADERS["payee_name"]) or "").strip(),
-                        (row.get(_VENDOR_CSV_HEADERS["email_id"]) or "").strip(),
+                        _val(row, "vendor_name"),
+                        _val(row, "code"),
+                        _val(row, "bank_account_number"),
+                        _val(row, "bank_name"),
+                        _val(row, "bank_place"),
+                        _val(row, "ifsc_code"),
+                        _val(row, "payee_name"),
+                        _val(row, "email_id"),
                     )
                     imported += 1
                 except Exception as e:  # noqa: BLE001
