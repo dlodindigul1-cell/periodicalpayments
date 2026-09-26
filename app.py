@@ -10,13 +10,18 @@ import csv
 import io
 import os
 import re
+import smtplib
 from datetime import date, datetime
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from functools import wraps
 
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request, Response
+from flask import Flask, jsonify, render_template, request, Response, send_file
+from xhtml2pdf import pisa
 
 load_dotenv()
 
@@ -118,6 +123,168 @@ def normalize_csv_header(h):
     h = (h or "").replace("\ufeff", "").replace("\xa0", " ")
     h = " ".join(h.split()).upper()
     return h.rstrip(".")
+
+
+# --------------------------------------------------------------------------- #
+# Mail (SMTP) — Environment variables மூலம் configure செய்யவும்:
+#   SMTP_HOST, SMTP_PORT (default 587), SMTP_USER, SMTP_PASSWORD, MAIL_FROM
+# Gmail பயன்படுத்த விரும்பினால்: SMTP_HOST=smtp.gmail.com, SMTP_PORT=587,
+# SMTP_USER=your@gmail.com, SMTP_PASSWORD=<16-digit App Password>.
+# --------------------------------------------------------------------------- #
+def smtp_configured():
+    return bool(os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"))
+
+
+def send_email(to_addr, subject, html_body, attachment_bytes=None, attachment_name=None):
+    """SMTP வழியாக மெயில் அனுப்பும். Attachment (PDF bytes) optional.
+    SMTP env vars set செய்யாவிட்டால், தெளிவான பிழையுடன் தோல்வியடையும்."""
+    if not smtp_configured():
+        raise RuntimeError(
+            "SMTP settings configure செய்யப்படவில்லை. Server-ல் SMTP_HOST, SMTP_USER, SMTP_PASSWORD "
+            "environment variables அமைக்கவும் (எ.கா. Gmail App Password)."
+        )
+    host = os.environ["SMTP_HOST"]
+    port = int(os.environ.get("SMTP_PORT", "587"))
+    user = os.environ["SMTP_USER"]
+    password = os.environ["SMTP_PASSWORD"]
+    mail_from = os.environ.get("MAIL_FROM", user)
+
+    msg = MIMEMultipart()
+    msg["From"] = mail_from
+    msg["To"] = to_addr
+    msg["Subject"] = subject
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    if attachment_bytes:
+        part = MIMEApplication(attachment_bytes, _subtype="pdf")
+        part.add_header("Content-Disposition", "attachment", filename=attachment_name or "attachment.pdf")
+        msg.attach(part)
+
+    with smtplib.SMTP(host, port, timeout=30) as server:
+        server.starttls()
+        server.login(user, password)
+        server.sendmail(mail_from, [to_addr], msg.as_string())
+
+
+def html_to_pdf_bytes(html_str):
+    """HTML string-ஐ PDF bytes ஆக மாற்றும் (xhtml2pdf). ASCII/English content-க்கு
+    ஏற்றது — Tamil எழுத்துகளுக்கு தனி font embed தேவை."""
+    buf = io.BytesIO()
+    result = pisa.CreatePDF(src=html_str, dest=buf, encoding="utf-8")
+    if result.err:
+        raise RuntimeError("PDF உருவாக்கத்தில் பிழை")
+    return buf.getvalue()
+
+
+_QUARTER_PERIOD_TEXT = {
+    "2025-2026-Q4": "JAN-26 TO MARCH-26",
+    "2026-2027-Q1": "APR-26 TO JUNE-26",
+    "2026-2027-Q2": "JUL-26 TO SEP-26",
+    "2026-2027-Q3": "OCT-26 TO DEC-26",
+    "2026-2027-Q4": "JAN-27 TO MARCH-27",
+}
+
+
+def quarter_period_text(quarter):
+    return _QUARTER_PERIOD_TEXT.get((quarter or "").strip(), "N/A")
+
+
+def fmt_date(d):
+    return d.strftime("%d/%m/%Y") if d else ""
+
+
+def build_payment_intimation_html(p):
+    """generatePaymentIntimationPDF (GAS) — English intimation letter, PDF-க்கு தயார்."""
+    bank = p.get("bank") or {}
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  @page {{ size: A4; margin: 25mm 18mm; }}
+  body {{ font-family: Helvetica, Arial, sans-serif; color:#111; font-size:12px; }}
+  h2 {{ text-align:center; border-bottom:3px solid #000; padding-bottom:8px; }}
+  h3 {{ text-align:center; }}
+  table {{ width:100%; border-collapse:collapse; margin:16px 0; }}
+  th,td {{ border:1px solid #000; padding:6px; font-size:11px; }}
+  th {{ background:#1e4d8c; color:#fff; }}
+  .right {{ text-align:right; }}
+  .ctr {{ text-align:center; }}
+</style></head>
+<body>
+  <div class="right">Date: {p.get('paymentDate') or '---'}</div>
+  <h2>District Library Office, Dindigul</h2>
+  <h3>PAYMENT CLEARED INTIMATION FOR THE QUARTER</h3>
+  <p>Sir,</p>
+  <p>Ref: Your Invoice Number <strong>{p.get('invoiceNo') or '---'}</strong> dated
+     <strong>{p.get('invoiceDate') or '---'}</strong> for the supply of Magazine
+     <strong>{p.get('magazine')}</strong></p>
+  <p>Sir,<br>Kindly see below the details of the payment transferred to your Bank Account from
+     <strong>The District Library Officer, Dindigul</strong>, for the supply of the magazine
+     <strong>{p.get('magazine')}</strong>, as per the invoice under reference cited.
+     We kindly request you to acknowledge receipt of the same.</p>
+  <table>
+    <tr><th>S.No</th><th>Magazine</th><th>Qty</th><th>Bill Amt</th><th>Deduction</th>
+        <th>Paid Amt</th><th>Date</th><th>Ref</th></tr>
+    <tr>
+      <td class="ctr">1</td><td>{p.get('magazine')}</td>
+      <td class="ctr">{p.get('supplyQty') or 0}</td>
+      <td class="right">{p.get('billAmount') or 0}</td>
+      <td class="right">{p.get('deduction') or 0}</td>
+      <td class="right">{p.get('netAmount') or 0}</td>
+      <td class="ctr">{p.get('paymentDate') or '---'}</td>
+      <td class="ctr">{p.get('transactionNo') or '---'}</td>
+    </tr>
+  </table>
+  <p><strong>Remarks:</strong> {p.get('quarter')} SETTLED{(' | ' + p['remarks']) if p.get('remarks') else ''}</p>
+  <p>Please send back the Acknowledgement receipt.</p>
+  <p><strong>Bank Details:</strong></p>
+  <table>
+    <tr><td>PAYEE NAME</td><td>{bank.get('payeeName') or '---'}</td></tr>
+    <tr><td>BANK NAME</td><td>{bank.get('bankName') or '---'}</td></tr>
+    <tr><td>BRANCH</td><td>{bank.get('branch') or '---'}</td></tr>
+    <tr><td>A/C NO</td><td>{bank.get('accNo') or '---'}</td></tr>
+    <tr><td>IFSC</td><td>{bank.get('ifsc') or '---'}</td></tr>
+  </table>
+  <br><br>
+  <p class="right">Thanking and Regards,<br>District Library Officer<br>Dindigul</p>
+</body></html>"""
+
+
+def fetch_payment_for_mail(cur, payment_id):
+    """ஒரு payments.id-க்கான, மெயில்/PDF-க்குத் தேவையான தகவல்கள் அனைத்தையும் ஒரே dict-ஆக எடுக்கும்."""
+    cur.execute(
+        """
+        SELECT p.*, m.email_id, m.payee_name, m.bank_name, m.bank_place,
+               m.bank_account_number, m.ifsc_code
+        FROM payments p
+        LEFT JOIN magazines m ON m.name = p.magazine
+        WHERE p.id=%s
+        """,
+        (payment_id,),
+    )
+    r = cur.fetchone()
+    if not r:
+        return None
+    return {
+        "id": r["id"],
+        "magazine": r["magazine"],
+        "invoiceNo": r["invoice_no"] or "",
+        "invoiceDate": fmt_date(r["invoice_date"]),
+        "supplyQty": float(r["total_issues"] or 0),
+        "billAmount": float(r["requested_amt"] or 0),
+        "deduction": float(r["deduction"] or 0),
+        "netAmount": float(r["paid_amt"] or 0),
+        "transactionNo": r["transaction_no"] or "",
+        "paymentDate": fmt_date(r["payment_date"]),
+        "quarter": r["quarter"] or "",
+        "email": r["email_id"] or "",
+        "remarks": r["remarks"] or "",
+        "bank": {
+            "payeeName": r["payee_name"] or "",
+            "bankName": r["bank_name"] or "",
+            "branch": r["bank_place"] or "",
+            "accNo": r["bank_account_number"] or "",
+            "ifsc": r["ifsc_code"] or "",
+        },
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1299,6 +1466,533 @@ def api_admin_import_vendors():
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+# =============================================================================
+# 12) REPORTS — Quarter Summary / Magazine-wise / Payment Status /
+#     Voucher Register / Email Status
+# =============================================================================
+@app.route("/api/reports/quarter-summary")
+def api_report_quarter_summary():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT quarter, COUNT(*) AS magazines,
+                       COALESCE(SUM(requested_amt),0) AS requested,
+                       COALESCE(SUM(deduction),0) AS deduction,
+                       COALESCE(SUM(paid_amt),0) AS paid
+                FROM payments
+                WHERE quarter IS NOT NULL AND quarter <> ''
+                GROUP BY quarter ORDER BY quarter
+                """
+            )
+            rows = cur.fetchall()
+        result = [
+            {
+                "quarter": r["quarter"],
+                "magazines": r["magazines"],
+                "requested": float(r["requested"]),
+                "deduction": float(r["deduction"]),
+                "paid": float(r["paid"]),
+            }
+            for r in rows
+        ]
+        grand = {
+            "magazines": sum(r["magazines"] for r in result),
+            "requested": sum(r["requested"] for r in result),
+            "deduction": sum(r["deduction"] for r in result),
+            "paid": sum(r["paid"] for r in result),
+        }
+        return jsonify({"success": True, "rows": result, "grand": grand})
+    finally:
+        conn.close()
+
+
+@app.route("/api/reports/magazine-wise")
+def api_report_magazine_wise():
+    quarter = request.args.get("quarter", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if quarter:
+                cur.execute(
+                    "SELECT * FROM payments WHERE quarter=%s ORDER BY sno NULLS LAST, magazine",
+                    (quarter,),
+                )
+            else:
+                cur.execute("SELECT * FROM payments ORDER BY quarter, sno NULLS LAST, magazine")
+            rows = cur.fetchall()
+
+        received, not_received = [], []
+        for i, r in enumerate(rows, start=1):
+            invoice_no = (r["invoice_no"] or "").strip()
+            if invoice_no:
+                received.append(
+                    {
+                        "serial": len(received) + 1,
+                        "magazine": r["magazine"],
+                        "invoiceNo": invoice_no,
+                        "invoiceDate": fmt_date(r["invoice_date"]),
+                        "requestedAmt": float(r["requested_amt"] or 0),
+                        "quarter": r["quarter"] or "",
+                    }
+                )
+            else:
+                not_received.append({"serial": len(not_received) + 1, "magazine": r["magazine"]})
+
+        return jsonify({"success": True, "received": received, "notReceived": not_received})
+    finally:
+        conn.close()
+
+
+@app.route("/api/reports/payment-status")
+def api_report_payment_status():
+    quarter = request.args.get("quarter", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if quarter:
+                cur.execute(
+                    "SELECT * FROM payments WHERE payment_date IS NOT NULL AND quarter=%s ORDER BY payment_date",
+                    (quarter,),
+                )
+            else:
+                cur.execute("SELECT * FROM payments WHERE payment_date IS NOT NULL ORDER BY payment_date")
+            rows = cur.fetchall()
+        result = [
+            {
+                "serial": i,
+                "magazine": r["magazine"],
+                "quarter": r["quarter"] or "",
+                "paidAmt": float(r["paid_amt"] or 0),
+                "paidDate": fmt_date(r["payment_date"]),
+                "transactionNo": r["transaction_no"] or "",
+            }
+            for i, r in enumerate(rows, start=1)
+        ]
+        return jsonify({"success": True, "rows": result})
+    finally:
+        conn.close()
+
+
+@app.route("/api/reports/voucher-register")
+def api_report_voucher_register():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM vouchers ORDER BY id")
+            rows = cur.fetchall()
+        result = [
+            {
+                "serial": i,
+                "paymentSNo": r["payment_sno"] or "",
+                "magazine": r["magazine"] or "",
+                "tnpftsCode": r["tnpfts_code"] or "",
+                "invoiceNo": r["invoice_no"] or "",
+                "invoiceDate": fmt_date(r["invoice_date"]),
+                "requestedAmt": float(r["requested_amt"] or 0),
+                "deduction": float(r["deduction"] or 0),
+                "amountPaid": float(r["amount_paid"] or 0),
+                "quarter": r["quarter"] or "",
+            }
+            for i, r in enumerate(rows, start=1)
+        ]
+        return jsonify({"success": True, "rows": result})
+    finally:
+        conn.close()
+
+
+@app.route("/api/reports/email-status")
+def api_report_email_status():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM payments WHERE mail_sent=TRUE OR (pdf_url IS NOT NULL AND pdf_url<>'') ORDER BY quarter, magazine"
+            )
+            rows = cur.fetchall()
+        result = [
+            {
+                "serial": i,
+                "magazine": r["magazine"],
+                "quarter": r["quarter"] or "",
+                "invoiceNo": r["invoice_no"] or "",
+                "invoiceDate": fmt_date(r["invoice_date"]),
+                "paidAmt": float(r["paid_amt"] or 0),
+                "transactionNo": r["transaction_no"] or "",
+                "paymentDate": fmt_date(r["payment_date"]),
+                "mailSent": bool(r["mail_sent"]),
+                "pdfUrl": r["pdf_url"] or "",
+            }
+            for i, r in enumerate(rows, start=1)
+        ]
+        return jsonify({"success": True, "rows": result})
+    finally:
+        conn.close()
+
+
+# =============================================================================
+# 13) தொகை வித்தியாசம் — Net Payable vs Requested Amount Mismatch
+# =============================================================================
+@app.route("/api/reports/amount-mismatch")
+def api_amount_mismatch():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM payments ORDER BY quarter, magazine")
+            rows = cur.fetchall()
+        result = []
+        for r in rows:
+            magazine = (r["magazine"] or "").strip()
+            if not magazine:
+                continue
+            net_payable = float(r["net_payable"] or 0)
+            requested_amt = float(r["requested_amt"] or 0)
+            if net_payable == 0 and requested_amt == 0:
+                continue
+            if net_payable == requested_amt:
+                continue
+            difference = requested_amt - net_payable
+            result.append(
+                {
+                    "sno": r["sno"] or "",
+                    "magazine": magazine,
+                    "quarter": r["quarter"] or "",
+                    "invoiceNo": r["invoice_no"] or "",
+                    "netPayable": net_payable,
+                    "requestedAmt": requested_amt,
+                    "difference": difference,
+                    "status": "EXCESS" if difference > 0 else "SHORT",
+                }
+            )
+        return jsonify({"success": True, "rows": result})
+    finally:
+        conn.close()
+
+
+# =============================================================================
+# 14) Pending Invoice Reminder
+# =============================================================================
+def get_master_magazines_for_quarter(cur, quarter):
+    """/api/magazines-ல் உள்ள carry-forward தர்க்கத்தையே பயன்படுத்தி, ஒரு quarter-க்கு
+    பொருந்தும் இதழ்களின் பெயர் பட்டியலை மட்டும் தரும்."""
+    cur.execute(
+        """
+        SELECT m.name, q.quarter
+        FROM magazine_quarters q
+        JOIN magazines m ON m.id = q.magazine_id
+        """
+    )
+    rows = cur.fetchall()
+    best = {}
+    for r in rows:
+        name, q = r["name"], r["quarter"]
+        rank = 0 if q == quarter else (1 if q < quarter else 2)
+        cur_best = best.get(name)
+        if cur_best is None or rank < cur_best[0] or (rank == cur_best[0] and (
+            (rank == 1 and q > cur_best[1]) or (rank == 2 and q < cur_best[1])
+        )):
+            best[name] = (rank, q)
+    return sorted(best.keys())
+
+
+@app.route("/api/reminders/pending-invoices")
+def api_pending_invoices():
+    quarter = request.args.get("quarter", "").strip()
+    if not quarter:
+        return jsonify({"success": False, "message": "Quarter தேர்வு செய்யவும்."}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            master_magazines = get_master_magazines_for_quarter(cur, quarter)
+
+            cur.execute(
+                "SELECT magazine FROM payments WHERE quarter=%s AND invoice_no IS NOT NULL AND invoice_no<>''",
+                (quarter,),
+            )
+            has_invoice = {r["magazine"] for r in cur.fetchall()}
+
+            cur.execute("SELECT name, email_id FROM magazines")
+            email_map = {r["name"]: (r["email_id"] or "").strip() for r in cur.fetchall()}
+
+        pending = [
+            {"magazine": name, "quarter": quarter, "email": email_map.get(name, "")}
+            for name in master_magazines
+            if name not in has_invoice
+        ]
+        return jsonify({"success": True, "rows": pending})
+    finally:
+        conn.close()
+
+
+@app.route("/api/reminders/send", methods=["POST"])
+def api_send_reminders():
+    payload = request.get_json(force=True)
+    items = payload.get("items") or []
+    if not items:
+        return jsonify({"success": False, "message": "எந்த Magazine-ஐயும் தேர்வு செய்யவில்லை"}), 400
+
+    success_count, failed = 0, []
+    for item in items:
+        magazine = item.get("magazine", "")
+        email = (item.get("email") or "").strip()
+        quarter = item.get("quarter", "")
+        if not email:
+            failed.append(f"{magazine}: Email இல்லை")
+            continue
+        period_text = quarter_period_text(quarter)
+        subject = f"Request for Invoice Submission - {magazine} for {quarter}"
+        body = f"""Dear Sir/Madam,<br><br>
+We have not yet received the invoice for the supply of <strong>{magazine}</strong> for the
+<strong>{quarter}</strong> (i.e., {period_text}).<br><br>
+Kindly issue and send the invoice at the earliest so that we can process the payment without delay.<br><br>
+Thank you for your kind cooperation.<br><br>
+Regards,<br>District Library Officer<br>Dindigul"""
+        try:
+            send_email(email, subject, body)
+            success_count += 1
+        except Exception as e:  # noqa: BLE001
+            failed.append(f"{magazine}: {e}")
+
+    message = f"{success_count} மெயில்கள் வெற்றிகரமாக அனுப்பப்பட்டன."
+    if failed:
+        message += f" ({len(failed)} தோல்வி)"
+    return jsonify({"success": True, "sent": success_count, "errors": failed, "message": message})
+
+
+# =============================================================================
+# 15) Voucher Numbers Dashboard
+# =============================================================================
+@app.route("/api/vouchers/set-numbers")
+def api_voucher_set_numbers():
+    quarter = request.args.get("quarter", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if quarter:
+                cur.execute(
+                    "SELECT DISTINCT bill_set_no, quarter FROM payments "
+                    "WHERE bill_set_no IS NOT NULL AND bill_set_no<>'' AND quarter=%s",
+                    (quarter,),
+                )
+            else:
+                cur.execute(
+                    "SELECT DISTINCT bill_set_no, quarter FROM payments "
+                    "WHERE bill_set_no IS NOT NULL AND bill_set_no<>''"
+                )
+            rows = cur.fetchall()
+        set_map = {}
+        for r in rows:
+            s = r["bill_set_no"]
+            set_map.setdefault(s, set()).add(r["quarter"])
+
+        def sort_key(s):
+            try:
+                return (0, int(s))
+            except (TypeError, ValueError):
+                return (1, s)
+
+        result = [
+            {"setNo": s, "quarters": sorted(qs)}
+            for s, qs in sorted(set_map.items(), key=lambda kv: sort_key(kv[0]))
+        ]
+        return jsonify({"success": True, "sets": result})
+    finally:
+        conn.close()
+
+
+@app.route("/api/vouchers/by-set")
+def api_vouchers_by_set():
+    set_no = request.args.get("setNo", "").strip()
+    quarter = request.args.get("quarter", "").strip()
+    if not set_no:
+        return jsonify({"success": False, "message": "Set No தேவை"}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            if quarter:
+                cur.execute(
+                    "SELECT id, magazine, paid_amt, voucher_no, quarter FROM payments "
+                    "WHERE bill_set_no=%s AND quarter=%s ORDER BY magazine",
+                    (set_no, quarter),
+                )
+            else:
+                cur.execute(
+                    "SELECT id, magazine, paid_amt, voucher_no, quarter FROM payments "
+                    "WHERE bill_set_no=%s ORDER BY magazine",
+                    (set_no,),
+                )
+            rows = cur.fetchall()
+        result = [
+            {
+                "row": r["id"],
+                "magazine": r["magazine"],
+                "amountPaid": float(r["paid_amt"] or 0),
+                "voucherNo": r["voucher_no"] or "",
+                "quarter": r["quarter"] or "",
+            }
+            for r in rows
+        ]
+        return jsonify({"success": True, "rows": result})
+    finally:
+        conn.close()
+
+
+@app.route("/api/vouchers/save-numbers", methods=["POST"])
+def api_save_voucher_numbers():
+    updates = request.get_json(force=True) or []
+    conn = get_conn()
+    saved = 0
+    try:
+        with conn.cursor() as cur:
+            for item in updates:
+                if item.get("row") is not None and item.get("voucherNo") is not None:
+                    cur.execute(
+                        "UPDATE payments SET voucher_no=%s, updated_at=now() WHERE id=%s",
+                        (str(item["voucherNo"]).strip(), item["row"]),
+                    )
+                    saved += 1
+            conn.commit()
+        return jsonify({"success": True, "message": f"{saved} வவுச்சர் நம்பர்கள் சேமிக்கப்பட்டன"})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/vouchers/all")
+def api_all_vouchers():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT voucher_no, magazine, paid_amt, quarter, bill_set_no FROM payments "
+                "WHERE voucher_no IS NOT NULL AND voucher_no<>''"
+            )
+            rows = cur.fetchall()
+
+        def sort_key(r):
+            v = r["voucher_no"] or ""
+            m = re.match(r"^(\d+)", v)
+            return (0, int(m.group(1)), v) if m else (1, 0, v)
+
+        rows = sorted(rows, key=sort_key)
+        result = [
+            {
+                "voucherNo": r["voucher_no"],
+                "magazine": r["magazine"],
+                "amountPaid": float(r["paid_amt"] or 0),
+                "quarter": r["quarter"] or "",
+                "setNo": r["bill_set_no"] or "",
+            }
+            for r in rows
+        ]
+        return jsonify({"success": True, "rows": result})
+    finally:
+        conn.close()
+
+
+# =============================================================================
+# 16) மெயில் அனுப்புதல் — Email to Publisher (PDF intimation உடன்)
+# =============================================================================
+@app.route("/api/mail/ready")
+def api_mail_ready():
+    quarter = request.args.get("quarter", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            base = (
+                "SELECT p.id, p.magazine, p.quarter, p.transaction_no, p.payment_date, "
+                "p.requested_amt, p.paid_amt, m.email_id "
+                "FROM payments p LEFT JOIN magazines m ON m.name = p.magazine "
+                "WHERE p.transaction_no IS NOT NULL AND p.transaction_no<>'' "
+                "AND p.payment_date IS NOT NULL AND p.mail_sent = FALSE "
+                "AND m.email_id IS NOT NULL AND m.email_id <> ''"
+            )
+            if quarter:
+                cur.execute(base + " AND p.quarter=%s ORDER BY p.magazine", (quarter,))
+            else:
+                cur.execute(base + " ORDER BY p.quarter, p.magazine")
+            rows = cur.fetchall()
+        result = [
+            {
+                "row": r["id"],
+                "magazine": r["magazine"],
+                "quarter": r["quarter"] or "",
+                "transactionNo": r["transaction_no"] or "",
+                "paymentDate": fmt_date(r["payment_date"]),
+                "billAmount": float(r["requested_amt"] or 0),
+                "netAmount": float(r["paid_amt"] or 0),
+                "email": r["email_id"] or "",
+            }
+            for r in rows
+        ]
+        return jsonify({"success": True, "rows": result})
+    finally:
+        conn.close()
+
+
+@app.route("/api/mail/send", methods=["POST"])
+def api_mail_send():
+    payload = request.get_json(force=True)
+    payment_id = payload.get("row")
+    if not payment_id:
+        return jsonify({"success": False, "message": "Payment row தேவை"}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            p = fetch_payment_for_mail(cur, payment_id)
+            if not p:
+                return jsonify({"success": False, "message": "Payment record கிடைக்கவில்லை"}), 404
+            if not p["email"]:
+                return jsonify({"success": False, "message": f"'{p['magazine']}'-க்கு Email இல்லை. Master Data → Vendors-ல் சேர்க்கவும்."}), 400
+
+            pdf_bytes = html_to_pdf_bytes(build_payment_intimation_html(p))
+            subject = f"Magazine Payment - {p['magazine']} - {p['quarter']}"
+            body = f"""Hello,<br><br>
+The payment for your magazine "{p['magazine']}" has been completed.<br>
+Please find the PDF attached.<br><br>Thank you."""
+            attachment_name = f"{p['magazine']} - {p['quarter']}.pdf"
+
+            send_email(p["email"], subject, body, pdf_bytes, attachment_name)
+
+            pdf_url = f"/api/mail/pdf/{payment_id}"
+            cur.execute(
+                "UPDATE payments SET mail_sent=TRUE, pdf_url=%s, updated_at=now() WHERE id=%s",
+                (pdf_url, payment_id),
+            )
+            conn.commit()
+        return jsonify({"success": True, "message": f"{p['magazine']} → மெயில் + PDF அனுப்பப்பட்டது", "pdfUrl": pdf_url})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/mail/pdf/<int:payment_id>")
+def api_mail_pdf(payment_id):
+    """Drive-ல் சேமிக்காமல், தேவைப்படும்போது PDF-ஐ மீண்டும் உருவாக்கி காட்டும்/பதிவிறக்கும்."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            p = fetch_payment_for_mail(cur, payment_id)
+        if not p:
+            return jsonify({"success": False, "message": "Payment record கிடைக்கவில்லை"}), 404
+        pdf_bytes = html_to_pdf_bytes(build_payment_intimation_html(p))
+        return send_file(
+            io.BytesIO(pdf_bytes),
+            mimetype="application/pdf",
+            as_attachment=False,
+            download_name=f"{p['magazine']} - {p['quarter']}.pdf",
+        )
     finally:
         conn.close()
 
