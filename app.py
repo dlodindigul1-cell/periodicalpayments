@@ -6,11 +6,15 @@ Phase 1: Master data + Payment entry + Duplicate check + Quarter view +
 (PDF உருவாக்கம் / Email அனுப்புதல் / Reports — Phase 2-ல் சேர்க்கப்படும்)
 """
 
+import base64
 import csv
 import io
+import json
 import os
 import re
 import smtplib
+import urllib.error
+import urllib.request
 from datetime import date, datetime
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
@@ -126,18 +130,36 @@ def normalize_csv_header(h):
 
 
 # --------------------------------------------------------------------------- #
-# Mail (SMTP) — Environment variables மூலம் configure செய்யவும்:
-#   SMTP_HOST, SMTP_PORT (default 587), SMTP_USER, SMTP_PASSWORD, MAIL_FROM
-# Gmail பயன்படுத்த விரும்பினால்: SMTP_HOST=smtp.gmail.com, SMTP_PORT=587,
-# SMTP_USER=your@gmail.com, SMTP_PASSWORD=<16-digit App Password>.
+# Mail — இரண்டு வழிகள் ஆதரிக்கப்படுகின்றன:
+#
+#  1) SMTP (Gmail App Password) — MAIL_PROVIDER=smtp (default)
+#       SMTP_HOST, SMTP_PORT (default 587), SMTP_USER, SMTP_PASSWORD, MAIL_FROM
+#     பல hosting platforms (Vercel, சில free-tier hosts) SMTP port (587/465)-ஐ
+#     block செய்துவிடும் — அப்போது "[Errno 101] Network is unreachable" பிழை வரும்.
+#
+#  2) Brevo HTTP API (port 443 வழியாக மட்டுமே, எந்த hosting platform-லும் வேலை
+#     செய்யும்) — MAIL_PROVIDER=brevo
+#       BREVO_API_KEY, MAIL_FROM (Brevo-ல் verify செய்த sender email), MAIL_FROM_NAME
+#     பதிவு: https://app.brevo.com (இலவசமாக ஒரு நாளைக்கு 300 மெயில்கள் அனுப்பலாம்).
 # --------------------------------------------------------------------------- #
+def mail_provider():
+    return os.environ.get("MAIL_PROVIDER", "smtp").strip().lower()
+
+
 def smtp_configured():
     return bool(os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"))
 
 
 def send_email(to_addr, subject, html_body, attachment_bytes=None, attachment_name=None):
-    """SMTP வழியாக மெயில் அனுப்பும். Attachment (PDF bytes) optional.
-    SMTP env vars set செய்யாவிட்டால், தெளிவான பிழையுடன் தோல்வியடையும்."""
+    """MAIL_PROVIDER env var-ஐ பொருத்து SMTP அல்லது Brevo HTTP API வழியாக மெயில் அனுப்பும்."""
+    provider = mail_provider()
+    if provider == "brevo":
+        _send_email_brevo(to_addr, subject, html_body, attachment_bytes, attachment_name)
+    else:
+        _send_email_smtp(to_addr, subject, html_body, attachment_bytes, attachment_name)
+
+
+def _send_email_smtp(to_addr, subject, html_body, attachment_bytes=None, attachment_name=None):
     if not smtp_configured():
         raise RuntimeError(
             "SMTP settings configure செய்யப்படவில்லை. Server-ல் SMTP_HOST, SMTP_USER, SMTP_PASSWORD "
@@ -160,10 +182,55 @@ def send_email(to_addr, subject, html_body, attachment_bytes=None, attachment_na
         part.add_header("Content-Disposition", "attachment", filename=attachment_name or "attachment.pdf")
         msg.attach(part)
 
-    with smtplib.SMTP(host, port, timeout=30) as server:
-        server.starttls()
-        server.login(user, password)
-        server.sendmail(mail_from, [to_addr], msg.as_string())
+    try:
+        with smtplib.SMTP(host, port, timeout=20) as server:
+            server.starttls()
+            server.login(user, password)
+            server.sendmail(mail_from, [to_addr], msg.as_string())
+    except OSError as e:
+        raise RuntimeError(
+            f"SMTP-ல் இணைக்க முடியவில்லை ({e}). இந்த hosting platform SMTP port ({port})-ஐ "
+            "block செய்திருக்கலாம் — MAIL_PROVIDER=brevo பயன்படுத்தி பாருங்கள் (BREVO_API_KEY தேவை)."
+        ) from e
+
+
+def _send_email_brevo(to_addr, subject, html_body, attachment_bytes=None, attachment_name=None):
+    api_key = os.environ.get("BREVO_API_KEY")
+    if not api_key:
+        raise RuntimeError("BREVO_API_KEY environment variable அமைக்கப்படவில்லை.")
+    mail_from = os.environ.get("MAIL_FROM")
+    if not mail_from:
+        raise RuntimeError("MAIL_FROM environment variable அமைக்கப்படவில்லை (Brevo-ல் verify செய்த sender email).")
+    from_name = os.environ.get("MAIL_FROM_NAME", "District Library Office")
+
+    payload = {
+        "sender": {"email": mail_from, "name": from_name},
+        "to": [{"email": to_addr}],
+        "subject": subject,
+        "htmlContent": html_body,
+    }
+    if attachment_bytes:
+        payload["attachment"] = [
+            {
+                "content": base64.b64encode(attachment_bytes).decode("ascii"),
+                "name": attachment_name or "attachment.pdf",
+            }
+        ]
+
+    req = urllib.request.Request(
+        "https://api.brevo.com/v3/smtp/email",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"api-key": api_key, "Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            resp.read()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "ignore")
+        raise RuntimeError(f"Brevo API பிழை ({e.code}): {body}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"Brevo API-ஐ அடைய முடியவில்லை: {e}") from e
 
 
 def html_to_pdf_bytes(html_str):
