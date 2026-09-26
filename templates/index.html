@@ -27,6 +27,7 @@
   nav{
     display:flex; gap:4px; background:#fff; border-bottom:1px solid var(--line);
     padding:0 20px; overflow-x:auto;
+    position:sticky; top:0; z-index:100;
   }
   nav button{
     border:none; background:none; padding:14px 16px; font-size:14px;
@@ -138,6 +139,7 @@
   <button data-tab="mismatch">தொகை வித்தியாசம்</button>
   <button data-tab="vouchernos">Voucher Numbers</button>
   <button data-tab="paidlist">தொகை வழங்கப்பட்ட விவரம்</button>
+  <button data-tab="advice">Payment Advice</button>
   <button data-tab="master">Master Data</button>
 </nav>
 
@@ -220,9 +222,16 @@
           <p>Paid Magazine Details</p>
         </div>
 
+        <div class="home-card" data-tab="advice">
+          <div class="icon-box"><svg viewBox="0 0 24 24"><path d="M9 12h6M9 16h6M9 8h6"/><path d="M5 21V5a2 2 0 0 1 2-2h7l5 5v13a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2Z"/></svg></div>
+          <div class="num">11</div>
+          <h3>Payment Advice</h3>
+          <p>Set-வாரியாக Payment Advice PDF</p>
+        </div>
+
         <div class="home-card" data-tab="master">
           <div class="icon-box"><svg viewBox="0 0 24 24"><path d="M4 21V8l8-5 8 5v13"/><path d="M9 21v-6h6v6M4 8h16"/></svg></div>
-          <div class="num">11</div>
+          <div class="num">12</div>
           <h3>Master Data</h3>
           <p>Magazines &amp; Vendors</p>
         </div>
@@ -604,6 +613,16 @@
         <button data-report="voucher">Voucher Register</button>
         <button data-report="email">Email Status</button>
       </div>
+      <div class="field" id="report-quarter-field" style="max-width:260px; margin-bottom:14px; display:none;">
+        <label>Quarter</label>
+        <select id="report-quarter">
+          <option value="2025-2026-Q4">2025-2026-Q4</option>
+          <option value="2026-2027-Q1">2026-2027-Q1</option>
+          <option value="2026-2027-Q2" selected>2026-2027-Q2</option>
+          <option value="2026-2027-Q3">2026-2027-Q3</option>
+          <option value="2026-2027-Q4">2026-2027-Q4</option>
+        </select>
+      </div>
       <div id="report-table-wrap" style="overflow-x:auto;"></div>
     </div>
   </section>
@@ -681,6 +700,40 @@
         <button class="btn btn-ghost" id="vn-all-load">🔍 பட்டியல் காட்டு</button>
       </div>
       <div id="vn-all-table-wrap" style="margin-top:14px; overflow-x:auto;"></div>
+    </div>
+  </section>
+
+  <!-- ===================== TAB: Payment Advice ===================== -->
+  <section id="panel-advice" class="panel">
+    <div class="card">
+      <h2>Payment Advice — Set-வாரியாக PDF</h2>
+      <div class="grid">
+        <div class="field">
+          <label>Quarter</label>
+          <select id="adv-quarter">
+            <option value="">-- Quarter தேர்வு செய்க --</option>
+            <option>2025-2026-Q4</option>
+            <option>2026-2027-Q1</option>
+            <option>2026-2027-Q2</option>
+            <option>2026-2027-Q3</option>
+            <option>2026-2027-Q4</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Set No</label>
+          <select id="adv-setno" disabled><option value="">முதலில் Quarter தேர்வு செய்க</option></select>
+        </div>
+        <div class="field" style="display:flex; align-items:flex-end;">
+          <button class="btn btn-primary" id="adv-generate" style="width:100%;">🧾 Generate</button>
+        </div>
+      </div>
+      <div class="status" id="adv-status"></div>
+      <div id="adv-output-wrap" style="display:none; margin-top:14px;">
+        <div class="actions" style="margin-bottom:10px;">
+          <a class="btn btn-primary" id="adv-download" target="_blank">📥 Download PDF</a>
+        </div>
+        <div id="adv-table-wrap" style="overflow-x:auto;"></div>
+      </div>
     </div>
   </section>
 
@@ -1471,9 +1524,11 @@ document.querySelectorAll('#report-tabs button').forEach(btn => {
     document.querySelectorAll('#report-tabs button').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     currentReport = btn.dataset.report;
+    $('report-quarter-field').style.display = (currentReport === 'magazine') ? '' : 'none';
     loadReport();
   });
 });
+$('report-quarter').addEventListener('change', () => { if (currentReport === 'magazine') loadReport(); });
 document.querySelector('#tabs button[data-tab="reports"]').addEventListener('click', () => {
   if (!$('report-table-wrap').innerHTML) loadReport();
 });
@@ -1499,18 +1554,19 @@ async function loadReport(){
       wrap.innerHTML = html;
 
     } else if (currentReport === 'magazine') {
-      const data = await api('/api/reports/magazine-wise');
-      let html = '<h3 style="color:var(--navy); font-size:14.5px;">✅ Invoice பெற்ற இதழ்கள்</h3><table><thead><tr>'+
+      const q = $('report-quarter').value;
+      const data = await api('/api/reports/magazine-wise?quarter=' + encodeURIComponent(q));
+      let html = '<h3 style="color:var(--navy); font-size:14.5px;">✅ '+q+' — Invoice பெற்ற இதழ்கள்</h3><table><thead><tr>'+
                  '<th>S.No</th><th>இதழ்</th><th>Invoice No</th><th>Invoice Date</th><th class="num">Requested</th><th>Quarter</th></tr></thead><tbody>';
       (data.received||[]).forEach(r => {
         html += '<tr><td>'+r.serial+'</td><td>'+r.magazine+'</td><td>'+r.invoiceNo+'</td><td>'+r.invoiceDate+
                 '</td><td class="num">'+money(r.requestedAmt)+'</td><td>'+r.quarter+'</td></tr>';
       });
       if (!data.received || !data.received.length) html += emptyRow(6, 'தரவு இல்லை.');
-      html += '</tbody></table><h3 style="color:var(--err); font-size:14.5px; margin-top:20px;">❌ Invoice இல்லாத இதழ்கள்</h3>'+
+      html += '</tbody></table><h3 style="color:var(--err); font-size:14.5px; margin-top:20px;">❌ '+q+' — Invoice இல்லாத இதழ்கள்</h3>'+
               '<table><thead><tr><th>S.No</th><th>இதழ்</th></tr></thead><tbody>';
       (data.notReceived||[]).forEach(r => { html += '<tr><td>'+r.serial+'</td><td>'+r.magazine+'</td></tr>'; });
-      if (!data.notReceived || !data.notReceived.length) html += emptyRow(2, 'அனைத்து இதழ்களுக்கும் Invoice பெறப்பட்டுவிட்டது!');
+      if (!data.notReceived || !data.notReceived.length) html += emptyRow(2, 'இந்த quarter-ல் அனைத்து இதழ்களுக்கும் Invoice பெறப்பட்டுவிட்டது!');
       html += '</tbody></table>';
       wrap.innerHTML = html;
 
@@ -1727,6 +1783,62 @@ async function loadAllVouchers(){
   }
 }
 $('vn-all-load').addEventListener('click', loadAllVouchers);
+
+// =====================================================================
+// Payment Advice
+// =====================================================================
+async function loadAdviceSets(){
+  const q = $('adv-quarter').value;
+  const sel = $('adv-setno');
+  $('adv-output-wrap').style.display = 'none';
+  showStatus('adv-status', true, '');
+  $('adv-status').textContent = '';
+  if (!q) { sel.innerHTML = '<option value="">முதலில் Quarter தேர்வு செய்க</option>'; sel.disabled = true; return; }
+  sel.innerHTML = '<option value="">ஏற்றுகிறது...</option>';
+  sel.disabled = true;
+  try {
+    const data = await api('/api/vouchers/set-numbers?quarter=' + encodeURIComponent(q));
+    const sets = data.sets || [];
+    if (!sets.length) { sel.innerHTML = '<option value="">Set No எதுவும் இல்லை</option>'; return; }
+    sel.innerHTML = '<option value="">-- Set No தேர்வு செய்க --</option>' +
+      sets.map(s => '<option value="'+s.setNo+'">Set '+s.setNo+'</option>').join('');
+    sel.disabled = false;
+  } catch (err) {
+    sel.innerHTML = '<option value="">பிழை ஏற்பட்டது</option>';
+  }
+}
+$('adv-quarter').addEventListener('change', loadAdviceSets);
+
+$('adv-generate').addEventListener('click', async () => {
+  const quarter = $('adv-quarter').value;
+  const setNo = $('adv-setno').value;
+  if (!quarter) { showStatus('adv-status', false, 'முதலில் Quarter தேர்ந்தெடுக்கவும்'); return; }
+  if (!setNo) { showStatus('adv-status', false, 'Set Number தேர்ந்தெடுக்கவும்'); return; }
+  $('adv-output-wrap').style.display = 'none';
+  showStatus('adv-status', true, 'ஏற்றப்படுகிறது…');
+  try {
+    const d = await api('/api/reports/payment-advice?setNo=' + encodeURIComponent(setNo) + '&quarter=' + encodeURIComponent(quarter));
+    if (!d.success) { showStatus('adv-status', false, d.message); return; }
+    showStatus('adv-status', true, d.totalRows + ' இதழ்கள் கிடைத்தன.');
+
+    let html = '<table><thead><tr><th>வ.எண்.</th><th>வவுச்சர் எண்</th><th>இதழ்</th><th>TNPFTS Code</th>'+
+               '<th>பட்டியல் எண்</th><th>பட்டியல் நாள்</th><th class="num">கோரப்பட்ட தொகை</th>'+
+               '<th class="num">பிடித்தம்</th><th class="num">நிகரத் தொகை</th></tr></thead><tbody>';
+    d.rows.forEach((r, i) => {
+      html += '<tr><td>'+(i+1)+'</td><td>'+r.voucherNo+'</td><td>'+r.magazine+'</td><td>'+(r.tnpftsCode||'—')+
+              '</td><td>'+(r.invoiceNo||'—')+'</td><td>'+(r.invoiceDate||'—')+'</td><td class="num">'+money(r.requestedAmt)+
+              '</td><td class="num">'+money(r.deduction)+'</td><td class="num">'+money(r.netPayable)+'</td></tr>';
+    });
+    html += '<tr class="total-row" style="font-weight:700; background:#eef2f8;"><td colspan="8" style="text-align:right;">மொத்த நிகரத் தொகை :</td>'+
+            '<td class="num">'+money(d.totalNet)+'</td></tr>';
+    html += '</tbody></table>';
+    $('adv-table-wrap').innerHTML = html;
+    $('adv-download').href = '/api/reports/payment-advice/pdf?setNo=' + encodeURIComponent(setNo) + '&quarter=' + encodeURIComponent(quarter);
+    $('adv-output-wrap').style.display = 'block';
+  } catch (err) {
+    showStatus('adv-status', false, 'பிழை: ' + err.message);
+  }
+});
 
 // =====================================================================
 // தொகை வழங்கப்பட்ட விவரம் — Paid Magazine Details

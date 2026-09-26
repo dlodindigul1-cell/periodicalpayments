@@ -267,8 +267,8 @@ def build_payment_intimation_html(p):
 <html><head><meta charset="utf-8"><style>
   @page {{ size: A4; margin: 25mm 18mm; }}
   body {{ font-family: Helvetica, Arial, sans-serif; color:#111; font-size:12px; }}
-  h2 {{ text-align:center; border-bottom:3px solid #000; padding-bottom:8px; }}
-  h3 {{ text-align:center; }}
+  h2 {{ text-align:center; border-bottom:3px solid #000; padding-bottom:8px; font-size:20px; margin-bottom:4px; }}
+  h3 {{ text-align:center; font-size:14px; margin-top:6px; font-weight:600; }}
   table {{ width:100%; border-collapse:collapse; margin:16px 0; }}
   th,td {{ border:1px solid #000; padding:6px; font-size:11px; }}
   th {{ background:#1e4d8c; color:#fff; }}
@@ -278,7 +278,7 @@ def build_payment_intimation_html(p):
 <body>
   <div class="right">Date: {p.get('paymentDate') or '---'}</div>
   <h2>District Library Office, Dindigul</h2>
-  <h3>PAYMENT CLEARED INTIMATION FOR THE QUARTER</h3>
+  <h3>PAYMENT CLEARED INTIMATION FOR {p.get('quarter') or '---'}</h3>
   <p>Sir,</p>
   <p>Ref: Your Invoice Number <strong>{p.get('invoiceNo') or '---'}</strong> dated
      <strong>{p.get('invoiceDate') or '---'}</strong> for the supply of Magazine
@@ -362,6 +362,61 @@ def index():
     return render_template("index.html")
 
 
+def magazines_and_master_for_quarter(cur, quarter):
+    """கொடுக்கப்பட்ட quarter-க்குப் பொருந்தும் இதழ்கள் பட்டியலையும் (carry-forward
+    விலை உள்பட) அந்த quarter-க்கான master dict-ஐயும் திரும்பத் தரும்.
+    /api/magazines இலும், Magazine-wise Details report-லும் பயன்படுகிறது."""
+    cur.execute(
+        """
+        SELECT m.name, m.periodicity, m.language,
+               q.quarter, q.issue_price, q.price, q.discount, q.no_of_libraries
+        FROM magazine_quarters q
+        JOIN magazines m ON m.id = q.magazine_id
+        ORDER BY m.name, q.quarter
+        """
+    )
+    rows = cur.fetchall()
+
+    best = {}  # name -> (rank, key, row)   rank 0=exact, 1=முந்தைய அண்மையது, 2=பிந்தைய அண்மையது
+    for r in rows:
+        name = r["name"]
+        q = r["quarter"]
+        if q == quarter:
+            rank, key = 0, q
+        elif q < quarter:
+            rank, key = 1, q
+        else:
+            rank, key = 2, q
+        cur_best = best.get(name)
+        if cur_best is None:
+            best[name] = (rank, key, r)
+            continue
+        brank, bkey, _ = cur_best
+        if rank < brank:
+            best[name] = (rank, key, r)
+        elif rank == brank:
+            if rank == 1 and key > bkey:      # முந்தையதில் — quarter-க்கு மிக அண்மையதைத் தேர்வு (பெரியது)
+                best[name] = (rank, key, r)
+            elif rank == 2 and key < bkey:     # பிந்தையதில் — மிக அண்மையதைத் தேர்வு (சிறியது)
+                best[name] = (rank, key, r)
+
+    magazines = []
+    master = {}
+    for name, (rank, key, r) in best.items():
+        magazines.append(name)
+        master[name] = {
+            "issuePrice": float(r["issue_price"] or 0),
+            "noOfLibraries": int(r["no_of_libraries"] or 0),
+            "periodicity": r["periodicity"] or "",
+            "language": r["language"] or "",
+            "price": float(r["price"] or 0),
+            "discount": float(r["discount"] or 0),
+            "priceQuarter": key,
+            "isCarriedForward": rank != 0,
+        }
+    return magazines, master
+
+
 # --------------------------------------------------------------------------- #
 # 1) getAllData — quarter-க்கான இதழ் master data
 # --------------------------------------------------------------------------- #
@@ -372,78 +427,24 @@ def api_magazines():
     try:
         with conn.cursor() as cur:
             if quarter:
-                # இதழ் ஒவ்வொன்றுக்கும் உள்ள Quarter விலைகள் அனைத்தும் எடுக்கிறோம் —
-                # தேர்ந்தெடுத்த quarter-க்கு exact விலை இருந்தால் அதை; இல்லையெனில்
-                # அதற்கு முந்தைய மிக அண்மைய quarter-ன் விலையை carry-forward செய்வோம்.
-                cur.execute(
-                    """
-                    SELECT m.name, m.periodicity, m.language,
-                           q.quarter, q.issue_price, q.price, q.discount, q.no_of_libraries
-                    FROM magazine_quarters q
-                    JOIN magazines m ON m.id = q.magazine_id
-                    ORDER BY m.name, q.quarter
-                    """
-                )
-                rows = cur.fetchall()
+                magazines, master = magazines_and_master_for_quarter(cur, quarter)
             else:
                 # quarter குறிப்பிடாவிட்டால் — அனைத்து இதழ்களும் (price 0-உடன்)
                 cur.execute(
-                    "SELECT name, periodicity, language, NULL AS issue_price, "
-                    "NULL AS price, NULL AS discount, NULL AS no_of_libraries "
-                    "FROM magazines ORDER BY name"
+                    "SELECT name, periodicity, language FROM magazines ORDER BY name"
                 )
                 rows = cur.fetchall()
-
-        magazines = []
-        master = {}
-
-        if quarter:
-            best = {}  # name -> (rank, key, row)   rank 0=exact, 1=முந்தைய அண்மையது, 2=பிந்தைய அண்மையது
-            for r in rows:
-                name = r["name"]
-                q = r["quarter"]
-                if q == quarter:
-                    rank, key = 0, q
-                elif q < quarter:
-                    rank, key = 1, q
-                else:
-                    rank, key = 2, q
-                cur_best = best.get(name)
-                if cur_best is None:
-                    best[name] = (rank, key, r)
-                    continue
-                brank, bkey, _ = cur_best
-                if rank < brank:
-                    best[name] = (rank, key, r)
-                elif rank == brank:
-                    if rank == 1 and key > bkey:      # முந்தையதில் — quarter-க்கு மிக அண்மையதைத் தேர்வு (பெரியது)
-                        best[name] = (rank, key, r)
-                    elif rank == 2 and key < bkey:     # பிந்தையதில் — மிக அண்மையதைத் தேர்வு (சிறியது)
-                        best[name] = (rank, key, r)
-
-            for name, (rank, key, r) in best.items():
-                magazines.append(name)
-                master[name] = {
-                    "issuePrice": float(r["issue_price"] or 0),
-                    "noOfLibraries": int(r["no_of_libraries"] or 0),
-                    "periodicity": r["periodicity"] or "",
-                    "language": r["language"] or "",
-                    "price": float(r["price"] or 0),
-                    "discount": float(r["discount"] or 0),
-                    "priceQuarter": key,
-                    "isCarriedForward": rank != 0,
-                }
-        else:
-            for r in rows:
-                magazines.append(r["name"])
-                master[r["name"]] = {
-                    "issuePrice": float(r["issue_price"] or 0),
-                    "noOfLibraries": int(r["no_of_libraries"] or 0),
-                    "periodicity": r["periodicity"] or "",
-                    "language": r["language"] or "",
-                    "price": float(r["price"] or 0),
-                    "discount": float(r["discount"] or 0),
-                }
+                magazines, master = [], {}
+                for r in rows:
+                    magazines.append(r["name"])
+                    master[r["name"]] = {
+                        "issuePrice": 0.0,
+                        "noOfLibraries": 0,
+                        "periodicity": r["periodicity"] or "",
+                        "language": r["language"] or "",
+                        "price": 0.0,
+                        "discount": 0.0,
+                    }
 
         return jsonify({"success": True, "magazines": sorted(magazines), "master": master})
     finally:
@@ -1586,16 +1587,49 @@ def api_report_magazine_wise():
     try:
         with conn.cursor() as cur:
             if quarter:
+                # அந்த quarter-க்குப் பொருந்தும் இதழ்கள் முழுப் பட்டியலையும்
+                # (magazine_quarters carry-forward வழியாக) எடுத்து, அதில் எந்தெந்த
+                # இதழுக்கு அந்த quarter-ல் invoice பதிவு செய்யப்பட்டுள்ளது என்பதைப்
+                # பொருத்திப் பார்க்கிறோம் — invoice பதிவே செய்யாத இதழுக்கு payments
+                # அட்டவணையில் வரிசையே இருக்காது என்பதால், payments அட்டவணையை மட்டும்
+                # வைத்து invoice வராதவற்றை கண்டுபிடிக்க முடியாது.
+                expected_magazines, _ = magazines_and_master_for_quarter(cur, quarter)
+
                 cur.execute(
                     "SELECT * FROM payments WHERE quarter=%s ORDER BY sno NULLS LAST, magazine",
                     (quarter,),
                 )
-            else:
-                cur.execute("SELECT * FROM payments ORDER BY quarter, sno NULLS LAST, magazine")
+                rows = cur.fetchall()
+                invoiced_by_magazine = {
+                    r["magazine"]: r for r in rows if (r["invoice_no"] or "").strip()
+                }
+
+                received, not_received = [], []
+                for name in sorted(expected_magazines):
+                    r = invoiced_by_magazine.get(name)
+                    if r:
+                        received.append(
+                            {
+                                "serial": len(received) + 1,
+                                "magazine": name,
+                                "invoiceNo": (r["invoice_no"] or "").strip(),
+                                "invoiceDate": fmt_date(r["invoice_date"]),
+                                "requestedAmt": float(r["requested_amt"] or 0),
+                                "quarter": r["quarter"] or "",
+                            }
+                        )
+                    else:
+                        not_received.append({"serial": len(not_received) + 1, "magazine": name})
+
+                return jsonify({"success": True, "received": received, "notReceived": not_received})
+
+            # quarter தேர்வு செய்யாதபோது — எல்லா quarter-களின் payments பதிவுகளையும்
+            # invoice உள்ளதா/இல்லையா என்பதன் அடிப்படையில் காட்டுகிறோம் (பழைய நடத்தை).
+            cur.execute("SELECT * FROM payments ORDER BY quarter, sno NULLS LAST, magazine")
             rows = cur.fetchall()
 
         received, not_received = [], []
-        for i, r in enumerate(rows, start=1):
+        for r in rows:
             invoice_no = (r["invoice_no"] or "").strip()
             if invoice_no:
                 received.append(
@@ -1966,8 +2000,229 @@ def api_all_vouchers():
 
 
 # =============================================================================
-# 16) மெயில் அனுப்புதல் — Email to Publisher (PDF intimation உடன்)
+# 15-b) Payment Advice — GAS "getPaymentAdviceData" / "savePaymentAdvicePDF" இதே தர்க்கம்
 # =============================================================================
+def get_payment_advice_data(cur, set_no, quarter):
+    """ஒரு Set No + Quarter-க்கான Payment Advice வரிசைகளை உருவாக்கும்.
+    GAS-ன் getPaymentAdviceData()-ஐ போலவே: Voucher No இல்லாத பதிவு இருந்தால் தடுக்கும்."""
+    cur.execute(
+        """
+        SELECT p.magazine, p.voucher_no, p.invoice_no, p.invoice_date,
+               p.requested_amt, p.paid_amt, p.quarter, m.tnpfts_code
+        FROM payments p
+        LEFT JOIN magazines m ON m.name = p.magazine
+        WHERE p.bill_set_no = %s AND p.quarter = %s
+        """,
+        (set_no, quarter),
+    )
+    prows = cur.fetchall()
+
+    if not prows:
+        return {"success": False, "message": "இந்த Quarter / Set-ல் பதிவுகள் இல்லை"}
+
+    no_voucher = [r["magazine"] for r in prows if not (r["voucher_no"] or "").strip()]
+    if no_voucher:
+        return {
+            "success": False,
+            "message": "முதலில் வவுச்சர் நம்பர் கொடுக்கவும் — "
+            + str(len(no_voucher))
+            + " இதழ்களுக்கு Voucher No இல்லை: "
+            + ", ".join(no_voucher),
+        }
+
+    rows = []
+    for r in prows:
+        requested_amt = float(r["requested_amt"] or 0)
+        paid_amt = float(r["paid_amt"] or 0)
+        rows.append(
+            {
+                "voucherNo": (r["voucher_no"] or "").strip(),
+                "magazine": r["magazine"],
+                "tnpftsCode": r["tnpfts_code"] or "",
+                "invoiceNo": r["invoice_no"] or "",
+                "invoiceDate": fmt_date(r["invoice_date"]),
+                "requestedAmt": requested_amt,
+                "deduction": requested_amt - paid_amt,
+                "netPayable": paid_amt,
+            }
+        )
+
+    def voucher_sort_key(r):
+        v = r["voucherNo"]
+        try:
+            return (0, float(v), v)
+        except ValueError:
+            return (1, 0, v)
+
+    rows.sort(key=voucher_sort_key)
+    total_net = sum(r["netPayable"] for r in rows)
+
+    return {
+        "success": True,
+        "setNo": set_no,
+        "quarter": quarter,
+        "totalRows": len(rows),
+        "totalNet": total_net,
+        "rows": rows,
+    }
+
+
+def amount_to_english_words(amount):
+    """GAS-ன் numberToEnglishWords()-ஐ போலவே."""
+    ones = [
+        "", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+        "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+        "Seventeen", "Eighteen", "Nineteen",
+    ]
+    tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+
+    def convert_hundreds(n):
+        result = ""
+        if n >= 100:
+            result += ones[n // 100] + " Hundred "
+            n %= 100
+        if n >= 20:
+            result += tens[n // 10] + " "
+            n %= 10
+        if n > 0:
+            result += ones[n] + " "
+        return result
+
+    if amount == 0:
+        return "Zero Rupees Only"
+    rupees = int(amount)
+    paise = round((amount - rupees) * 100)
+    words = ""
+    if rupees >= 10000000:
+        words += convert_hundreds(rupees // 10000000) + "Crore "
+    if rupees >= 100000:
+        words += convert_hundreds((rupees % 10000000) // 100000) + "Lakh "
+    if rupees >= 1000:
+        words += convert_hundreds((rupees % 100000) // 1000) + "Thousand "
+    words += convert_hundreds(rupees % 1000)
+    words = words.strip() + " Rupees"
+    if paise > 0:
+        words += " and " + convert_hundreds(paise).strip() + " Paise"
+    words += " Only"
+    return re.sub(r"\s+", " ", words).strip()
+
+
+def build_payment_advice_html(d):
+    """GAS-ன் savePaymentAdvicePDF()-ல் இருந்த HTML/CSS அப்படியே."""
+    quarter_display = (d["quarter"] or "").replace("-Q", " Q")
+    total_in_words = amount_to_english_words(d["totalNet"])
+
+    rows_html = ""
+    for i, r in enumerate(d["rows"], start=1):
+        rows_html += f"""
+      <tr>
+        <td class="ctr">{i}</td>
+        <td class="ctr bold">{r['voucherNo']}</td>
+        <td class="mag">{r['magazine']}</td>
+        <td class="ctr">{r['tnpftsCode'] or '—'}</td>
+        <td class="invno">{r['invoiceNo'] or '—'}</td>
+        <td class="ctr">{r['invoiceDate'] or '—'}</td>
+        <td class="amt">{r['requestedAmt']:.2f}</td>
+        <td class="amt">{r['deduction']:.2f}</td>
+        <td class="amt bold">{r['netPayable']:.2f}</td>
+      </tr>"""
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  @page {{ size: Letter landscape; margin: 15mm 15mm 15mm 12mm; }}
+  body  {{ font-family: Arial, sans-serif; color: #111; font-size: 11px; margin:0; }}
+  h2   {{ text-align:center; font-size:16px; font-weight:700; margin-bottom:4px; }}
+  h3   {{ text-align:center; font-size:13px; font-weight:600; margin-bottom:12px; }}
+  table {{ width:100%; border-collapse:collapse; margin-bottom:0; }}
+  thead tr th {{
+    background:#0f2347; color:#fff; padding:8px 5px; font-size:12px; font-weight:900;
+    border:2px solid #000; text-align:center; letter-spacing:0.3px;
+  }}
+  td {{ border:2px solid #555; padding:6px 5px; vertical-align:middle; }}
+  .ctr  {{ text-align:center; }}
+  .amt  {{ text-align:right; }}
+  .bold {{ font-weight:700; }}
+  .mag  {{ word-wrap:break-word; max-width:130px; width:130px; font-size:13px; }}
+  .invno {{ word-wrap:break-word; max-width:62px; width:62px; text-align:center; }}
+  .total-row td {{ background:#e8edf5; font-weight:700; border-top:3px solid #0f2347; border-bottom:3px solid #0f2347; }}
+  .words-row td {{ border:2px solid #555; padding:6px 8px; font-size:11px; font-style:italic; background:#f7f9fc; }}
+  .sig-block {{ margin-top:36px; text-align:right; }}
+  .sig-line {{ display:inline-block; text-align:center; border-top:1.5px solid #111; padding-top:6px; min-width:180px; font-size:11.5px; }}
+</style></head>
+<body>
+  <h2>திண்டுக்கல் மாவட்ட நூலக ஆணைக்குழு</h2>
+  <h3>{quarter_display} தொகை வழங்கல் — Set {d['setNo']} &nbsp;|&nbsp; மொத்தப் பட்டியல்கள்: {d['totalRows']}</h3>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:28px;">வ.எண்.</th>
+        <th style="width:52px;">வவுச்சர் எண்</th>
+        <th style="width:130px;">இதழ் பெயர்</th>
+        <th style="width:70px;">TNPFTS CODE</th>
+        <th style="width:62px;">பட்டியல் எண்</th>
+        <th style="width:66px;">பட்டியல் நாள்</th>
+        <th style="width:62px;">கோரப்பட்ட தொகை</th>
+        <th style="width:62px;">பிடித்தம்</th>
+        <th style="width:70px;">நிகரத் தொகை</th>
+      </tr>
+    </thead>
+    <tbody>
+      {rows_html}
+      <tr class="total-row">
+        <td colspan="8" style="text-align:right; font-size:12px; padding-right:8px;">மொத்த நிகரத் தொகை :</td>
+        <td class="amt" style="font-size:13px;">₹ {d['totalNet']:.2f}</td>
+      </tr>
+      <tr class="words-row">
+        <td colspan="9"><strong>Rupees in Words :</strong> {total_in_words}</td>
+      </tr>
+    </tbody>
+  </table>
+  <br><br>
+  <div class="sig-block">
+    <div class="sig-line">
+      <div style="font-weight:700;">மாவட்ட நூலக அலுவலர்</div>
+      <div>திண்டுக்கல்</div>
+    </div>
+  </div>
+</body></html>"""
+
+
+@app.route("/api/reports/payment-advice")
+def api_payment_advice():
+    set_no = request.args.get("setNo", "").strip()
+    quarter = request.args.get("quarter", "").strip()
+    if not set_no or not quarter:
+        return jsonify({"success": False, "message": "Quarter மற்றும் Set No தேவை"}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            d = get_payment_advice_data(cur, set_no, quarter)
+        return jsonify(d)
+    finally:
+        conn.close()
+
+
+@app.route("/api/reports/payment-advice/pdf")
+def api_payment_advice_pdf():
+    set_no = request.args.get("setNo", "").strip()
+    quarter = request.args.get("quarter", "").strip()
+    if not set_no or not quarter:
+        return jsonify({"success": False, "message": "Quarter மற்றும் Set No தேவை"}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            d = get_payment_advice_data(cur, set_no, quarter)
+        if not d["success"]:
+            return jsonify(d), 400
+        pdf_bytes = html_to_pdf_bytes(build_payment_advice_html(d))
+        return send_file(
+            io.BytesIO(pdf_bytes),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"Payment_Advice_Set_{set_no}.pdf",
+        )
+    finally:
+        conn.close()
 @app.route("/api/mail/ready")
 def api_mail_ready():
     quarter = request.args.get("quarter", "").strip()
