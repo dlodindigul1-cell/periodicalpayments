@@ -474,6 +474,14 @@
             <span>Paid Magazine Details</span>
           </div>
         </div>
+        <div class="menu-card" onclick="showMastersDashboard()">
+          <div class="menu-icon">🗂️</div>
+          <div class="menu-info">
+            <div class="num">10</div>
+            <h3>Master Data</h3>
+            <span>இதழ் &amp; Vendor Master</span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -3199,6 +3207,605 @@ function _pdfHelper(fnName, targetId) {
   w.document.close();
   w.onload = () => { setTimeout(() => w.print(), 400); };
 }
+</script>
+
+<!-- ════════════════════ MASTER DATA DASHBOARD ════════════════════ -->
+    <div id="mastersDashboard" class="content">
+      <div class="breadcrumb">
+        <a onclick="backToWelcome()">🏠 முகப்பு</a>
+        <span class="sep">›</span>
+        <span>Master Data</span>
+      </div>
+      <div class="page-header">
+        <div class="ph-icon">🗂️</div>
+        <div>
+          <h2>Master Data டாஷ்போர்டு</h2>
+          <p>இதழ் விலை Master &amp; Vendor / Bank Master — 2026-27</p>
+        </div>
+      </div>
+
+      <!-- 2 Main Buttons -->
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:18px; margin-bottom:28px;">
+        <div class="menu-card" onclick="showMastersMagazines()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
+          <div style="font-size:36px;">📚</div>
+          <div>
+            <div style="font-size:16px; font-weight:700; color:var(--navy);">இதழ் Master</div>
+            <div style="font-size:13px; color:var(--muted); margin-top:3px;">இதழ் பெயர், Quarter &amp; விலை Master Data</div>
+          </div>
+        </div>
+        <div class="menu-card" onclick="showMastersVendors()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
+          <div style="font-size:36px;">🏦</div>
+          <div>
+            <div style="font-size:16px; font-weight:700; color:var(--navy);">Vendor / Bank Master</div>
+            <div style="font-size:13px; color:var(--muted); margin-top:3px;">Vendor Code, Bank &amp; Email Master Data</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════ MAGAZINE MASTER PANEL ══════════ -->
+      <div id="mastersMagazinePanel" style="display:none;">
+
+        <div class="card">
+          <div class="card-title">📥 CSV மூலம் இதழ்கள் Import (Google Sheet Export)</div>
+          <p style="font-size:13px; color:var(--muted); margin-bottom:10px;">
+            தேவையான columns: LANGUAGE, MAGAZINE NAME, PERIODICITY, PRICE, DISCOUNT, AFTER DISCOUNT, SUBSCRIPTION, YEAR AND QUARTER
+            (YEAR AND QUARTER-ல் ஒரே இதழுக்கு பல quarter-கள் இருந்தால் comma-ஆல் பிரிக்கவும், எ.கா:
+            <code>2026-2027-Q1,2026-2027-Q2</code>)
+          </p>
+          <textarea id="masterMagCsvText" rows="6" style="width:100%; font-family:monospace; font-size:12px;" placeholder="CSV உள்ளடக்கத்தை இங்கே Paste செய்யவும்..."></textarea>
+          <div class="btn-row" style="margin-top:12px;">
+            <button class="btn-primary" id="masterMagCsvBtn" onclick="importMasterMagazinesCsv()">📥 Import செய்</button>
+          </div>
+          <div id="masterMagCsvStatus" class="status"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title" id="masterMagFormTitle">➕ புதிய இதழ் / விலை சேர்</div>
+          <div class="field-row">
+            <div class="field">
+              <label>இதழ் பெயர் <span class="req">*</span></label>
+              <input type="text" id="masterMagName">
+            </div>
+            <div class="field">
+              <label>மொழி (Language)</label>
+              <input type="text" id="masterMagLanguage">
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Periodicity</label>
+              <input type="text" id="masterMagPeriodicity" placeholder="எ.கா: Weekly / Monthly">
+            </div>
+            <div class="field">
+              <label>No of Libraries (Subscription)</label>
+              <input type="number" id="masterMagNoOfLibraries" min="0">
+            </div>
+          </div>
+          <div class="field-row3">
+            <div class="field">
+              <label>Price</label>
+              <input type="number" id="masterMagPrice" min="0" step="0.01">
+            </div>
+            <div class="field">
+              <label>Discount</label>
+              <input type="number" id="masterMagDiscount" min="0" step="0.01">
+            </div>
+            <div class="field">
+              <label>Issue Price (After Discount)</label>
+              <input type="number" id="masterMagIssuePrice" min="0" step="0.01">
+            </div>
+          </div>
+          <div class="field">
+            <label>மேலே உள்ள விலை எந்த Quarter(கள்)-க்கு பொருந்தும் <span class="req">*</span></label>
+            <div id="masterMagQuarterChecks" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;">
+              <label style="font-weight:500;"><input type="checkbox" value="2025-2026-Q4"> 2025-2026 Q4</label>
+              <label style="font-weight:500;"><input type="checkbox" value="2026-2027-Q1"> 2026-2027 Q1</label>
+              <label style="font-weight:500;"><input type="checkbox" value="2026-2027-Q2"> 2026-2027 Q2</label>
+              <label style="font-weight:500;"><input type="checkbox" value="2026-2027-Q3"> 2026-2027 Q3</label>
+              <label style="font-weight:500;"><input type="checkbox" value="2026-2027-Q4"> 2026-2027 Q4</label>
+            </div>
+          </div>
+          <div id="masterMagExistingWrap" style="display:none; margin-top:6px;">
+            <label style="font-size:13px; font-weight:600; color:var(--blue);">இந்த இதழுக்கு ஏற்கனவே உள்ள Quarter-வாரி விலைகள்:</label>
+            <div class="data-table-wrap" style="max-height:220px; margin-top:8px;">
+              <table class="data-table">
+                <thead><tr><th>Quarter</th><th>Price</th><th>Discount</th><th>Issue Price</th><th>No of Libraries</th></tr></thead>
+                <tbody id="masterMagExistingBody"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="btn-row" style="margin-top:14px;">
+            <button class="btn-secondary" id="masterMagClearBtn" onclick="clearMagazineMasterForm()">🆕 புதிதாக</button>
+            <button class="btn-primary" id="masterMagSaveBtn" onclick="saveMagazineMaster()">💾 சேமி</button>
+          </div>
+          <div id="masterMagFormStatus" class="status"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">📋 இதழ்கள் பட்டியல்</div>
+          <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:16px;">
+            <div style="flex:1; min-width:220px; position:relative;">
+              <span style="position:absolute;left:13px;top:50%;transform:translateY(-50%);font-size:16px;">🔍</span>
+              <input type="text" id="masterMagSearch" placeholder="இதழ் பெயர் தேடுங்கள்..." oninput="filterMasterMagazinesTable()"
+                style="padding-left:38px; width:100%;">
+            </div>
+            <button class="btn-secondary" onclick="loadMasterMagazinesList()">🔄 புதுப்பி</button>
+          </div>
+          <div class="data-table-wrap" style="max-height:480px;">
+            <table class="data-table" id="masterMagTable">
+              <thead>
+                <tr>
+                  <th class="ctr" style="width:50px;">S.No</th>
+                  <th>இதழ் பெயர்</th>
+                  <th>மொழி</th>
+                  <th>Periodicity</th>
+                  <th class="ctr">Quarter Count</th>
+                  <th>Latest Quarter</th>
+                  <th class="ctr" style="width:170px;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="masterMagTableBody">
+                <tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted);">
+                  <span class="spinner dark"></span> ஏற்றப்படுகிறது...
+                </td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style="margin-top:4px;">
+          <button class="btn-secondary" onclick="showMastersDashboard()">← Master Data-க்கு</button>
+        </div>
+      </div>
+
+      <!-- ══════════ VENDOR / BANK MASTER PANEL ══════════ -->
+      <div id="mastersVendorPanel" style="display:none;">
+
+        <div class="card">
+          <div class="card-title">📥 CSV மூலம் Vendor / Bank விவரம் Import (Excel Export)</div>
+          <p style="font-size:13px; color:var(--muted); margin-bottom:10px;">
+            தேவையான columns: NAME OF MAGAZINE, VENDOR / VENDOR NAME, CODE / VENDOR CODE, BANK ACCOUNT NUMBER,
+            BANK NAME, BANK PLACE, IFSC CODE, NAME OF PAYEE, EMAIL ID
+          </p>
+          <textarea id="masterVendorCsvText" rows="6" style="width:100%; font-family:monospace; font-size:12px;" placeholder="CSV உள்ளடக்கத்தை இங்கே Paste செய்யவும்..."></textarea>
+          <div class="btn-row" style="margin-top:12px;">
+            <button class="btn-primary" id="masterVendorCsvBtn" onclick="importMasterVendorsCsv()">📥 Import செய்</button>
+          </div>
+          <div id="masterVendorCsvStatus" class="status"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title" id="masterVendorFormTitle">➕ புதிய Vendor / Bank விவரம் சேர்</div>
+          <div class="field-row">
+            <div class="field">
+              <label>இதழ் பெயர் <span class="req">*</span></label>
+              <input type="text" id="masterVendorMagName">
+            </div>
+            <div class="field">
+              <label>Vendor பெயர்</label>
+              <input type="text" id="masterVendorName">
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Vendor Code (TNPFTS)</label>
+              <input type="text" id="masterVendorCode">
+            </div>
+            <div class="field">
+              <label>Payee பெயர்</label>
+              <input type="text" id="masterVendorPayeeName">
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Bank Account Number</label>
+              <input type="text" id="masterVendorBankAccount">
+            </div>
+            <div class="field">
+              <label>IFSC Code</label>
+              <input type="text" id="masterVendorIfsc">
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Bank பெயர்</label>
+              <input type="text" id="masterVendorBankName">
+            </div>
+            <div class="field">
+              <label>Bank Place / Branch</label>
+              <input type="text" id="masterVendorBankPlace">
+            </div>
+          </div>
+          <div class="field">
+            <label>Email ID</label>
+            <input type="text" id="masterVendorEmail">
+          </div>
+          <div class="btn-row" style="margin-top:6px;">
+            <button class="btn-secondary" id="masterVendorClearBtn" onclick="clearVendorMasterForm()">🆕 புதிதாக</button>
+            <button class="btn-primary" id="masterVendorSaveBtn" onclick="saveVendorMaster()">💾 சேமி</button>
+          </div>
+          <div id="masterVendorFormStatus" class="status"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">📋 Vendor / Bank பட்டியல்</div>
+          <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:16px;">
+            <div style="flex:1; min-width:220px; position:relative;">
+              <span style="position:absolute;left:13px;top:50%;transform:translateY(-50%);font-size:16px;">🔍</span>
+              <input type="text" id="masterVendorSearch" placeholder="இதழ் பெயர் / Vendor Code தேடுங்கள்..." oninput="filterMasterVendorsTable()"
+                style="padding-left:38px; width:100%;">
+            </div>
+            <button class="btn-secondary" onclick="loadMasterVendorsList()">🔄 புதுப்பி</button>
+          </div>
+          <div class="data-table-wrap" style="max-height:480px;">
+            <table class="data-table" id="masterVendorTable">
+              <thead>
+                <tr>
+                  <th class="ctr" style="width:50px;">S.No</th>
+                  <th>இதழ் பெயர்</th>
+                  <th>Vendor Code</th>
+                  <th>Bank பெயர்</th>
+                  <th>A/C Number</th>
+                  <th>IFSC</th>
+                  <th>Email ID</th>
+                  <th class="ctr" style="width:90px;">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="masterVendorTableBody">
+                <tr><td colspan="8" style="text-align:center;padding:32px;color:var(--muted);">
+                  <span class="spinner dark"></span> ஏற்றப்படுகிறது...
+                </td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div style="margin-top:4px;">
+          <button class="btn-secondary" onclick="showMastersDashboard()">← Master Data-க்கு</button>
+        </div>
+      </div>
+
+      <div style="margin-top:20px;">
+        <button class="btn-secondary" onclick="backToWelcome()">← முகப்பிற்கு</button>
+      </div>
+    </div>
+
+<script>
+    // ═══════════════════ MASTER DATA DASHBOARD ═══════════════════
+    let allMasterMagazines = [];
+    let allMasterVendors   = [];
+
+    function showMastersDashboard() {
+      hideAll();
+      document.getElementById('mastersDashboard').style.display = 'block';
+      document.getElementById('mastersMagazinePanel').style.display = 'none';
+      document.getElementById('mastersVendorPanel').style.display = 'none';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function showMastersMagazines() {
+      document.getElementById('mastersMagazinePanel').style.display = 'block';
+      document.getElementById('mastersVendorPanel').style.display = 'none';
+      clearMagazineMasterForm();
+      loadMasterMagazinesList();
+    }
+
+    function showMastersVendors() {
+      document.getElementById('mastersVendorPanel').style.display = 'block';
+      document.getElementById('mastersMagazinePanel').style.display = 'none';
+      clearVendorMasterForm();
+      loadMasterVendorsList();
+    }
+
+    // ─── Magazine Master: CSV Import ───
+    async function importMasterMagazinesCsv() {
+      const csvText = document.getElementById('masterMagCsvText').value.trim();
+      if (!csvText) { setStatus('masterMagCsvStatus', 'error', '❌ CSV தரவு காலியாக இருக்கிறது.'); return; }
+      const btn = document.getElementById('masterMagCsvBtn');
+      showLoading(btn, 'Import ஆகிறது...');
+      setStatus('masterMagCsvStatus', 'loading', '<span class="spinner dark"></span> Import செய்யப்படுகிறது...');
+      try {
+        const res = await fetch('/api/admin/import-magazines', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ csvText })
+        });
+        const result = await res.json();
+        if (result.success) {
+          setStatus('masterMagCsvStatus', 'success', '✅ ' + result.message +
+            (result.errors && result.errors.length ? '<br><small>' + result.errors.join('<br>') + '</small>' : ''));
+          document.getElementById('masterMagCsvText').value = '';
+          loadMasterMagazinesList();
+        } else {
+          setStatus('masterMagCsvStatus', 'error', '❌ ' + result.message);
+        }
+      } catch (e) {
+        setStatus('masterMagCsvStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+      hideLoading(btn);
+    }
+
+    // ─── Magazine Master: Add / Edit Form ───
+    function clearMagazineMasterForm() {
+      document.getElementById('masterMagFormTitle').textContent = '➕ புதிய இதழ் / விலை சேர்';
+      document.getElementById('masterMagName').value = '';
+      document.getElementById('masterMagName').disabled = false;
+      document.getElementById('masterMagLanguage').value = '';
+      document.getElementById('masterMagPeriodicity').value = '';
+      document.getElementById('masterMagNoOfLibraries').value = '';
+      document.getElementById('masterMagPrice').value = '';
+      document.getElementById('masterMagDiscount').value = '';
+      document.getElementById('masterMagIssuePrice').value = '';
+      document.querySelectorAll('#masterMagQuarterChecks input[type=checkbox]').forEach(c => c.checked = false);
+      document.getElementById('masterMagExistingWrap').style.display = 'none';
+      clearStatus('masterMagFormStatus');
+    }
+
+    async function editMasterMagazine(name) {
+      clearMagazineMasterForm();
+      document.getElementById('masterMagFormTitle').textContent = '✏️ இதழ் விவரம் திருத்து — ' + name;
+      document.getElementById('masterMagName').value = name;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      try {
+        const res = await fetch('/api/admin/magazine-detail?name=' + encodeURIComponent(name));
+        const result = await res.json();
+        if (!result.success) { setStatus('masterMagFormStatus', 'error', '❌ ' + result.message); return; }
+        document.getElementById('masterMagLanguage').value = result.language || '';
+        document.getElementById('masterMagPeriodicity').value = result.periodicity || '';
+        const quarters = result.quarters || {};
+        const qKeys = Object.keys(quarters).sort();
+        if (qKeys.length) {
+          const latest = quarters[qKeys[qKeys.length - 1]];
+          document.getElementById('masterMagNoOfLibraries').value = latest.noOfLibraries || '';
+          document.getElementById('masterMagPrice').value = latest.price || '';
+          document.getElementById('masterMagDiscount').value = latest.discount || '';
+          document.getElementById('masterMagIssuePrice').value = latest.issuePrice || '';
+          const wrap = document.getElementById('masterMagExistingWrap');
+          wrap.style.display = 'block';
+          document.getElementById('masterMagExistingBody').innerHTML = qKeys.map(q => {
+            const d = quarters[q];
+            return '<tr><td>' + q + '</td><td>' + d.price + '</td><td>' + d.discount + '</td>' +
+              '<td>' + d.issuePrice + '</td><td>' + d.noOfLibraries + '</td></tr>';
+          }).join('');
+        }
+      } catch (e) {
+        setStatus('masterMagFormStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+    }
+
+    async function saveMagazineMaster() {
+      const name = document.getElementById('masterMagName').value.trim();
+      const quarters = Array.from(document.querySelectorAll('#masterMagQuarterChecks input[type=checkbox]:checked')).map(c => c.value);
+      if (!name) { setStatus('masterMagFormStatus', 'error', '❌ இதழ் பெயர் அவசியம்.'); return; }
+      if (!quarters.length) { setStatus('masterMagFormStatus', 'error', '❌ குறைந்தது ஒரு Quarter தேர்ந்தெடுக்கவும்.'); return; }
+      const btn = document.getElementById('masterMagSaveBtn');
+      showLoading(btn, 'சேமிக்கப்படுகிறது...');
+      setStatus('masterMagFormStatus', 'loading', '<span class="spinner dark"></span> சேமிக்கப்படுகிறது...');
+      try {
+        const res = await fetch('/api/admin/update-magazine', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            language: document.getElementById('masterMagLanguage').value.trim(),
+            periodicity: document.getElementById('masterMagPeriodicity').value.trim(),
+            price: parseFloat(document.getElementById('masterMagPrice').value) || 0,
+            discount: parseFloat(document.getElementById('masterMagDiscount').value) || 0,
+            issuePrice: parseFloat(document.getElementById('masterMagIssuePrice').value) || 0,
+            noOfLibraries: parseInt(document.getElementById('masterMagNoOfLibraries').value) || 0,
+            quarters
+          })
+        });
+        const result = await res.json();
+        if (result.success) {
+          setStatus('masterMagFormStatus', 'success', '✅ ' + result.message);
+          loadMasterMagazinesList();
+        } else {
+          setStatus('masterMagFormStatus', 'error', '❌ ' + result.message);
+        }
+      } catch (e) {
+        setStatus('masterMagFormStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+      hideLoading(btn);
+    }
+
+    async function deleteMasterMagazineQuarters(name) {
+      const quarter = prompt("எந்த Quarter-க்கான விலைப் பதிவை நீக்க வேண்டும்? (எ.கா: 2026-2027-Q1)\n'" + name + "' இதழுக்காக:");
+      if (!quarter) return;
+      const onward = confirm("இந்த Quarter மற்றும் அதற்குப் பின் உள்ள அனைத்து Quarter-களின் விலைப் பதிவையும் நீக்க வேண்டுமா?\n\nOK = ஆம், இந்த Quarter முதல் பின்னுள்ள அனைத்தும்\nCancel = இந்த Quarter மட்டும்");
+      try {
+        const res = await fetch('/api/admin/delete-magazine-quarters', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, quarter: quarter.trim(), scope: onward ? 'onward' : 'one' })
+        });
+        const result = await res.json();
+        alert(result.message);
+        if (result.success) loadMasterMagazinesList();
+      } catch (e) {
+        alert('பிழை: ' + e.message);
+      }
+    }
+
+    // ─── Magazine Master: List ───
+    async function loadMasterMagazinesList() {
+      const tbody = document.getElementById('masterMagTableBody');
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted);"><span class="spinner dark"></span> ஏற்றப்படுகிறது...</td></tr>';
+      try {
+        const res = await fetch('/api/admin/magazines-list');
+        const result = await res.json();
+        if (!result.success) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:#c0392b;">பிழை ஏற்பட்டது</td></tr>'; return; }
+        allMasterMagazines = result.rows || [];
+        renderMasterMagazinesTable(allMasterMagazines);
+      } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:#c0392b;">பிழை: ' + e.message + '</td></tr>';
+      }
+    }
+
+    function renderMasterMagazinesTable(rows) {
+      const tbody = document.getElementById('masterMagTableBody');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted);">இதழ்கள் எதுவும் இல்லை</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map((r, i) => (
+        '<tr>' +
+          '<td class="ctr">' + (i + 1) + '</td>' +
+          '<td>' + r.name + '</td>' +
+          '<td>' + (r.language || '-') + '</td>' +
+          '<td>' + (r.periodicity || '-') + '</td>' +
+          '<td class="ctr">' + r.quarterCount + '</td>' +
+          '<td>' + (r.latestQuarter || '-') + '</td>' +
+          '<td class="ctr">' +
+            '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="editMasterMagazine(\'' + r.name.replace(/'/g, "\\'") + '\')">✏️</button> ' +
+            '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="deleteMasterMagazineQuarters(\'' + r.name.replace(/'/g, "\\'") + '\')">🗑️</button>' +
+          '</td>' +
+        '</tr>'
+      )).join('');
+    }
+
+    function filterMasterMagazinesTable() {
+      const q = document.getElementById('masterMagSearch').value.trim().toLowerCase();
+      renderMasterMagazinesTable(allMasterMagazines.filter(r => r.name.toLowerCase().includes(q)));
+    }
+
+    // ─── Vendor Master: CSV Import ───
+    async function importMasterVendorsCsv() {
+      const csvText = document.getElementById('masterVendorCsvText').value.trim();
+      if (!csvText) { setStatus('masterVendorCsvStatus', 'error', '❌ CSV தரவு காலியாக இருக்கிறது.'); return; }
+      const btn = document.getElementById('masterVendorCsvBtn');
+      showLoading(btn, 'Import ஆகிறது...');
+      setStatus('masterVendorCsvStatus', 'loading', '<span class="spinner dark"></span> Import செய்யப்படுகிறது...');
+      try {
+        const res = await fetch('/api/admin/import-vendors', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ csvText })
+        });
+        const result = await res.json();
+        if (result.success) {
+          setStatus('masterVendorCsvStatus', 'success', '✅ ' + result.message +
+            (result.errors && result.errors.length ? '<br><small>' + result.errors.join('<br>') + '</small>' : ''));
+          document.getElementById('masterVendorCsvText').value = '';
+          loadMasterVendorsList();
+        } else {
+          setStatus('masterVendorCsvStatus', 'error', '❌ ' + result.message);
+        }
+      } catch (e) {
+        setStatus('masterVendorCsvStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+      hideLoading(btn);
+    }
+
+    // ─── Vendor Master: Add / Edit Form ───
+    function clearVendorMasterForm() {
+      document.getElementById('masterVendorFormTitle').textContent = '➕ புதிய Vendor / Bank விவரம் சேர்';
+      ['masterVendorMagName','masterVendorName','masterVendorCode','masterVendorPayeeName',
+       'masterVendorBankAccount','masterVendorIfsc','masterVendorBankName','masterVendorBankPlace',
+       'masterVendorEmail'].forEach(id => document.getElementById(id).value = '');
+      document.getElementById('masterVendorMagName').disabled = false;
+      clearStatus('masterVendorFormStatus');
+    }
+
+    async function editMasterVendor(name) {
+      clearVendorMasterForm();
+      document.getElementById('masterVendorFormTitle').textContent = '✏️ Vendor விவரம் திருத்து — ' + name;
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      try {
+        const res = await fetch('/api/admin/vendor-detail?name=' + encodeURIComponent(name));
+        const result = await res.json();
+        if (!result.success) { setStatus('masterVendorFormStatus', 'error', '❌ ' + result.message); return; }
+        document.getElementById('masterVendorMagName').value = result.name || '';
+        document.getElementById('masterVendorName').value = result.vendorName || '';
+        document.getElementById('masterVendorCode').value = result.code || '';
+        document.getElementById('masterVendorPayeeName').value = result.payeeName || '';
+        document.getElementById('masterVendorBankAccount').value = result.bankAccountNumber || '';
+        document.getElementById('masterVendorIfsc').value = result.ifscCode || '';
+        document.getElementById('masterVendorBankName').value = result.bankName || '';
+        document.getElementById('masterVendorBankPlace').value = result.bankPlace || '';
+        document.getElementById('masterVendorEmail').value = result.emailId || '';
+      } catch (e) {
+        setStatus('masterVendorFormStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+    }
+
+    async function saveVendorMaster() {
+      const name = document.getElementById('masterVendorMagName').value.trim();
+      if (!name) { setStatus('masterVendorFormStatus', 'error', '❌ இதழ் பெயர் அவசியம்.'); return; }
+      const btn = document.getElementById('masterVendorSaveBtn');
+      showLoading(btn, 'சேமிக்கப்படுகிறது...');
+      setStatus('masterVendorFormStatus', 'loading', '<span class="spinner dark"></span> சேமிக்கப்படுகிறது...');
+      try {
+        const res = await fetch('/api/admin/update-vendor', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            vendorName: document.getElementById('masterVendorName').value.trim(),
+            code: document.getElementById('masterVendorCode').value.trim(),
+            payeeName: document.getElementById('masterVendorPayeeName').value.trim(),
+            bankAccountNumber: document.getElementById('masterVendorBankAccount').value.trim(),
+            ifscCode: document.getElementById('masterVendorIfsc').value.trim(),
+            bankName: document.getElementById('masterVendorBankName').value.trim(),
+            bankPlace: document.getElementById('masterVendorBankPlace').value.trim(),
+            emailId: document.getElementById('masterVendorEmail').value.trim()
+          })
+        });
+        const result = await res.json();
+        if (result.success) {
+          setStatus('masterVendorFormStatus', 'success', '✅ ' + result.message);
+          loadMasterVendorsList();
+        } else {
+          setStatus('masterVendorFormStatus', 'error', '❌ ' + result.message);
+        }
+      } catch (e) {
+        setStatus('masterVendorFormStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+      hideLoading(btn);
+    }
+
+    // ─── Vendor Master: List ───
+    async function loadMasterVendorsList() {
+      const tbody = document.getElementById('masterVendorTableBody');
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:32px;color:var(--muted);"><span class="spinner dark"></span> ஏற்றப்படுகிறது...</td></tr>';
+      try {
+        const res = await fetch('/api/admin/vendors-list');
+        const result = await res.json();
+        if (!result.success) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:#c0392b;">பிழை ஏற்பட்டது</td></tr>'; return; }
+        allMasterVendors = result.rows || [];
+        renderMasterVendorsTable(allMasterVendors);
+      } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:#c0392b;">பிழை: ' + e.message + '</td></tr>';
+      }
+    }
+
+    function renderMasterVendorsTable(rows) {
+      const tbody = document.getElementById('masterVendorTableBody');
+      if (!rows.length) {
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--muted);">பதிவுகள் எதுவும் இல்லை</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map((r, i) => (
+        '<tr>' +
+          '<td class="ctr">' + (i + 1) + '</td>' +
+          '<td>' + r.name + '</td>' +
+          '<td>' + (r.code || '-') + '</td>' +
+          '<td>' + (r.bankName || '-') + '</td>' +
+          '<td>' + (r.bankAccountNumber || '-') + '</td>' +
+          '<td>' + (r.ifscCode || '-') + '</td>' +
+          '<td>' + (r.emailId || '-') + '</td>' +
+          '<td class="ctr">' +
+            '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="editMasterVendor(\'' + r.name.replace(/'/g, "\\'") + '\')">✏️</button>' +
+          '</td>' +
+        '</tr>'
+      )).join('');
+    }
+
+    function filterMasterVendorsTable() {
+      const q = document.getElementById('masterVendorSearch').value.trim().toLowerCase();
+      renderMasterVendorsTable(allMasterVendors.filter(r =>
+        r.name.toLowerCase().includes(q) || (r.code || '').toLowerCase().includes(q)));
+    }
 </script>
 
 </body>
