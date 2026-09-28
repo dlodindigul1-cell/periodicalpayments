@@ -3,3 +3,5 @@ psycopg2-binary==2.9.9
 python-dotenv==1.0.1
 gunicorn==22.0.0
 xhtml2pdf==0.2.16
+fpdf2==2.8.8
+uharfbuzz==0.56.2

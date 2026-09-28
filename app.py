@@ -2107,84 +2107,77 @@ def amount_to_english_words(amount):
     return re.sub(r"\s+", " ", words).strip()
 
 
-def build_payment_advice_html(d):
-    """GAS-ன் savePaymentAdvicePDF()-ல் இருந்த HTML/CSS அப்படியே."""
+TAMIL_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "fonts", "NotoSansTamil-Regular.ttf")
+
+
+def build_payment_advice_pdf(d):
+    """Payment Advice PDF — fpdf2 + uharfbuzz (தமிழ் எழுத்துகள் சரியாக shaping ஆக).
+    Letter landscape; அட்டவணை பக்க அகலம் முழுவதும்; பல பக்கம் ஆனால் header மீண்டும் வரும்."""
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+
     quarter_display = (d["quarter"] or "").replace("-Q", " Q")
     total_in_words = amount_to_english_words(d["totalNet"])
 
-    rows_html = ""
-    for i, r in enumerate(d["rows"], start=1):
-        rows_html += f"""
-      <tr>
-        <td class="ctr">{i}</td>
-        <td class="ctr bold">{r['voucherNo']}</td>
-        <td class="mag">{r['magazine']}</td>
-        <td class="ctr">{r['tnpftsCode'] or '—'}</td>
-        <td class="invno">{r['invoiceNo'] or '—'}</td>
-        <td class="ctr">{r['invoiceDate'] or '—'}</td>
-        <td class="amt">{r['requestedAmt']:.2f}</td>
-        <td class="amt">{r['deduction']:.2f}</td>
-        <td class="amt bold">{r['netPayable']:.2f}</td>
-      </tr>"""
+    pdf = FPDF(orientation="L", unit="mm", format="Letter")
+    pdf.set_margins(12, 14, 15)
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_font("Tamil", "", TAMIL_FONT_PATH)
+    pdf.set_text_shaping(True)
+    pdf.add_page()
 
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8"><style>
-  @page {{ size: Letter landscape; margin: 15mm 15mm 15mm 12mm; }}
-  body  {{ font-family: Arial, sans-serif; color: #111; font-size: 11px; margin:0; }}
-  h2   {{ text-align:center; font-size:16px; font-weight:700; margin-bottom:4px; }}
-  h3   {{ text-align:center; font-size:13px; font-weight:600; margin-bottom:12px; }}
-  table {{ width:100%; border-collapse:collapse; margin-bottom:0; }}
-  thead tr th {{
-    background:#0f2347; color:#fff; padding:8px 5px; font-size:12px; font-weight:900;
-    border:2px solid #000; text-align:center; letter-spacing:0.3px;
-  }}
-  td {{ border:2px solid #555; padding:6px 5px; vertical-align:middle; }}
-  .ctr  {{ text-align:center; }}
-  .amt  {{ text-align:right; }}
-  .bold {{ font-weight:700; }}
-  .mag  {{ word-wrap:break-word; max-width:130px; width:130px; font-size:13px; }}
-  .invno {{ word-wrap:break-word; max-width:62px; width:62px; text-align:center; }}
-  .total-row td {{ background:#e8edf5; font-weight:700; border-top:3px solid #0f2347; border-bottom:3px solid #0f2347; }}
-  .words-row td {{ border:2px solid #555; padding:6px 8px; font-size:11px; font-style:italic; background:#f7f9fc; }}
-  .sig-block {{ margin-top:36px; text-align:right; }}
-  .sig-line {{ display:inline-block; text-align:center; border-top:1.5px solid #111; padding-top:6px; min-width:180px; font-size:11.5px; }}
-</style></head>
-<body>
-  <h2>திண்டுக்கல் மாவட்ட நூலக ஆணைக்குழு</h2>
-  <h3>{quarter_display} தொகை வழங்கல் — Set {d['setNo']} &nbsp;|&nbsp; மொத்தப் பட்டியல்கள்: {d['totalRows']}</h3>
-  <table>
-    <thead>
-      <tr>
-        <th style="width:28px;">வ.எண்.</th>
-        <th style="width:52px;">வவுச்சர் எண்</th>
-        <th style="width:130px;">இதழ் பெயர்</th>
-        <th style="width:70px;">TNPFTS CODE</th>
-        <th style="width:62px;">பட்டியல் எண்</th>
-        <th style="width:66px;">பட்டியல் நாள்</th>
-        <th style="width:62px;">கோரப்பட்ட தொகை</th>
-        <th style="width:62px;">பிடித்தம்</th>
-        <th style="width:70px;">நிகரத் தொகை</th>
-      </tr>
-    </thead>
-    <tbody>
-      {rows_html}
-      <tr class="total-row">
-        <td colspan="8" style="text-align:right; font-size:12px; padding-right:8px;">மொத்த நிகரத் தொகை :</td>
-        <td class="amt" style="font-size:13px;">₹ {d['totalNet']:.2f}</td>
-      </tr>
-      <tr class="words-row">
-        <td colspan="9"><strong>Rupees in Words :</strong> {total_in_words}</td>
-      </tr>
-    </tbody>
-  </table>
-  <br><br>
-  <div class="sig-block">
-    <div class="sig-line">
-      <div style="font-weight:700;">மாவட்ட நூலக அலுவலர்</div>
-      <div>திண்டுக்கல்</div>
-    </div>
-  </div>
-</body></html>"""
+    pdf.set_font("Tamil", size=17)
+    pdf.cell(0, 9, "திண்டுக்கல் மாவட்ட நூலக ஆணைக்குழு", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Tamil", size=12)
+    pdf.cell(
+        0, 8,
+        f"{quarter_display} தொகை வழங்கல் — Set {d['setNo']}  |  மொத்தப் பட்டியல்கள்: {d['totalRows']}",
+        align="C", new_x="LMARGIN", new_y="NEXT",
+    )
+    pdf.ln(3)
+
+    # பக்க அகலம் = 279.4 - 12 - 15 = 252.4 mm
+    widths = (20, 22, 54, 28, 28, 27, 24, 24, 25.4)
+    pdf.set_font("Tamil", size=10)
+    head_style = FontFace(color=(255, 255, 255), fill_color=(15, 35, 71))
+    with pdf.table(
+        col_widths=widths,
+        text_align=("CENTER", "CENTER", "LEFT", "CENTER", "CENTER", "CENTER", "RIGHT", "RIGHT", "RIGHT"),
+        headings_style=head_style,
+        line_height=7,
+        padding=1.2,
+        borders_layout="ALL",
+    ) as table:
+        h = table.row()
+        for t in ["வ.எண்.", "வவுச்சர் எண்", "இதழ் பெயர்", "TNPFTS CODE", "பட்டியல் எண்",
+                  "பட்டியல் நாள்", "கோரப்பட்ட தொகை", "பிடித்தம்", "நிகரத் தொகை"]:
+            h.cell(t, align="C")
+        for i, r in enumerate(d["rows"], start=1):
+            row = table.row()
+            row.cell(str(i))
+            row.cell(str(r["voucherNo"]))
+            row.cell(str(r["magazine"]))
+            row.cell(str(r["tnpftsCode"] or "—"))
+            row.cell(str(r["invoiceNo"] or "—"))
+            row.cell(str(r["invoiceDate"] or "—"))
+            row.cell(f"{r['requestedAmt']:.2f}")
+            row.cell(f"{r['deduction']:.2f}")
+            row.cell(f"{r['netPayable']:.2f}")
+        tot = table.row()
+        tot.cell("மொத்த நிகரத் தொகை :", colspan=8, align="R",
+                 style=FontFace(fill_color=(232, 237, 245)))
+        tot.cell(f"Rs. {d['totalNet']:.2f}", align="R", style=FontFace(fill_color=(232, 237, 245)))
+        wr = table.row()
+        wr.cell(f"Rupees in Words : {total_in_words}", colspan=9, align="L",
+                style=FontFace(fill_color=(247, 249, 252)))
+
+    pdf.ln(14)
+    if pdf.get_y() > 175:
+        pdf.add_page()
+    pdf.set_font("Tamil", size=11)
+    pdf.cell(0, 6, "மாவட்ட நூலக அலுவலர்", align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, "திண்டுக்கல்", align="R", new_x="LMARGIN", new_y="NEXT")
+    return bytes(pdf.output())
 
 
 @app.route("/api/reports/payment-advice")
@@ -2214,7 +2207,7 @@ def api_payment_advice_pdf():
             d = get_payment_advice_data(cur, set_no, quarter)
         if not d["success"]:
             return jsonify(d), 400
-        pdf_bytes = html_to_pdf_bytes(build_payment_advice_html(d))
+        pdf_bytes = build_payment_advice_pdf(d)
         return send_file(
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
