@@ -140,6 +140,7 @@
   <button data-tab="vouchernos">Voucher Numbers</button>
   <button data-tab="paidlist">தொகை வழங்கப்பட்ட விவரம்</button>
   <button data-tab="advice">Payment Advice</button>
+  <button data-tab="pvoucher">Payment Voucher</button>
   <button data-tab="master">Master Data</button>
 </nav>
 
@@ -229,9 +230,16 @@
           <p>Set-வாரியாக Payment Advice PDF</p>
         </div>
 
+        <div class="home-card" data-tab="pvoucher">
+          <div class="icon-box"><svg viewBox="0 0 24 24"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2Z"/><path d="M9 8h6M9 12h6"/></svg></div>
+          <div class="num">12</div>
+          <h3>Payment Voucher</h3>
+          <p>P.U. Form 33 — Voucher PDF</p>
+        </div>
+
         <div class="home-card" data-tab="master">
           <div class="icon-box"><svg viewBox="0 0 24 24"><path d="M4 21V8l8-5 8 5v13"/><path d="M9 21v-6h6v6M4 8h16"/></svg></div>
-          <div class="num">12</div>
+          <div class="num">13</div>
           <h3>Master Data</h3>
           <p>Magazines &amp; Vendors</p>
         </div>
@@ -733,6 +741,49 @@
           <a class="btn btn-primary" id="adv-download" target="_blank">📥 Download PDF</a>
         </div>
         <div id="adv-table-wrap" style="overflow-x:auto;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== TAB: Payment Voucher ===================== -->
+  <section id="panel-pvoucher" class="panel">
+    <div class="card">
+      <h2>Payment Voucher — P.U. Form No. 33 (அதிகபட்சம் 10 இதழ்கள்)</h2>
+      <div class="grid">
+        <div class="field">
+          <label>Quarter</label>
+          <select id="pv-quarter">
+            <option value="">-- Quarter தேர்வு செய்க --</option>
+            <option>2025-2026-Q4</option>
+            <option>2026-2027-Q1</option>
+            <option>2026-2027-Q2</option>
+            <option>2026-2027-Q3</option>
+            <option>2026-2027-Q4</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>Set No</label>
+          <select id="pv-setno" disabled><option value="">முதலில் Quarter தேர்வு செய்க</option></select>
+        </div>
+        <div class="field">
+          <label>கோப்பு எண்</label>
+          <input type="text" id="pv-fileno" value="999/இ1/2026">
+        </div>
+        <div class="field">
+          <label>நாள்</label>
+          <input type="date" id="pv-date">
+        </div>
+        <div class="field" style="display:flex; align-items:flex-end;">
+          <button class="btn btn-primary" id="pv-generate" style="width:100%;">🧾 Generate</button>
+        </div>
+      </div>
+      <div class="status" id="pv-status"></div>
+      <div id="pv-output-wrap" style="display:none; margin-top:14px;">
+        <div class="actions" style="margin-bottom:10px;">
+          <a class="btn btn-primary" id="pv-download" target="_blank">📥 Download Payment Voucher PDF</a>
+        </div>
+        <div id="pv-summary" style="margin-bottom:10px; font-size:13px;"></div>
+        <div id="pv-table-wrap" style="overflow-x:auto;"></div>
       </div>
     </div>
   </section>
@@ -1838,6 +1889,65 @@ $('adv-generate').addEventListener('click', async () => {
   } catch (err) {
     showStatus('adv-status', false, 'பிழை: ' + err.message);
   }
+});
+
+// =====================================================================
+// Payment Voucher (P.U. Form No. 33)
+// =====================================================================
+(function(){
+  const today = new Date();
+  $('pv-date').value = today.getFullYear() + '-' + String(today.getMonth()+1).padStart(2,'0') + '-' + String(today.getDate()).padStart(2,'0');
+  try { const saved = localStorage.getItem('pv-fileno'); if (saved) $('pv-fileno').value = saved; } catch (e) {}
+})();
+
+function pvDownloadUrl(){
+  return '/api/reports/payment-voucher/pdf?setNo=' + encodeURIComponent($('pv-setno').value) +
+         '&quarter=' + encodeURIComponent($('pv-quarter').value) +
+         '&fileNo=' + encodeURIComponent($('pv-fileno').value.trim()) +
+         '&date=' + encodeURIComponent($('pv-date').value);
+}
+['pv-fileno','pv-date'].forEach(id => $(id).addEventListener('input', () => {
+  try { localStorage.setItem('pv-fileno', $('pv-fileno').value); } catch (e) {}
+  if ($('pv-output-wrap').style.display !== 'none') $('pv-download').href = pvDownloadUrl();
+}));
+
+$('pv-quarter').addEventListener('change', async () => {
+  const q = $('pv-quarter').value, sel = $('pv-setno');
+  $('pv-output-wrap').style.display = 'none';
+  $('pv-status').textContent = '';
+  if (!q) { sel.innerHTML = '<option value="">முதலில் Quarter தேர்வு செய்க</option>'; sel.disabled = true; return; }
+  sel.innerHTML = '<option value="">ஏற்றுகிறது...</option>'; sel.disabled = true;
+  try {
+    const data = await api('/api/vouchers/set-numbers?quarter=' + encodeURIComponent(q));
+    const sets = data.sets || [];
+    if (!sets.length) { sel.innerHTML = '<option value="">Set No எதுவும் இல்லை</option>'; return; }
+    sel.innerHTML = '<option value="">-- Set No தேர்வு செய்க --</option>' +
+      sets.map(x => '<option value="'+x.setNo+'">Set '+x.setNo+'</option>').join('');
+    sel.disabled = false;
+  } catch (err) { sel.innerHTML = '<option value="">பிழை ஏற்பட்டது</option>'; }
+});
+
+$('pv-generate').addEventListener('click', async () => {
+  const quarter = $('pv-quarter').value, setNo = $('pv-setno').value;
+  if (!quarter) { showStatus('pv-status', false, 'முதலில் Quarter தேர்ந்தெடுக்கவும்'); return; }
+  if (!setNo) { showStatus('pv-status', false, 'Set Number தேர்ந்தெடுக்கவும்'); return; }
+  if (!$('pv-date').value) { showStatus('pv-status', false, 'நாளைத் தேர்ந்தெடுக்கவும்'); return; }
+  $('pv-output-wrap').style.display = 'none';
+  showStatus('pv-status', true, 'ஏற்றப்படுகிறது…');
+  try {
+    const d = await api('/api/reports/payment-voucher?setNo=' + encodeURIComponent(setNo) + '&quarter=' + encodeURIComponent(quarter));
+    if (!d.success) { showStatus('pv-status', false, d.message); return; }
+    showStatus('pv-status', true, d.totalRows + ' இதழ்கள் — Vouchers ' + d.voucherFrom + ' to ' + d.voucherTo + '/' + d.finYear);
+    $('pv-summary').innerHTML = '<b>' + d.wordsLine + '</b><br><span style="color:var(--muted);">' + d.quarter.replace('-Q',' Q') + ' ( ' + d.periodText + ' )</span>';
+    let html = '<table><thead><tr><th>S.No</th><th>Vr. No</th><th>Name of periodical</th><th class="num">Amount</th></tr></thead><tbody>';
+    d.rows.forEach((r, i) => {
+      html += '<tr><td>'+(i+1)+'</td><td>'+r.voucherNo+'</td><td>'+r.magazine+'</td><td class="num">'+money(r.netPayable)+'</td></tr>';
+    });
+    html += '<tr style="font-weight:700; background:#eef2f8;"><td colspan="3" style="text-align:right;">மொத்தம்</td><td class="num">'+money(d.totalNet)+'</td></tr></tbody></table>';
+    $('pv-table-wrap').innerHTML = html;
+    $('pv-download').href = pvDownloadUrl();
+    $('pv-output-wrap').style.display = 'block';
+  } catch (err) { showStatus('pv-status', false, 'பிழை: ' + err.message); }
 });
 
 // =====================================================================

@@ -2180,6 +2180,423 @@ def build_payment_advice_pdf(d):
     return bytes(pdf.output())
 
 
+# =============================================================================
+# 15-c) Payment Voucher (P.U. Form No. 33) — GAS "fillAndPrintPaymentVoucher" / Voucher_print sheet
+#       மாதிரி PDF-ஐ (Legal portrait, புள்ளிக் கோடு கட்டங்கள்) அப்படியே மீண்டும் உருவாக்குகிறது
+# =============================================================================
+TAMIL_BOLD_FONT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "fonts", "NotoSansTamil-Bold.ttf")
+
+TAMIL_MONTHS = ["ஜனவரி", "பிப்ரவரி", "மார்ச்", "ஏப்ரல்", "மே", "சூன்",
+                "சூலை", "ஆகஸ்ட்", "செப்டம்பர்", "அக்டோபர்", "நவம்பர்", "டிசம்பர்"]
+
+VOUCHER_MAX_ROWS = 10
+VOUCHER_DEFAULT_FILE_NO = "999/இ1/2026"
+
+
+def voucher_period_text(quarter):
+    """'2026-2027-Q1' -> 'ஏப்ரல் 2026 முதல் சூன் 2026 வரை' (GAS periodMap-ஐப் போலவே)."""
+    m = re.match(r"^(\d{4})-(\d{4})-Q([1-4])$", (quarter or "").strip())
+    if not m:
+        return ""
+    y1, y2, q = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    spans = {1: (3, 5, y1, y1), 2: (6, 8, y1, y1), 3: (9, 11, y1, y1), 4: (0, 2, y2, y2)}
+    a, b, ya, yb = spans[q]
+    return f"{TAMIL_MONTHS[a]} {ya} முதல் {TAMIL_MONTHS[b]} {yb} வரை"
+
+
+def voucher_fin_year(quarter):
+    m = re.match(r"^(\d{4})-(\d{4})-Q[1-4]$", (quarter or "").strip())
+    return f"{m.group(1)}-{m.group(2)[-2:]}" if m else ""
+
+
+def indian_grouping(amount):
+    """58367 -> '58,367'; 180405 -> '1,80,405'; 180405.5 -> '1,80,405.50'"""
+    amount = round(float(amount), 2)
+    rupees = int(amount)
+    paise = round((amount - rupees) * 100)
+    s = str(rupees)
+    if len(s) > 3:
+        head, tail = s[:-3], s[-3:]
+        parts = []
+        while len(head) > 2:
+            parts.insert(0, head[-2:])
+            head = head[:-2]
+        if head:
+            parts.insert(0, head)
+        s = ",".join(parts) + "," + tail
+    return s + (f".{paise:02d}" if paise else "")
+
+
+def amount_to_words_voucher(amount):
+    """58367 -> 'Fifty Eight Thousand Three Hundred and Sixty Seven'  (Indian: Lakh / Crore)."""
+    ones = ["", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine", "Ten",
+            "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen", "Seventeen",
+            "Eighteen", "Nineteen"]
+    tens = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"]
+
+    def below100(n):
+        return ones[n] if n < 20 else (tens[n // 10] + (" " + ones[n % 10] if n % 10 else ""))
+
+    def below1000(n):
+        out = ""
+        if n >= 100:
+            out = ones[n // 100] + " Hundred"
+            n %= 100
+            if n:
+                out += " and " + below100(n)
+        elif n:
+            out = below100(n)
+        return out
+
+    amount = round(float(amount), 2)
+    rupees = int(amount)
+    paise = round((amount - rupees) * 100)
+    if rupees == 0 and paise == 0:
+        return "Zero"
+    parts = []
+    crore, rem = divmod(rupees, 10000000)
+    lakh, rem = divmod(rem, 100000)
+    thousand, rem = divmod(rem, 1000)
+    if crore:
+        parts.append(below1000(crore) + " Crore")
+    if lakh:
+        parts.append(below100(lakh) + " Lakh")
+    if thousand:
+        parts.append(below100(thousand) + " Thousand")
+    if rem:
+        tail = below1000(rem)
+        if parts and rem < 100:
+            tail = "and " + tail
+        parts.append(tail)
+    words = " ".join(parts)
+    if paise:
+        words += (" and " if words else "") + below100(paise) + " Paise"
+    return words.strip()
+
+
+def _is_tamil_char(ch):
+    return "\u0b80" <= ch <= "\u0bff"
+
+
+def build_payment_voucher_pdf(d, file_no=None, doc_date=None):
+    """Payment Voucher (P.U. Form No. 33) — Legal portrait, மாதிரிக்குச் சரியான ஆயத்தொலைவுகளில்."""
+    from fpdf import FPDF
+
+    file_no = (file_no or VOUCHER_DEFAULT_FILE_NO).strip()
+    doc_date = doc_date or date.today()
+    rows = d["rows"]
+    total = sum(r["netPayable"] for r in rows)
+    quarter = d["quarter"] or ""
+
+    v_nos = [r["voucherNo"] for r in rows]
+    if len(v_nos) == 1:
+        v_range = f"Vouchers Numbers : {v_nos[0]}/{voucher_fin_year(quarter)}"
+    else:
+        v_range = f"Vouchers Numbers : {v_nos[0]} to {v_nos[-1]}/{voucher_fin_year(quarter)}"
+
+    def fmt_amt(x):
+        x = float(x)
+        return str(int(x)) if x == int(x) else f"{x:.2f}"
+
+    words_line = f"Rs.{indian_grouping(total)} (Rupees {amount_to_words_voucher(total)})"
+
+    pdf = FPDF(unit="pt", format=(612, 1008))
+    pdf.set_auto_page_break(False)
+    pdf.set_margins(0, 0, 0)
+    pdf.add_font("TamilR", "", TAMIL_FONT_PATH)
+    pdf.add_font("TamilB", "", TAMIL_BOLD_FONT_PATH)
+    pdf.set_text_shaping(True)
+    pdf.add_page()
+    TAMIL_SCALE = 0.925  # Noto Sans Tamil, மாதிரியின் Latha அகலத்துடன் பொருந்த
+
+    # ---------- எழுத்து உதவிகள் ----------
+    def run_font(is_tamil, bold, latin, italic=False):
+        if is_tamil:
+            return ("TamilB" if bold else "TamilR"), ""
+        style = ("B" if bold else "") + ("I" if italic else "")
+        return latin, style
+
+    def split_runs(text):
+        runs, cur, cur_t = [], "", None
+        for ch in text:
+            t = _is_tamil_char(ch)
+            if ch in " " and cur_t is not None:
+                t = cur_t          # இடைவெளி முந்தைய run-உடன் சேரும்
+            if cur_t is None or t == cur_t:
+                cur += ch
+                cur_t = t if cur_t is None else cur_t
+            else:
+                runs.append((cur, cur_t))
+                cur, cur_t = ch, t
+        if cur:
+            runs.append((cur, cur_t))
+        return runs
+
+    def text_width(text, size, bold=False, latin="Times", italic=False):
+        w = 0.0
+        for seg, is_t in split_runs(text):
+            fam, st = run_font(is_t, bold, latin, italic)
+            pdf.set_font(fam, st, size * (TAMIL_SCALE if is_t else 1))
+            w += pdf.get_string_width(seg)
+        return w
+
+    def draw(x, y, text, size=8.9, bold=False, latin="Times", italic=False, color=(0, 0, 0)):
+        # pdf.text() தமிழ் shaping செய்யாது; pdf.cell() செய்யும் — அதனால் cell வழியாக,
+        # baseline = y என்று வரும்படி மேல் ஆயத்தொலைவை (y - 0.8*எழுத்தளவு) கணக்கிடுகிறோம்.
+        pdf.set_text_color(*color)
+        cx = x
+        for seg, is_t in split_runs(text):
+            fam, st = run_font(is_t, bold, latin, italic)
+            fs = size * (TAMIL_SCALE if is_t else 1)
+            pdf.set_font(fam, st, fs)
+            w = pdf.get_string_width(seg)
+            pdf.set_xy(cx, y - 0.8 * fs)
+            pdf.cell(w + 0.5, fs, seg, border=0, new_x="RIGHT", new_y="TOP")
+            cx += w
+        pdf.set_text_color(0, 0, 0)
+
+    def draw_c(cx, y, text, **kw):
+        draw(cx - text_width(text, kw.get("size", 8.9), kw.get("bold", False),
+                             kw.get("latin", "Times"), kw.get("italic", False)) / 2, y, text, **kw)
+
+    def draw_r(rx, y, text, **kw):
+        draw(rx - text_width(text, kw.get("size", 8.9), kw.get("bold", False),
+                             kw.get("latin", "Times"), kw.get("italic", False)), y, text, **kw)
+
+    def wrap(text, max_w, size, **kw):
+        lines, cur = [], ""
+        for word in text.split(" "):
+            trial = (cur + " " + word).strip()
+            if cur and text_width(trial, size, kw.get("bold", False), kw.get("latin", "Times"),
+                                  kw.get("italic", False)) > max_w:
+                lines.append(cur)
+                cur = word
+            else:
+                cur = trial
+        if cur:
+            lines.append(cur)
+        return lines
+
+    # ---------- புள்ளிக்கோடு கட்டங்கள் (மாதிரி PDF-ன் அதே ஆயத்தொலைவுகள்) ----------
+    H = [(69.2, 96.8, 499.7), (101.3, 96.8, 499.7), (148.4, 96.8, 499.7), (175.6, 96.8, 499.7),
+         (210.3, 155.6, 426.1), (242.5, 155.6, 426.1), (264.1, 155.6, 426.1), (284.5, 155.6, 426.1),
+         (302.5, 155.6, 426.1), (320.4, 155.6, 426.1), (338.4, 155.6, 426.1), (356.3, 155.6, 499.7),
+         (375.5, 155.6, 499.7), (393.5, 155.6, 426.1), (415.7, 155.6, 426.1), (437.4, 155.6, 426.1),
+         (455.3, 155.6, 426.1), (474.5, 155.6, 426.1), (530.9, 96.8, 499.7), (563.0, 96.8, 499.7)]
+    V = [(155.9, 68.9, 563.3), (172.6, 242.1, 455.7), (190.6, 242.1, 455.7), (225.9, 210.0, 242.8),
+         (355.2, 263.8, 474.8), (378.7, 242.1, 474.8), (425.8, 68.9, 563.3), (499.4, 68.9, 563.3)]
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_line_width(0.62)
+    pdf.set_dash_pattern(dash=1.238, gap=1.238)
+    for y, x0, x1 in H:
+        pdf.line(x0, y, x1, y)
+    for x, y0, y1 in V:
+        pdf.line(x, y0, x, y1)
+    pdf.set_dash_pattern()
+
+    # ---------- தலைப்புப் பகுதி ----------
+    draw(99.3, 63.5, "P.U.Form No. 33", size=8.9, latin="Times")
+    draw_c(290.85, 83.2, "BILL FOR CONTINGENT CHARGES OFFICE OF THE DISTRICT", size=8.0, bold=True, latin="Helvetica")
+    draw_c(290.85, 92.5, "LIBRARY OFFICER,DINDIGUL", size=8.0, bold=True, latin="Helvetica")
+    month_text = f"{TAMIL_MONTHS[doc_date.month - 1]} {doc_date.year}"
+    draw_c(462.6, 79.3, "மாதம்:", size=8.9)
+    draw_c(462.6, 94.0, month_text, size=8.9)
+
+    draw_c(126.35, 111.2, "Head of", size=8.9)
+    draw_c(126.35, 121.3, "Service", size=8.9)
+    draw_c(289.4, 126.5, "பருவ இதழ்கள் வாங்குதல்", size=11.3, bold=True)
+    for i, ln in enumerate(wrap(v_range, 72, 8.9, bold=True)[:3]):
+        draw_c(462.6, 117.3 + 10.2 * i, ln, size=8.9, bold=True)
+
+    draw_c(126.35, 158.2, "Nos.of sub", size=8.9)
+    draw_c(126.35, 168.4, "Vouchers", size=8.9)
+    draw_c(290.6, 158.2, "Description of Charges and No and date of Authority where Special", size=8.9, latin="Helvetica")
+    draw_c(290.6, 168.4, "Sanction is nessary", size=8.9, latin="Helvetica")
+    draw_c(462.2, 158.2, "Amount", size=8.9)
+    draw(442.2, 171.8, "Rs.", size=8.9)
+    draw(477.1, 171.8, "P", size=8.9)
+
+    draw_c(289.0, 186.2, "நூலகங்களுக்கு பருவ இதழ் வாங்கியமைக்கான", size=8.9, bold=True)
+    draw_c(289.0, 202.9, "சந்தாத் தொகை செலுத்துதல்", size=8.9, bold=True)
+
+    draw(158.1, 227.3, "காலம்", size=8.0)
+    period_line = f"{quarter.replace('-Q', ' Q')} ( {voucher_period_text(quarter)} )"
+    plines = wrap(period_line, 196, 8.9, bold=True, latin="Helvetica")[:2]
+    base0 = 220.0 if len(plines) == 2 else 227.3
+    for i, ln in enumerate(plines):
+        draw_c(325.85, base0 + 14.7 * i, ln, size=8.9, bold=True, latin="Helvetica")
+
+    # கோப்பு எண் / நாள் — செங்குத்து எழுத்து
+    vt1 = f"கோப்பு எண்.{file_no}"
+    vt2 = f"நாள்:- {doc_date.strftime('%d-%m-%Y')}"
+    for ox, txt in ((116.2, vt1), (127.9, vt2)):
+        w = text_width(txt, 8.9)
+        oy = 341.0 + w / 2
+        with pdf.rotation(angle=90, x=ox, y=oy):
+            draw(ox, oy, txt, size=8.9)
+
+    # ---------- அட்டவணை தலைப்பு ----------
+    blue = (17, 85, 204)
+    for x, y, t, xe in ((158.1, 251.6, "S.", 165.7), (158.1, 260.9, "No", 168.4),
+                        (174.8, 251.6, "Vr.", 184.3), (174.8, 260.9, "No", 185.1)):
+        draw(x, y, t, size=8.0, latin="Helvetica", color=blue)
+        pdf.set_draw_color(*blue)
+        pdf.set_line_width(0.589)
+        pdf.line(x, y + 0.9, xe, y + 0.9)
+    pdf.set_draw_color(0, 0, 0)
+    draw_c(284.6, 260.9, "Name of periodical", size=8.0, latin="Helvetica")
+    draw(380.9, 260.9, "Amount", size=8.0, latin="Helvetica")
+
+    # ---------- 10 வரிசைகள் ----------
+    base_no = [277.1, 296.2, 314.2, 332.1, 350.1, 368.6, 387.2, 407.6, 429.3, 449.1]
+    base_amt = [277.8, 296.9, 314.9, 332.8, 350.8, 369.4, 387.9, 407.8, 430.1, 449.9]
+    base_rs = [275.7, 294.9, 312.9, 330.8, 348.8, 367.3, 385.9, 405.7, 428.0, 447.8]
+    for i, r in enumerate(rows[:VOUCHER_MAX_ROWS]):
+        name = str(r["magazine"])
+        has_tamil = any(_is_tamil_char(c) for c in name)
+        draw(158.1, base_no[i], str(i + 1), size=8.9, bold=True, latin="Helvetica")
+        draw(174.8, base_no[i], str(r["voucherNo"]), size=8.9, bold=True, latin="Helvetica")
+        draw(192.7, base_no[i] - (1.6 if has_tamil else 0), name, size=8.9, bold=True, latin="Times")
+        draw(357.4, base_rs[i], "ரூ.", size=8.9, bold=True)
+        draw_r(423.6, base_amt[i], fmt_amt(r["netPayable"]), size=9.7, bold=True, latin="Times")
+
+    # மொத்தம் வரிசை
+    draw_r(347.3, 466.6, "மொத்தம்", size=9.7, bold=True)
+    draw(357.4, 467.1, "ரூ.", size=8.9, bold=True)
+    draw_r(423.6, 470.9, fmt_amt(total), size=9.7, bold=True, latin="Times")
+
+    # வலது பத்தியில் மொத்தத் தொகை (இரு இடங்களில்)
+    draw_r(497.2, 367.5, "ரூ. " + fmt_amt(total), size=9.7, bold=True, latin="Helvetica")
+    draw_r(497.2, 548.2, "ரூ. " + fmt_amt(total), size=9.7, bold=True, latin="Helvetica")
+
+    # எழுத்தில் தொகை (ஆங்கிலம்) — கட்டத்தின் நடுவில்
+    wl = wrap(words_line, 250, 8.9, bold=True, latin="Helvetica")[:2]
+    if len(wl) == 1:
+        draw_c(290.85, 551.0, wl[0], size=8.9, bold=True, latin="Helvetica")
+    else:
+        draw_c(290.85, 540.6, wl[0], size=8.9, bold=True, latin="Helvetica")
+        draw_c(290.85, 555.3, wl[1], size=8.9, bold=True, latin="Helvetica")
+
+    # ---------- கீழ்ப் பகுதி (மாதிரிப்படி அப்படியே) ----------
+    para1 = [
+        "          Recived Payment, I Certifity that the expenditure charged in this bill could not, with due regarded to the ",
+        "interest of the public service be avoided and that, so for as I could as certain the rates allowed are reasonbale ",
+        "and do not exceed local current rates.  I have satisfied myself that the charges entered in this bill have been ",
+        "really paid or will be paid on receipt of the money drawn on this bill.  voucher for all sums above Rs. 25 in ",
+        "amount and for all sums paid for postage stamps telegrams and house rents are attached to the bill save thouse ",
+        "noted below which will be obtained as soon as the amounts have been paid.  i have as for posible obtained ",
+        "voucher for other sums and i am personally reasonable that they been on defaced that they cannot be used again.",
+    ]
+    for i, ln in enumerate(para1):
+        draw(99.3, 572.8 + 10.18 * i, ln, size=8.9, latin="Times")
+    para2 = [
+        "          Certified that the work truned out is satsfactory and is worth the amount paid for received the above ",
+        "articles in good condition and entered in the stock register, quantities are correct and qualities are good and ",
+        "suitable for the purpose.",
+    ]
+    for i, ln in enumerate(para2):
+        draw(99.3, 684.9 + 10.15 * i, ln, size=8.9, latin="Times")
+
+    draw(411.2, 728.2, "Head of Office", size=8.9, bold=True)
+    draw(411.2, 743.7, "Countersigned", size=8.9, bold=True)
+    draw(99.3, 759.2, "Station", size=8.9, bold=True, latin="Helvetica")
+    draw(148.8, 759.1, ":", size=8.9)
+    draw(158.1, 759.7, "திண்டுக்கல்", size=8.9)
+    draw(213.8, 759.7, " - 624 003", size=8.9)
+    draw(286.8, 759.1, "(Signature)", size=8.9, bold=True)
+    draw(357.4, 759.1, ". . . . . . . . . . . . . . . . . . . . .", size=8.9, bold=True)
+    draw(99.3, 777.1, "Date", size=8.9, bold=True, latin="Helvetica")
+    draw(148.8, 777.1, ":     .06.2026", size=8.9)
+    draw(286.8, 777.1, "(Designation)", size=8.9, bold=True)
+    draw(357.4, 777.1, "District Library Officer", size=8.9, bold=True, latin="Helvetica")
+    draw(286.8, 792.5, "(Date)", size=8.9, bold=True)
+    draw(391.4, 792.6, "Dindigul", size=8.9, bold=True, latin="Helvetica")
+    for y, label in ((808.1, "Allotment for 2025-2026"), (826.0, "Expendure including this bill"),
+                     (844.0, "Balance available")):
+        draw(99.3, y, label, size=8.9, latin="Helvetica")
+        draw(230.5, y - 0.1, ":", size=8.9)
+        draw(244.9, y + 0.5, "ரூ.", size=8.9, bold=True)
+
+    passed = f"Passed for Rupees. Rs.{indian_grouping(total)}/-(Rupees {amount_to_words_voucher(total)})"
+    pl = wrap(passed, 398, 8.9, bold=True, italic=True, latin="Times")[:2]
+    for i, ln in enumerate(pl):
+        draw(99.3, 862.4 + 14.7 * i, ln, size=8.9, bold=True, italic=True, latin="Times")
+
+    draw(99.3, 894.1, "Head of Account", size=8.9, bold=True, latin="Helvetica")
+    draw(204.5, 894.1, "Classification", size=8.9, bold=True, latin="Helvetica")
+    draw(298.6, 894.1, "Accountant", size=8.9, bold=True, latin="Helvetica")
+    draw(416.2, 894.1, "Commissioner", size=8.9, bold=True, latin="Helvetica")
+
+    return bytes(pdf.output())
+
+
+@app.route("/api/reports/payment-voucher")
+def api_payment_voucher():
+    set_no = request.args.get("setNo", "").strip()
+    quarter = request.args.get("quarter", "").strip()
+    if not set_no or not quarter:
+        return jsonify({"success": False, "message": "Quarter மற்றும் Set No தேவை"}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            d = get_payment_advice_data(cur, set_no, quarter)
+        if not d["success"]:
+            return jsonify(d)
+        if d["totalRows"] > VOUCHER_MAX_ROWS:
+            return jsonify({
+                "success": False,
+                "message": f"இந்த Set-ல் {d['totalRows']} இதழ்கள் உள்ளன. ஒரு Payment Voucher-ல் அதிகபட்சம் {VOUCHER_MAX_ROWS} இதழ்கள் மட்டுமே இடம்பெறும் — Set-ஐ பிரித்துக்கொள்ளவும்.",
+            })
+        total = d["totalNet"]
+        return jsonify({
+            "success": True,
+            "setNo": set_no,
+            "quarter": quarter,
+            "totalRows": d["totalRows"],
+            "totalNet": total,
+            "wordsLine": f"Rs.{indian_grouping(total)} (Rupees {amount_to_words_voucher(total)})",
+            "voucherFrom": d["rows"][0]["voucherNo"],
+            "voucherTo": d["rows"][-1]["voucherNo"],
+            "finYear": voucher_fin_year(quarter),
+            "periodText": voucher_period_text(quarter),
+            "defaultFileNo": VOUCHER_DEFAULT_FILE_NO,
+            "rows": d["rows"],
+        })
+    finally:
+        conn.close()
+
+
+@app.route("/api/reports/payment-voucher/pdf")
+def api_payment_voucher_pdf():
+    set_no = request.args.get("setNo", "").strip()
+    quarter = request.args.get("quarter", "").strip()
+    file_no = request.args.get("fileNo", "").strip() or VOUCHER_DEFAULT_FILE_NO
+    date_str = request.args.get("date", "").strip()
+    if not set_no or not quarter:
+        return jsonify({"success": False, "message": "Quarter மற்றும் Set No தேவை"}), 400
+    try:
+        doc_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else date.today()
+    except ValueError:
+        return jsonify({"success": False, "message": "தேதி வடிவம் தவறு"}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            d = get_payment_advice_data(cur, set_no, quarter)
+        if not d["success"]:
+            return jsonify(d), 400
+        if d["totalRows"] > VOUCHER_MAX_ROWS:
+            return jsonify({"success": False, "message": f"அதிகபட்சம் {VOUCHER_MAX_ROWS} இதழ்கள் மட்டுமே"}), 400
+        pdf_bytes = build_payment_voucher_pdf(d, file_no, doc_date)
+        return send_file(
+            io.BytesIO(pdf_bytes),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"Payment_voucher-{set_no}.pdf",
+        )
+    finally:
+        conn.close()
+
+
 @app.route("/api/reports/payment-advice")
 def api_payment_advice():
     set_no = request.args.get("setNo", "").strip()
