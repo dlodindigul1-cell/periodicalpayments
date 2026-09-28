@@ -3224,7 +3224,7 @@ function _pdfHelper(fnName, targetId) {
         </div>
       </div>
 
-      <!-- 2 Main Buttons -->
+      <!-- 3 Main Buttons -->
       <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:18px; margin-bottom:28px;">
         <div class="menu-card" onclick="showMastersMagazines()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
           <div style="font-size:36px;">📚</div>
@@ -3238,6 +3238,13 @@ function _pdfHelper(fnName, targetId) {
           <div>
             <div style="font-size:16px; font-weight:700; color:var(--navy);">Vendor / Bank Master</div>
             <div style="font-size:13px; color:var(--muted); margin-top:3px;">Vendor Code, Bank &amp; Email Master Data</div>
+          </div>
+        </div>
+        <div class="menu-card" onclick="showMastersDeleteTxn()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
+          <div style="font-size:36px;">🗑️</div>
+          <div>
+            <div style="font-size:16px; font-weight:700; color:var(--navy);">தவறான / TEST பதிவு நீக்கு</div>
+            <div style="font-size:13px; color:var(--muted); margin-top:3px;">Invoice / Payment / Voucher / Mail நீக்கு</div>
           </div>
         </div>
       </div>
@@ -3465,6 +3472,79 @@ function _pdfHelper(fnName, targetId) {
         </div>
       </div>
 
+      <!-- ══════════ DELETE TRANSACTION PANEL ══════════ -->
+      <div id="mastersDeleteTxnPanel" style="display:none;">
+
+        <div class="card">
+          <div class="card-title">🗑️ தவறான / TEST Invoice-Payment பதிவு நீக்கு</div>
+          <p style="font-size:13px; color:var(--muted); margin-bottom:14px;">
+            இதழ் விலை Master (Master Data → இதழ் Master) இதனால் தொடப்படாது. இங்கு நீக்கப்படுவது அந்த
+            ஒரு இதழுக்கான, ஒரு Quarter-க்கான Invoice / Payment பதிவு மட்டும்.
+          </p>
+          <div class="field-row">
+            <div class="field">
+              <label>Quarter தேர்ந்தெடுக்கவும் <span class="req">*</span></label>
+              <select id="deleteTxnQuarter" onchange="loadDeleteTxnMagazines()">
+                <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
+                <option value="2025-2026-Q4">2025-2026 Q4</option>
+                <option value="2026-2027-Q1">2026-2027 Q1</option>
+                <option value="2026-2027-Q2">2026-2027 Q2</option>
+                <option value="2026-2027-Q3">2026-2027 Q3</option>
+                <option value="2026-2027-Q4">2026-2027 Q4</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>இதழ் பெயர் <span class="req">*</span></label>
+              <select id="deleteTxnMagazine" onchange="loadDeleteTxnStatus()" disabled>
+                <option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="deleteTxnStatusWrap" style="display:none; margin-bottom:18px;">
+            <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:8px;">
+              இந்த பதிவின் இப்போதைய நிலை:
+            </label>
+            <div id="deleteTxnStatusGrid" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px;"></div>
+          </div>
+
+          <div id="deleteTxnScopeWrap" style="display:none;">
+            <label style="font-size:14px; font-weight:700; color:var(--navy); display:block; margin-bottom:10px;">
+              எதை நீக்க வேண்டும்?
+            </label>
+            <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:16px;">
+              <label style="display:flex; gap:10px; align-items:flex-start; font-weight:500;">
+                <input type="radio" name="deleteTxnScope" value="voucher" style="margin-top:4px;">
+                <span><b>Voucher Number மட்டும்</b><br><span style="font-size:12px; color:var(--muted);">voucher_no மட்டும் நீக்கப்படும்; Bank Transaction &amp; Mail Send அப்படியே இருக்கும்.</span></span>
+              </label>
+              <label style="display:flex; gap:10px; align-items:flex-start; font-weight:500;">
+                <input type="radio" name="deleteTxnScope" value="bank" style="margin-top:4px;">
+                <span><b>Bank Transaction மட்டும்</b><br><span style="font-size:12px; color:var(--muted);">வழங்கிய தொகை, தேதி, Transaction No, Non-Supply/Deduction &amp; Voucher பதிவு (VOUCHERS) நீக்கப்படும்; Voucher Number &amp; Mail Send அப்படியே இருக்கும்.</span></span>
+              </label>
+              <label style="display:flex; gap:10px; align-items:flex-start; font-weight:500;">
+                <input type="radio" name="deleteTxnScope" value="mail" style="margin-top:4px;">
+                <span><b>Mail Send மட்டும்</b><br><span style="font-size:12px; color:var(--muted);">மெயில் அனுப்பிய நிலை &amp; PDF மட்டும் நீக்கப்படும்; Voucher Number &amp; Bank Transaction அப்படியே இருக்கும்.</span></span>
+              </label>
+              <label style="display:flex; gap:10px; align-items:flex-start; font-weight:600; padding-top:6px; border-top:1px dashed var(--border);">
+                <input type="radio" name="deleteTxnScope" value="payment" style="margin-top:4px;">
+                <span><b>Payment Details (மூன்றும் சேர்ந்து)</b><br><span style="font-size:12px; color:var(--muted); font-weight:400;">Voucher Number + Bank Transaction + Mail Send — மூன்றும் சேர்ந்து நீக்கப்படும். Invoice விவரம் (Invoice No/Date/Requested Amt) அப்படியே இருக்கும்.</span></span>
+              </label>
+              <label style="display:flex; gap:10px; align-items:flex-start; font-weight:700; color:#c0392b;">
+                <input type="radio" name="deleteTxnScope" value="invoice" style="margin-top:4px;">
+                <span><b>Invoice Details (ஒட்டுமொத்தம்)</b><br><span style="font-size:12px; color:#c0392b; font-weight:400;">Invoice Details + Payment Details + Voucher Number + Bank Transaction + Mail Send — இந்த Quarter-க்கான பதிவே முழுவதுமாக நீக்கப்படும். இதழ் விலை Master மட்டும் தொடப்படாது.</span></span>
+              </label>
+            </div>
+            <button class="btn-primary" id="deleteTxnBtn" style="background:#c0392b;" onclick="deleteMasterTransaction()">🗑️ நீக்கு</button>
+          </div>
+
+          <div id="deleteTxnStatus" class="status"></div>
+        </div>
+
+        <div style="margin-top:4px;">
+          <button class="btn-secondary" onclick="showMastersDashboard()">← Master Data-க்கு</button>
+        </div>
+      </div>
+
       <div style="margin-top:20px;">
         <button class="btn-secondary" onclick="backToWelcome()">← முகப்பிற்கு</button>
       </div>
@@ -3475,26 +3555,146 @@ function _pdfHelper(fnName, targetId) {
     let allMasterMagazines = [];
     let allMasterVendors   = [];
 
+    function hideMasterPanels() {
+      document.getElementById('mastersMagazinePanel').style.display = 'none';
+      document.getElementById('mastersVendorPanel').style.display = 'none';
+      document.getElementById('mastersDeleteTxnPanel').style.display = 'none';
+    }
+
     function showMastersDashboard() {
       hideAll();
       document.getElementById('mastersDashboard').style.display = 'block';
-      document.getElementById('mastersMagazinePanel').style.display = 'none';
-      document.getElementById('mastersVendorPanel').style.display = 'none';
+      hideMasterPanels();
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
     function showMastersMagazines() {
+      hideMasterPanels();
       document.getElementById('mastersMagazinePanel').style.display = 'block';
-      document.getElementById('mastersVendorPanel').style.display = 'none';
       clearMagazineMasterForm();
       loadMasterMagazinesList();
     }
 
     function showMastersVendors() {
+      hideMasterPanels();
       document.getElementById('mastersVendorPanel').style.display = 'block';
-      document.getElementById('mastersMagazinePanel').style.display = 'none';
       clearVendorMasterForm();
       loadMasterVendorsList();
+    }
+
+    function showMastersDeleteTxn() {
+      hideMasterPanels();
+      document.getElementById('mastersDeleteTxnPanel').style.display = 'block';
+      document.getElementById('deleteTxnQuarter').value = '';
+      document.getElementById('deleteTxnMagazine').innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
+      document.getElementById('deleteTxnMagazine').disabled = true;
+      document.getElementById('deleteTxnStatusWrap').style.display = 'none';
+      document.getElementById('deleteTxnScopeWrap').style.display = 'none';
+      clearStatus('deleteTxnStatus');
+    }
+
+    // ─── Delete Transaction: Quarter → Magazine ───
+    async function loadDeleteTxnMagazines() {
+      const quarter = document.getElementById('deleteTxnQuarter').value;
+      const magSelect = document.getElementById('deleteTxnMagazine');
+      document.getElementById('deleteTxnStatusWrap').style.display = 'none';
+      document.getElementById('deleteTxnScopeWrap').style.display = 'none';
+      clearStatus('deleteTxnStatus');
+      if (!quarter) {
+        magSelect.innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
+        magSelect.disabled = true;
+        return;
+      }
+      magSelect.innerHTML = '<option value="">ஏற்றப்படுகிறது...</option>';
+      magSelect.disabled = true;
+      try {
+        const res = await fetch('/api/payments/magazines-for-quarter?quarter=' + encodeURIComponent(quarter));
+        const result = await res.json();
+        const mags = (result.success && result.magazines) ? result.magazines : [];
+        if (!mags.length) {
+          magSelect.innerHTML = '<option value="">-- இந்த Quarter-ல் பதிவு எதுவும் இல்லை --</option>';
+          return;
+        }
+        magSelect.innerHTML = '<option value="">-- இதழைத் தேர்ந்தெடுக்கவும் --</option>' +
+          mags.map(m => '<option value="' + m.replace(/"/g, '&quot;') + '">' + m + '</option>').join('');
+        magSelect.disabled = false;
+      } catch (e) {
+        magSelect.innerHTML = '<option value="">பிழை ஏற்பட்டது</option>';
+      }
+    }
+
+    // ─── Delete Transaction: current status display ───
+    async function loadDeleteTxnStatus() {
+      const quarter = document.getElementById('deleteTxnQuarter').value;
+      const magazine = document.getElementById('deleteTxnMagazine').value;
+      const wrap = document.getElementById('deleteTxnStatusWrap');
+      const scopeWrap = document.getElementById('deleteTxnScopeWrap');
+      clearStatus('deleteTxnStatus');
+      if (!quarter || !magazine) { wrap.style.display = 'none'; scopeWrap.style.display = 'none'; return; }
+      try {
+        const res = await fetch('/api/payments/details?quarter=' + encodeURIComponent(quarter) + '&magazine=' + encodeURIComponent(magazine));
+        const d = await res.json();
+        const box = (label, val) =>
+          '<div style="background:var(--card);border:1.5px solid var(--border);border-radius:10px;padding:10px 12px;">' +
+            '<div style="font-size:11px;color:var(--muted);">' + label + '</div>' +
+            '<div style="font-size:14px;font-weight:700;color:var(--navy);">' + val + '</div>' +
+          '</div>';
+        document.getElementById('deleteTxnStatusGrid').innerHTML =
+          box('Requested Amt', '₹' + (d.requestedAmt || 0)) +
+          box('Voucher Number', d.voucherNo || '—') +
+          box('Bank Transaction', (d.paymentDate ? d.paymentDate : '—')) +
+          box('Transaction No', d.transactionNo || '—') +
+          box('Mail Send', d.mailSent ? '✅ அனுப்பப்பட்டது' : '—');
+        wrap.style.display = 'block';
+        scopeWrap.style.display = 'block';
+        document.querySelectorAll('input[name=deleteTxnScope]').forEach(r => r.checked = false);
+      } catch (e) {
+        setStatus('deleteTxnStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+    }
+
+    async function deleteMasterTransaction() {
+      const quarter = document.getElementById('deleteTxnQuarter').value;
+      const magazine = document.getElementById('deleteTxnMagazine').value;
+      const scopeEl = document.querySelector('input[name=deleteTxnScope]:checked');
+      if (!quarter || !magazine) { setStatus('deleteTxnStatus', 'error', '❌ Quarter மற்றும் இதழ் தேர்ந்தெடுக்கவும்.'); return; }
+      if (!scopeEl) { setStatus('deleteTxnStatus', 'error', '❌ எதை நீக்க வேண்டும் என தேர்ந்தெடுக்கவும்.'); return; }
+      const scope = scopeEl.value;
+      const scopeLabels = {
+        voucher: 'Voucher Number மட்டும்',
+        bank: 'Bank Transaction மட்டும்',
+        mail: 'Mail Send மட்டும்',
+        payment: 'Payment Details (Voucher + Bank + Mail) — மூன்றும்',
+        invoice: 'Invoice Details உட்பட இந்த Quarter பதிவு முழுவதும் (ஒட்டுமொத்தம்)'
+      };
+      if (!confirm("'" + magazine + "' (" + quarter + ") —\n\n" + scopeLabels[scope] + "\n\nநீக்கப்படும். தொடர வேண்டுமா?")) return;
+
+      const btn = document.getElementById('deleteTxnBtn');
+      showLoading(btn, 'நீக்கப்படுகிறது...');
+      setStatus('deleteTxnStatus', 'loading', '<span class="spinner dark"></span> நீக்கப்படுகிறது...');
+      try {
+        const res = await fetch('/api/admin/delete-transaction', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ magazine, quarter, scope })
+        });
+        const result = await res.json();
+        if (result.success) {
+          setStatus('deleteTxnStatus', 'success', '✅ ' + result.message);
+          if (scope === 'invoice') {
+            document.getElementById('deleteTxnStatusWrap').style.display = 'none';
+            document.getElementById('deleteTxnScopeWrap').style.display = 'none';
+            loadDeleteTxnMagazines();
+          } else {
+            loadDeleteTxnStatus();
+          }
+        } else {
+          setStatus('deleteTxnStatus', 'error', '❌ ' + result.message);
+        }
+      } catch (e) {
+        setStatus('deleteTxnStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+      hideLoading(btn);
     }
 
     // ─── Magazine Master: CSV Import ───

@@ -680,6 +680,7 @@ def api_payment_details():
                 {
                     "issuePrice": 0, "totalIssues": 0, "requestedAmt": 0, "paymentDate": None, "billSetNo": "",
                     "vendorCode": vendor_code, "vendorType": classify_vendor_code(vendor_code),
+                    "voucherNo": "", "transactionNo": "", "mailSent": False,
                 }
             )
         return jsonify(
@@ -691,6 +692,9 @@ def api_payment_details():
                 "billSetNo": row["bill_set_no"] or "",
                 "vendorCode": vendor_code,
                 "vendorType": classify_vendor_code(vendor_code),
+                "voucherNo": row["voucher_no"] or "",
+                "transactionNo": row["transaction_no"] or "",
+                "mailSent": bool(row["mail_sent"]),
             }
         )
     finally:
@@ -1297,6 +1301,95 @@ def api_admin_delete_payment_details():
             )
             conn.commit()
         return jsonify({"success": True, "message": f"'{magazine}' ({quarter}) மீண்டும் Invoice நிலைக்கு மாற்றப்பட்டது."})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/delete-transaction", methods=["POST"])
+def api_admin_delete_transaction():
+    """Master Data → 'தவறான / TEST பதிவு நீக்கு' — ஒரு இதழ் + Quarter-க்கான Invoice/Payment
+    தரவை, தேர்ந்தெடுத்த அளவுக்கு நீக்கும். இதழ் விலை Master (magazines / magazine_quarters)
+    எப்போதும் தொடப்படாது.
+
+    scope:
+      voucher  -> voucher_no மட்டும் நீக்கும்
+      bank     -> Payment Processing-ல் பதிவான தொகை/தேதி/Transaction No/Non-Supply/
+                  Deduction/Net Payable/Bill Set + vouchers table row நீக்கும்
+      mail     -> mail_sent/pdf_url மட்டும் நீக்கும்
+      payment  -> voucher + bank + mail — மூன்றும் சேர்ந்து நீக்கும் (Invoice விவரம் தொடாது)
+      invoice  -> ஒட்டுமொத்தமாக இந்த Invoice/Payment பதிவையே (payments row) நீக்கும்
+    """
+    data = request.get_json(force=True)
+    magazine = (data.get("magazine") or "").strip()
+    quarter = (data.get("quarter") or "").strip()
+    scope = (data.get("scope") or "").strip()
+    if not magazine or not quarter or not scope:
+        return jsonify({"success": False, "message": "இதழ், Quarter மற்றும் என்ன நீக்க வேண்டும் என தேர்ந்தெடுக்கவும்."}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM payments WHERE magazine=%s AND quarter=%s", (magazine, quarter))
+            row = cur.fetchone()
+            if not row:
+                return jsonify({"success": False, "message": "இந்த இதழ் / Quarter-க்கு பதிவு கிடைக்கவில்லை."}), 404
+
+            if scope == "voucher":
+                cur.execute(
+                    "UPDATE payments SET voucher_no=NULL, updated_at=now() WHERE magazine=%s AND quarter=%s",
+                    (magazine, quarter),
+                )
+                msg = "Voucher Number நீக்கப்பட்டது."
+
+            elif scope == "bank":
+                cur.execute(
+                    """
+                    UPDATE payments SET
+                        non_supply=0, deduction=0, net_payable=0,
+                        paid_amt=0, payment_date=NULL, transaction_no=NULL,
+                        remarks=NULL, bill_set_no=NULL, updated_at=now()
+                    WHERE magazine=%s AND quarter=%s
+                    """,
+                    (magazine, quarter),
+                )
+                cur.execute("DELETE FROM vouchers WHERE magazine=%s AND quarter=%s", (magazine, quarter))
+                msg = "Bank Transaction (தொகை/தேதி/Transaction No) விவரங்கள் நீக்கப்பட்டன."
+
+            elif scope == "mail":
+                cur.execute(
+                    "UPDATE payments SET mail_sent=FALSE, pdf_url=NULL, updated_at=now() WHERE magazine=%s AND quarter=%s",
+                    (magazine, quarter),
+                )
+                msg = "Mail Send நிலை நீக்கப்பட்டது."
+
+            elif scope == "payment":
+                cur.execute(
+                    """
+                    UPDATE payments SET
+                        non_supply=0, deduction=0, net_payable=0,
+                        paid_amt=0, payment_date=NULL, transaction_no=NULL,
+                        voucher_no=NULL, remarks=NULL, bill_set_no=NULL,
+                        mail_sent=FALSE, pdf_url=NULL, updated_at=now()
+                    WHERE magazine=%s AND quarter=%s
+                    """,
+                    (magazine, quarter),
+                )
+                cur.execute("DELETE FROM vouchers WHERE magazine=%s AND quarter=%s", (magazine, quarter))
+                msg = "Payment Details (Voucher Number + Bank Transaction + Mail Send) அனைத்தும் நீக்கப்பட்டன."
+
+            elif scope == "invoice":
+                cur.execute("DELETE FROM vouchers WHERE magazine=%s AND quarter=%s", (magazine, quarter))
+                cur.execute("DELETE FROM payments WHERE magazine=%s AND quarter=%s", (magazine, quarter))
+                msg = "Invoice Details உட்பட இந்த Quarter பதிவு முழுவதும் நீக்கப்பட்டது. (இதழ் விலை Master தொடப்படவில்லை.)"
+
+            else:
+                return jsonify({"success": False, "message": "தவறான தேர்வு."}), 400
+
+            conn.commit()
+        return jsonify({"success": True, "message": f"'{magazine}' ({quarter}) — {msg}"})
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
