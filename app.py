@@ -2495,7 +2495,7 @@ def build_payment_voucher_pdf(d, file_no=None, doc_date=None):
         "suitable for the purpose.",
     ]
     for i, ln in enumerate(para2):
-        draw(99.3, 684.9 + 10.15 * i, ln, size=8.9, latin="Times")
+        draw(99.3, 647.0 + 10.15 * i, ln, size=8.9, latin="Times")
 
     draw(411.2, 728.2, "Head of Office", size=8.9, bold=True)
     draw(411.2, 743.7, "Countersigned", size=8.9, bold=True)
@@ -2518,9 +2518,9 @@ def build_payment_voucher_pdf(d, file_no=None, doc_date=None):
         draw(244.9, y + 0.5, "ரூ.", size=8.9, bold=True)
 
     passed = f"Passed for Rupees. Rs.{indian_grouping(total)}/-(Rupees {amount_to_words_voucher(total)})"
-    pl = wrap(passed, 398, 8.9, bold=True, italic=True, latin="Times")[:2]
+    pl = wrap(passed, 455, 11.5, bold=True, italic=True, latin="Times")[:2]
     for i, ln in enumerate(pl):
-        draw(99.3, 862.4 + 14.7 * i, ln, size=8.9, bold=True, italic=True, latin="Times")
+        draw(99.3, 863.0 + 14.0 * i, ln, size=11.5, bold=True, italic=True, latin="Times")
 
     draw(99.3, 894.1, "Head of Account", size=8.9, bold=True, latin="Helvetica")
     draw(204.5, 894.1, "Classification", size=8.9, bold=True, latin="Helvetica")
