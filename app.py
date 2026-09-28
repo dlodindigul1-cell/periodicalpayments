@@ -1685,12 +1685,16 @@ def api_report_voucher_register():
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM vouchers ORDER BY id")
+            cur.execute(
+                "SELECT v.*, p.voucher_no AS pay_voucher_no FROM vouchers v "
+                "LEFT JOIN payments p ON p.magazine=v.magazine AND p.quarter=v.quarter ORDER BY v.id"
+            )
             rows = cur.fetchall()
         result = [
             {
                 "serial": i,
                 "paymentSNo": r["payment_sno"] or "",
+                "voucherNo": r["pay_voucher_no"] or "",
                 "magazine": r["magazine"] or "",
                 "tnpftsCode": r["tnpfts_code"] or "",
                 "invoiceNo": r["invoice_no"] or "",
