@@ -120,6 +120,50 @@ def classify_vendor_code(code):
     return "OTHER"
 
 
+def norm_code(code):
+    """Vendor/Beneficiary Code ஒப்பீட்டுக்கு: இடைவெளி நீக்கி, பெரிய எழுத்தாக்கும்."""
+    return (code or "").strip().upper()
+
+
+def voucher_sort_key(v):
+    """Voucher No எண் மதிப்பின்படி வரிசைப்படுத்த (2, 10, 11 — '10' < '2' என்ற எழுத்து வரிசை அல்ல).
+    Voucher No இல்லாதவை கடைசியில்."""
+    v = (v or "").strip()
+    m = re.match(r"^(\d+)", v)
+    return (0, int(m.group(1)), v) if m else (1, 0, v)
+
+
+def fetch_group_blockers(cur, quarter=None):
+    """(quarter, CODE) -> {'pending': [...], 'missingTxn': [...]}
+    pending    = அதே Code + அதே Quarter-ல் Invoice பதிவாகி, இன்னும் தொகை வழங்காத இதழ்கள்
+    missingTxn = தொகை வழங்கியும் Bank Transaction No பதிவாகாத இதழ்கள்"""
+    sql = (
+        "SELECT p.magazine, p.quarter, p.payment_date, m.tnpfts_code "
+        "FROM payments p LEFT JOIN magazines m ON m.name = p.magazine "
+        "WHERE (p.payment_date IS NULL OR p.transaction_no IS NULL OR p.transaction_no = '')"
+    )
+    params = ()
+    if quarter:
+        sql += " AND p.quarter=%s"
+        params = (quarter,)
+    cur.execute(sql, params)
+    out = {}
+    for r in cur.fetchall():
+        code = norm_code(r["tnpfts_code"])
+        if not code:
+            continue
+        d = out.setdefault((r["quarter"], code), {"pending": [], "missingTxn": []})
+        (d["pending"] if r["payment_date"] is None else d["missingTxn"]).append(r["magazine"])
+    for d in out.values():
+        d["pending"].sort()
+        d["missingTxn"].sort()
+    return out
+
+
+def vendor_display_name(vendor_name, payee_name, fallback):
+    return (vendor_name or "").strip() or (payee_name or "").strip() or fallback
+
+
 def normalize_csv_header(h):
     """CSV header ஒப்பீடு நம்பகமாக இருக்க — BOM, non-breaking space, தேவையற்ற
     இடைவெளிகள், எழுத்து அளவு வேறுபாடு, முடிவில் உள்ள '.' ஆகியவற்றை நீக்கி normalize செய்யும்
@@ -260,9 +304,83 @@ def fmt_date(d):
     return d.strftime("%d/%m/%Y") if d else ""
 
 
-def build_payment_intimation_html(p):
-    """generatePaymentIntimationPDF (GAS) — English intimation letter, PDF-க்கு தயார்."""
-    bank = p.get("bank") or {}
+def _money(v):
+    return indian_grouping(v or 0)
+
+
+def build_group_intimation_html(items):
+    """ஒரே Vendor/Beneficiary Code உள்ள ஒன்று அல்லது பல இதழ்களுக்கான ஒரே Payment Intimation letter.
+    items: fetch_payment_for_mail() dict-களின் பட்டியல் (ஒரு இதழ் என்றாலும் பட்டியலாகவே)."""
+    import html as _h
+
+    def esc(v):
+        return _h.escape(str(v if v is not None else ""))
+
+    def distinct(vals):
+        seen, out = set(), []
+        for v in vals:
+            if v and v not in seen:
+                seen.add(v)
+                out.append(v)
+        return out
+
+    bank = next((i["bank"] for i in items if (i.get("bank") or {}).get("accNo")), items[0].get("bank") or {})
+    quarter = items[0].get("quarter") or "---"
+    multi = len(items) > 1
+    total_bill = sum(i.get("billAmount") or 0 for i in items)
+    total_ded = sum(i.get("deduction") or 0 for i in items)
+    total_net = sum(i.get("netAmount") or 0 for i in items)
+    txns = distinct([i.get("transactionNo") for i in items])
+    dates = distinct([i.get("paymentDate") for i in items])
+    remarks = distinct([i.get("remarks") for i in items])
+    mag_names = [i["magazine"] for i in items]
+
+    rows_html = ""
+    for n, i in enumerate(items, 1):
+        rows_html += (
+            f'<tr><td class="ctr">{n}</td><td>{esc(i["magazine"])}</td>'
+            f'<td class="ctr">{esc(i.get("invoiceNo") or "---")}</td>'
+            f'<td class="ctr">{esc(i.get("invoiceDate") or "---")}</td>'
+            f'<td class="right">{_money(i.get("billAmount"))}</td>'
+            f'<td class="right">{_money(i.get("deduction"))}</td>'
+            f'<td class="right">{_money(i.get("netAmount"))}</td></tr>'
+        )
+    if multi:
+        rows_html += (
+            f'<tr class="tot"><td colspan="4" class="right"><strong>TOTAL</strong></td>'
+            f'<td class="right"><strong>{_money(total_bill)}</strong></td>'
+            f'<td class="right"><strong>{_money(total_ded)}</strong></td>'
+            f'<td class="right"><strong>{_money(total_net)}</strong></td></tr>'
+        )
+
+    if multi:
+        ref_html = (
+            "<p>Ref: Your Invoices listed in the table below, for the supply of the magazines "
+            f"<strong>{esc(', '.join(mag_names))}</strong></p>"
+        )
+        para_html = (
+            "<p>Sir,<br>Kindly see below the details of the <strong>single consolidated payment of "
+            f"Rs.{_money(total_net)}</strong> transferred to your Bank Account from "
+            "<strong>The District Library Officer, Dindigul</strong>, for the supply of the above magazines, "
+            "with the break-up shown against each magazine. "
+            "We kindly request you to acknowledge receipt of the same.</p>"
+        )
+    else:
+        i0 = items[0]
+        ref_html = (
+            f'<p>Ref: Your Invoice Number <strong>{esc(i0.get("invoiceNo") or "---")}</strong> dated '
+            f'<strong>{esc(i0.get("invoiceDate") or "---")}</strong> for the supply of Magazine '
+            f'<strong>{esc(i0["magazine"])}</strong></p>'
+        )
+        para_html = (
+            "<p>Sir,<br>Kindly see below the details of the payment transferred to your Bank Account from "
+            "<strong>The District Library Officer, Dindigul</strong>, for the supply of the magazine "
+            f'<strong>{esc(i0["magazine"])}</strong>, as per the invoice under reference cited. '
+            "We kindly request you to acknowledge receipt of the same.</p>"
+        )
+
+    remarks_txt = f"{esc(quarter)} SETTLED" + (" | " + esc(" | ".join(remarks)) if remarks else "")
+
     return f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8"><style>
   @page {{ size: A4; margin: 25mm 18mm; }}
@@ -272,47 +390,42 @@ def build_payment_intimation_html(p):
   table {{ width:100%; border-collapse:collapse; margin:16px 0; }}
   th,td {{ border:1px solid #000; padding:6px; font-size:11px; }}
   th {{ background:#1e4d8c; color:#fff; }}
+  tr.tot td {{ background:#eef2f8; }}
   .right {{ text-align:right; }}
   .ctr {{ text-align:center; }}
 </style></head>
 <body>
-  <div class="right">Date: {p.get('paymentDate') or '---'}</div>
+  <div class="right">Date: {esc(', '.join(dates) or '---')}</div>
   <h2>District Library Office, Dindigul</h2>
-  <h3>PAYMENT CLEARED INTIMATION FOR {p.get('quarter') or '---'}</h3>
+  <h3>PAYMENT CLEARED INTIMATION FOR {esc(quarter)}</h3>
   <p>Sir,</p>
-  <p>Ref: Your Invoice Number <strong>{p.get('invoiceNo') or '---'}</strong> dated
-     <strong>{p.get('invoiceDate') or '---'}</strong> for the supply of Magazine
-     <strong>{p.get('magazine')}</strong></p>
-  <p>Sir,<br>Kindly see below the details of the payment transferred to your Bank Account from
-     <strong>The District Library Officer, Dindigul</strong>, for the supply of the magazine
-     <strong>{p.get('magazine')}</strong>, as per the invoice under reference cited.
-     We kindly request you to acknowledge receipt of the same.</p>
+  {ref_html}
+  {para_html}
   <table>
-    <tr><th>S.No</th><th>Magazine</th><th>Qty</th><th>Bill Amt</th><th>Deduction</th>
-        <th>Paid Amt</th><th>Date</th><th>Ref</th></tr>
-    <tr>
-      <td class="ctr">1</td><td>{p.get('magazine')}</td>
-      <td class="ctr">{p.get('supplyQty') or 0}</td>
-      <td class="right">{p.get('billAmount') or 0}</td>
-      <td class="right">{p.get('deduction') or 0}</td>
-      <td class="right">{p.get('netAmount') or 0}</td>
-      <td class="ctr">{p.get('paymentDate') or '---'}</td>
-      <td class="ctr">{p.get('transactionNo') or '---'}</td>
-    </tr>
+    <tr><th>S.No</th><th>Magazine</th><th>Invoice No</th><th>Invoice Date</th>
+        <th>Bill Amt</th><th>Deduction</th><th>Paid Amt</th></tr>
+    {rows_html}
   </table>
-  <p><strong>Remarks:</strong> {p.get('quarter')} SETTLED{(' | ' + p['remarks']) if p.get('remarks') else ''}</p>
+  <p><strong>Transaction Ref No:</strong> {esc(', '.join(txns) or '---')}
+     &nbsp;&nbsp;|&nbsp;&nbsp; <strong>Payment Date:</strong> {esc(', '.join(dates) or '---')}</p>
+  <p><strong>Remarks:</strong> {remarks_txt}</p>
   <p>Please send back the Acknowledgement receipt.</p>
   <p><strong>Bank Details:</strong></p>
   <table>
-    <tr><td>PAYEE NAME</td><td>{bank.get('payeeName') or '---'}</td></tr>
-    <tr><td>BANK NAME</td><td>{bank.get('bankName') or '---'}</td></tr>
-    <tr><td>BRANCH</td><td>{bank.get('branch') or '---'}</td></tr>
-    <tr><td>A/C NO</td><td>{bank.get('accNo') or '---'}</td></tr>
-    <tr><td>IFSC</td><td>{bank.get('ifsc') or '---'}</td></tr>
+    <tr><td>PAYEE NAME</td><td>{esc(bank.get('payeeName') or '---')}</td></tr>
+    <tr><td>BANK NAME</td><td>{esc(bank.get('bankName') or '---')}</td></tr>
+    <tr><td>BRANCH</td><td>{esc(bank.get('branch') or '---')}</td></tr>
+    <tr><td>A/C NO</td><td>{esc(bank.get('accNo') or '---')}</td></tr>
+    <tr><td>IFSC</td><td>{esc(bank.get('ifsc') or '---')}</td></tr>
   </table>
   <br><br>
   <p class="right">Thanking and Regards,<br>District Library Officer<br>Dindigul</p>
 </body></html>"""
+
+
+def build_payment_intimation_html(p):
+    """ஒற்றை இதழுக்கான letter — குழு தர்க்கத்தையே பயன்படுத்துகிறது."""
+    return build_group_intimation_html([p])
 
 
 def fetch_payment_for_mail(cur, payment_id):
@@ -320,7 +433,7 @@ def fetch_payment_for_mail(cur, payment_id):
     cur.execute(
         """
         SELECT p.*, m.email_id, m.payee_name, m.bank_name, m.bank_place,
-               m.bank_account_number, m.ifsc_code
+               m.bank_account_number, m.ifsc_code, m.vendor_name, m.tnpfts_code
         FROM payments p
         LEFT JOIN magazines m ON m.name = p.magazine
         WHERE p.id=%s
@@ -333,6 +446,9 @@ def fetch_payment_for_mail(cur, payment_id):
     return {
         "id": r["id"],
         "magazine": r["magazine"],
+        "voucherNo": r["voucher_no"] or "",
+        "vendorCode": (r["tnpfts_code"] or "").strip(),
+        "vendorName": vendor_display_name(r["vendor_name"], r["payee_name"], r["magazine"]),
         "invoiceNo": r["invoice_no"] or "",
         "invoiceDate": fmt_date(r["invoice_date"]),
         "supplyQty": float(r["total_issues"] or 0),
@@ -352,6 +468,41 @@ def fetch_payment_for_mail(cur, payment_id):
             "ifsc": r["ifsc_code"] or "",
         },
     }
+
+
+def fetch_mail_group(cur, lead_id):
+    """lead_id உள்ள இதழின் Vendor Code + Quarter-ல் மெயிலுக்குத் தயாரான (தொகை வழங்கி, Transaction No
+    பதிவாகி, இன்னும் மெயில் அனுப்பாத) அனைத்து இதழ்களையும் voucher வரிசையில் திருப்பும்.
+    திருப்புவது: (members | None, blockers | None)."""
+    cur.execute(
+        "SELECT p.id, p.quarter, m.tnpfts_code FROM payments p "
+        "LEFT JOIN magazines m ON m.name = p.magazine WHERE p.id=%s",
+        (lead_id,),
+    )
+    lead = cur.fetchone()
+    if not lead:
+        return None, None
+    code = norm_code(lead["tnpfts_code"])
+    if code:
+        cur.execute(
+            """
+            SELECT p.id FROM payments p
+            LEFT JOIN magazines m ON m.name = p.magazine
+            WHERE p.quarter=%s AND UPPER(TRIM(COALESCE(m.tnpfts_code,'')))=%s
+              AND p.payment_date IS NOT NULL
+              AND p.transaction_no IS NOT NULL AND p.transaction_no<>''
+              AND p.mail_sent = FALSE
+            """,
+            (lead["quarter"], code),
+        )
+        ids = [r["id"] for r in cur.fetchall()]
+    else:
+        ids = [lead_id]
+    members = [fetch_payment_for_mail(cur, i) for i in ids]
+    members = [m for m in members if m]
+    members.sort(key=lambda m: (voucher_sort_key(m["voucherNo"]), m["magazine"]))
+    blockers = fetch_group_blockers(cur, lead["quarter"]).get((lead["quarter"], code)) if code else None
+    return members, blockers
 
 
 # --------------------------------------------------------------------------- #
@@ -853,62 +1004,177 @@ def api_paid_list():
 # --------------------------------------------------------------------------- #
 @app.route("/api/payments/transactions")
 def api_get_transactions():
+    """Bank Transaction பதிவுக்கான பட்டியல் — Voucher எண் (எண் மதிப்பு) வரிசையில், ஒரே Vendor/Beneficiary Code
+    (அதே Quarter) உள்ள இதழ்கள் ஒரே குழுவாக. குழுவில் இன்னும் தொகை வழங்காத இதழ் இருந்தால் blocked=true."""
     quarter = request.args.get("quarter") or None
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            sql = (
+                "SELECT p.id, p.voucher_no, p.magazine, p.paid_amt, p.payment_date, p.quarter, "
+                "       m.tnpfts_code, m.vendor_name, m.payee_name "
+                "FROM payments p LEFT JOIN magazines m ON m.name = p.magazine "
+                "WHERE p.payment_date IS NOT NULL AND (p.transaction_no IS NULL OR p.transaction_no='')"
+            )
+            params = ()
             if quarter:
-                cur.execute(
-                    """SELECT id, voucher_no, magazine, paid_amt, payment_date
-                       FROM payments
-                       WHERE payment_date IS NOT NULL AND (transaction_no IS NULL OR transaction_no='')
-                         AND quarter=%s
-                       ORDER BY sno""",
-                    (quarter,),
-                )
-            else:
-                cur.execute(
-                    """SELECT id, voucher_no, magazine, paid_amt, payment_date
-                       FROM payments
-                       WHERE payment_date IS NOT NULL AND (transaction_no IS NULL OR transaction_no='')
-                       ORDER BY sno"""
-                )
+                sql += " AND p.quarter=%s"
+                params = (quarter,)
+            cur.execute(sql, params)
             rows = cur.fetchall()
-        result = [
-            {
-                "row": r["id"],
-                "sno": r["voucher_no"] or "",
-                "magazine": r["magazine"],
-                "amountPaid": float(r["paid_amt"] or 0),
-                "paymentDate": r["payment_date"].strftime("%d-%m-%Y") if r["payment_date"] else "",
-            }
-            for r in rows
-        ]
-        return jsonify(result)
+            blockers = fetch_group_blockers(cur, quarter)
+
+        groups = {}
+        for r in rows:
+            code = norm_code(r["tnpfts_code"])
+            key = (r["quarter"], code) if code else (r["quarter"], "#%d" % r["id"])
+            g = groups.get(key)
+            if g is None:
+                b = blockers.get((r["quarter"], code)) if code else None
+                pending = list(b["pending"]) if b else []
+                g = groups[key] = {
+                    "key": "%s|%s" % key,
+                    "quarter": r["quarter"] or "",
+                    "code": (r["tnpfts_code"] or "").strip(),
+                    "vendorName": vendor_display_name(r["vendor_name"], r["payee_name"], r["magazine"]),
+                    "items": [],
+                    "total": 0.0,
+                    "pending": pending,
+                    "blocked": bool(pending),
+                }
+            amt = float(r["paid_amt"] or 0)
+            g["items"].append(
+                {
+                    "row": r["id"],
+                    "voucherNo": r["voucher_no"] or "",
+                    "magazine": r["magazine"],
+                    "amountPaid": amt,
+                    "paymentDate": r["payment_date"].strftime("%d-%m-%Y") if r["payment_date"] else "",
+                }
+            )
+            g["total"] += amt
+
+        out = []
+        for g in groups.values():
+            g["items"].sort(key=lambda it: (voucher_sort_key(it["voucherNo"]), it["magazine"]))
+            g["rows"] = [it["row"] for it in g["items"]]
+            out.append(g)
+        out.sort(key=lambda g: (voucher_sort_key(g["items"][0]["voucherNo"]), g["vendorName"], g["quarter"]))
+        return jsonify({"success": True, "groups": out})
     finally:
         conn.close()
 
 
 @app.route("/api/payments/transactions", methods=["POST"])
 def api_save_transactions():
-    updates = request.get_json(force=True)  # [{row, transactionNo}]
+    updates = request.get_json(force=True) or []  # [{row, transactionNo}]
     conn = get_conn()
-    updated, errors = 0, []
+    updated, errors, blocked_msgs = 0, [], set()
     try:
         with conn.cursor() as cur:
+            ids = []
             for item in updates:
                 try:
+                    ids.append(int(item.get("row")))
+                except (TypeError, ValueError):
+                    pass
+            info = {}
+            if ids:
+                cur.execute(
+                    "SELECT p.id, p.magazine, p.quarter, m.tnpfts_code FROM payments p "
+                    "LEFT JOIN magazines m ON m.name = p.magazine WHERE p.id = ANY(%s)",
+                    (ids,),
+                )
+                info = {r["id"]: r for r in cur.fetchall()}
+            blockers = fetch_group_blockers(cur)
+
+            for item in updates:
+                try:
+                    row = int(item.get("row"))
+                    tx = str(item.get("transactionNo", "")).strip()
+                    inf = info.get(row)
+                    # குழுவில் தொகை வழங்காத இதழ் இருந்தால் Transaction No பதிவைத் தடுக்கும்
+                    if tx and inf:
+                        code = norm_code(inf["tnpfts_code"])
+                        b = blockers.get((inf["quarter"], code)) if code else None
+                        if b and b["pending"]:
+                            blocked_msgs.add(
+                                f"{inf['magazine']}: இதே Vendor Code உள்ள {', '.join(b['pending'])} இதழுக்கு "
+                                f"இன்னும் தொகை வழங்கப்படவில்லை"
+                            )
+                            continue
                     cur.execute(
                         "UPDATE payments SET transaction_no=%s, updated_at=now() WHERE id=%s",
-                        (str(item.get("transactionNo", "")).strip(), item.get("row")),
+                        (tx, row),
                     )
                     updated += 1
                 except Exception as e:  # noqa: BLE001
                     errors.append(f"Row {item.get('row')}: {e}")
             conn.commit()
+        errors = sorted(blocked_msgs) + errors
         if errors:
-            return jsonify({"success": False, "updated": updated, "errors": errors, "message": "சில row-களில் பிழை ஏற்பட்டது"})
+            return jsonify({"success": False, "updated": updated, "errors": errors,
+                            "message": "சில பதிவுகள் சேமிக்கப்படவில்லை: " + " | ".join(errors)})
         return jsonify({"success": True, "updated": updated, "message": f"{updated} பதிவுகள் வெற்றிகரமாக புதுப்பிக்கப்பட்டன"})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/payments/group-status")
+def api_group_status():
+    """ஒரு இதழைத் தேர்ந்தெடுக்கும்போது, அதே Vendor/Beneficiary Code உள்ள மற்ற இதழ்கள் (அதே Quarter)
+    ✅ வழங்கப்பட்டது / ⏳ வழங்க வேண்டும் / ❗ Invoice பதிவாகவில்லை என்ற நிலையுடன்."""
+    quarter = request.args.get("quarter", "").strip()
+    magazine = request.args.get("magazine", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT tnpfts_code, vendor_name, payee_name FROM magazines WHERE name=%s", (magazine,)
+            )
+            m = cur.fetchone()
+            code = norm_code(m["tnpfts_code"]) if m else ""
+            if not code:
+                return jsonify({"success": True, "code": "", "vendorName": "", "siblings": []})
+            vendor = vendor_display_name(m["vendor_name"], m["payee_name"], code)
+
+            cur.execute(
+                "SELECT name FROM magazines WHERE UPPER(TRIM(COALESCE(tnpfts_code,'')))=%s AND name<>%s",
+                (code, magazine),
+            )
+            names = {r["name"] for r in cur.fetchall()}
+            if not names:
+                return jsonify({"success": True, "code": code, "vendorName": vendor, "siblings": []})
+
+            cur.execute(
+                "SELECT magazine, payment_date, paid_amt, requested_amt, voucher_no "
+                "FROM payments WHERE quarter=%s AND magazine = ANY(%s)",
+                (quarter, list(names)),
+            )
+            pay = {r["magazine"]: r for r in cur.fetchall()}
+            in_quarter = set(get_master_magazines_for_quarter(cur, quarter))
+
+        siblings = []
+        for name in sorted(names):
+            p = pay.get(name)
+            if p is None and name not in in_quarter:
+                continue  # இந்த Quarter-க்குப் பொருந்தாத இதழ்
+            if p is None:
+                siblings.append({"magazine": name, "status": "no_invoice"})
+            elif p["payment_date"]:
+                siblings.append({
+                    "magazine": name, "status": "paid",
+                    "paidAmt": float(p["paid_amt"] or 0), "paymentDate": fmt_date(p["payment_date"]),
+                })
+            else:
+                siblings.append({
+                    "magazine": name, "status": "pending",
+                    "requestedAmt": float(p["requested_amt"] or 0),
+                })
+        return jsonify({"success": True, "code": code, "vendorName": vendor, "siblings": siblings})
     finally:
         conn.close()
 
@@ -2757,73 +3023,150 @@ def api_payment_advice_pdf():
         conn.close()
 @app.route("/api/mail/ready")
 def api_mail_ready():
+    """மெயில் அனுப்பத் தயாரான பட்டியல் — ஒரே Vendor/Beneficiary Code (அதே Quarter) உள்ள இதழ்கள் ஒரே வரியாக.
+    குழுவில் தொகை வழங்காத / Transaction No பதிவாகாத இதழ் இருந்தால் blocked=true."""
     quarter = request.args.get("quarter", "").strip()
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            base = (
-                "SELECT p.id, p.magazine, p.quarter, p.transaction_no, p.payment_date, "
-                "p.requested_amt, p.paid_amt, m.email_id "
+            sql = (
+                "SELECT p.id, p.magazine, p.quarter, p.voucher_no, p.transaction_no, p.payment_date, "
+                "p.requested_amt, p.paid_amt, m.email_id, m.tnpfts_code, m.vendor_name, m.payee_name "
                 "FROM payments p LEFT JOIN magazines m ON m.name = p.magazine "
                 "WHERE p.transaction_no IS NOT NULL AND p.transaction_no<>'' "
-                "AND p.payment_date IS NOT NULL AND p.mail_sent = FALSE "
-                "AND m.email_id IS NOT NULL AND m.email_id <> ''"
+                "AND p.payment_date IS NOT NULL AND p.mail_sent = FALSE"
             )
+            params = ()
             if quarter:
-                cur.execute(base + " AND p.quarter=%s ORDER BY p.magazine", (quarter,))
-            else:
-                cur.execute(base + " ORDER BY p.quarter, p.magazine")
+                sql += " AND p.quarter=%s"
+                params = (quarter,)
+            cur.execute(sql, params)
             rows = cur.fetchall()
-        result = [
-            {
-                "row": r["id"],
-                "magazine": r["magazine"],
-                "quarter": r["quarter"] or "",
-                "transactionNo": r["transaction_no"] or "",
-                "paymentDate": fmt_date(r["payment_date"]),
-                "billAmount": float(r["requested_amt"] or 0),
-                "netAmount": float(r["paid_amt"] or 0),
-                "email": r["email_id"] or "",
-            }
-            for r in rows
-        ]
-        return jsonify({"success": True, "rows": result})
+            blockers = fetch_group_blockers(cur, quarter or None)
+
+        groups = {}
+        for r in rows:
+            code = norm_code(r["tnpfts_code"])
+            key = (r["quarter"], code) if code else (r["quarter"], "#%d" % r["id"])
+            g = groups.get(key)
+            if g is None:
+                g = groups[key] = {
+                    "key": "%s|%s" % key,
+                    "quarter": r["quarter"] or "",
+                    "code": (r["tnpfts_code"] or "").strip(),
+                    "vendorName": vendor_display_name(r["vendor_name"], r["payee_name"], r["magazine"]),
+                    "emails": [],
+                    "items": [],
+                    "totalBill": 0.0,
+                    "totalNet": 0.0,
+                    "_bk": blockers.get((r["quarter"], code)) if code else None,
+                }
+            em = (r["email_id"] or "").strip()
+            if em and em not in g["emails"]:
+                g["emails"].append(em)
+            bill, net = float(r["requested_amt"] or 0), float(r["paid_amt"] or 0)
+            g["items"].append({
+                "row": r["id"], "voucherNo": r["voucher_no"] or "", "magazine": r["magazine"],
+                "billAmount": bill, "netAmount": net,
+                "transactionNo": r["transaction_no"] or "", "paymentDate": fmt_date(r["payment_date"]),
+            })
+            g["totalBill"] += bill
+            g["totalNet"] += net
+
+        out = []
+        for g in groups.values():
+            if not g["emails"]:
+                continue  # மெயில் ID இல்லாத குழு — முன்பும் பட்டியலில் வராது
+            bk = g.pop("_bk")
+            reasons = []
+            if bk and bk["pending"]:
+                reasons.append("இன்னும் தொகை வழங்காதவை: " + ", ".join(bk["pending"]))
+            if bk and bk["missingTxn"]:
+                reasons.append("Transaction No பதிவாகாதவை: " + ", ".join(bk["missingTxn"]))
+            g["blocked"] = bool(reasons)
+            g["blockReason"] = " | ".join(reasons)
+            g["items"].sort(key=lambda it: (voucher_sort_key(it["voucherNo"]), it["magazine"]))
+            g["rows"] = [it["row"] for it in g["items"]]
+            g["email"] = g["emails"][0]
+            out.append(g)
+        out.sort(key=lambda g: (g["quarter"], voucher_sort_key(g["items"][0]["voucherNo"]), g["vendorName"]))
+        return jsonify({"success": True, "groups": out})
     finally:
         conn.close()
 
 
 @app.route("/api/mail/send", methods=["POST"])
 def api_mail_send():
-    payload = request.get_json(force=True)
-    payment_id = payload.get("row")
-    if not payment_id:
+    """ஒரு Vendor/Beneficiary Code குழுவுக்கு ஒரே மெயில் + ஒரே PDF. `rows` (அல்லது பழைய `row`) — குழுவின்
+    ஏதாவது ஒரு payment id; குழுவிலுள்ள மெயிலுக்குத் தயாரான அனைத்து இதழ்களும் சேர்த்து அனுப்பப்படும்."""
+    payload = request.get_json(force=True) or {}
+    ids = payload.get("rows") or ([payload.get("row")] if payload.get("row") else [])
+    try:
+        ids = [int(i) for i in ids]
+    except (TypeError, ValueError):
+        ids = []
+    if not ids:
         return jsonify({"success": False, "message": "Payment row தேவை"}), 400
 
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            p = fetch_payment_for_mail(cur, payment_id)
-            if not p:
+            members, blockers = fetch_mail_group(cur, ids[0])
+            if members is None:
                 return jsonify({"success": False, "message": "Payment record கிடைக்கவில்லை"}), 404
-            if not p["email"]:
-                return jsonify({"success": False, "message": f"'{p['magazine']}'-க்கு Email இல்லை. Master Data → Vendors-ல் சேர்க்கவும்."}), 400
+            member_ids = {m["id"] for m in members}
+            if ids[0] not in member_ids:
+                return jsonify({"success": False, "message": "இந்த இதழுக்கு ஏற்கனவே மெயில் அனுப்பப்பட்டுள்ளது அல்லது Transaction No பதிவாகவில்லை"}), 400
+            if not set(ids) <= member_ids:
+                return jsonify({"success": False, "message": "தேர்ந்தெடுத்த இதழ்கள் ஒரே Vendor Code குழுவைச் சேர்ந்தவை அல்ல"}), 400
+            if blockers and (blockers["pending"] or blockers["missingTxn"]):
+                why = []
+                if blockers["pending"]:
+                    why.append("இன்னும் தொகை வழங்காதவை: " + ", ".join(blockers["pending"]))
+                if blockers["missingTxn"]:
+                    why.append("Transaction No பதிவாகாதவை: " + ", ".join(blockers["missingTxn"]))
+                return jsonify({
+                    "success": False,
+                    "message": "இந்தக் குழுவின் அனைத்து இதழ்களுக்கும் தொகை வழங்கி Transaction No பதிவு செய்த பின்பே "
+                               "மெயில் அனுப்ப முடியும் — " + " | ".join(why),
+                }), 400
 
-            pdf_bytes = html_to_pdf_bytes(build_payment_intimation_html(p))
-            subject = f"Magazine Payment - {p['magazine']} - {p['quarter']}"
-            body = f"""Hello,<br><br>
-The payment for your magazine "{p['magazine']}" has been completed.<br>
+            email = next((m["email"] for m in members if m["email"]), "")
+            names = ", ".join(m["magazine"] for m in members)
+            if not email:
+                return jsonify({"success": False, "message": f"'{names}'-க்கு Email இல்லை. Master Data → Vendors-ல் சேர்க்கவும்."}), 400
+
+            quarter = members[0]["quarter"]
+            pdf_bytes = html_to_pdf_bytes(build_group_intimation_html(members))
+            if len(members) == 1:
+                m0 = members[0]
+                subject = f"Magazine Payment - {m0['magazine']} - {quarter}"
+                body = f"""Hello,<br><br>
+The payment for your magazine "{m0['magazine']}" has been completed.<br>
 Please find the PDF attached.<br><br>Thank you."""
-            attachment_name = f"{p['magazine']} - {p['quarter']}.pdf"
+                attachment_name = f"{m0['magazine']} - {quarter}.pdf"
+                label = m0["magazine"]
+            else:
+                vendor = members[0]["vendorName"]
+                total = sum(m["netAmount"] for m in members)
+                subject = f"Magazine Payment - {vendor} ({len(members)} magazines) - {quarter}"
+                items_html = "".join(f"<li>{m['magazine']}</li>" for m in members)
+                body = f"""Hello,<br><br>
+The payment of Rs.{indian_grouping(total)} for the following magazines has been completed as a single transfer:
+<ul>{items_html}</ul>
+Please find the PDF attached with the break-up for each magazine.<br><br>Thank you."""
+                attachment_name = f"{vendor} - {quarter}.pdf".replace("/", "-")
+                label = f"{vendor} ({len(members)} இதழ்கள்)"
 
-            send_email(p["email"], subject, body, pdf_bytes, attachment_name)
+            send_email(email, subject, body, pdf_bytes, attachment_name)
 
-            pdf_url = f"/api/mail/pdf/{payment_id}"
+            pdf_url = f"/api/mail/pdf/{members[0]['id']}"
             cur.execute(
-                "UPDATE payments SET mail_sent=TRUE, pdf_url=%s, updated_at=now() WHERE id=%s",
-                (pdf_url, payment_id),
+                "UPDATE payments SET mail_sent=TRUE, pdf_url=%s, updated_at=now() WHERE id = ANY(%s)",
+                (pdf_url, [m["id"] for m in members]),
             )
             conn.commit()
-        return jsonify({"success": True, "message": f"{p['magazine']} → மெயில் + PDF அனுப்பப்பட்டது", "pdfUrl": pdf_url})
+        return jsonify({"success": True, "count": len(members), "message": f"{label} → மெயில் + PDF அனுப்பப்பட்டது", "pdfUrl": pdf_url})
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
@@ -2833,19 +3176,29 @@ Please find the PDF attached.<br><br>Thank you."""
 
 @app.route("/api/mail/pdf/<int:payment_id>")
 def api_mail_pdf(payment_id):
-    """Drive-ல் சேமிக்காமல், தேவைப்படும்போது PDF-ஐ மீண்டும் உருவாக்கி காட்டும்/பதிவிறக்கும்."""
+    """Drive-ல் சேமிக்காமல், தேவைப்படும்போது PDF-ஐ மீண்டும் உருவாக்கி காட்டும்/பதிவிறக்கும்.
+    ஒரே மெயிலில் அனுப்பப்பட்ட குழுவின் இதழ்கள் அனைத்தும் (அதே pdf_url) ஒரே PDF-ல் வரும்."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            p = fetch_payment_for_mail(cur, payment_id)
-        if not p:
+            cur.execute("SELECT pdf_url FROM payments WHERE id=%s", (payment_id,))
+            r0 = cur.fetchone()
+            ids = [payment_id]
+            if r0 and r0["pdf_url"]:
+                cur.execute("SELECT id FROM payments WHERE pdf_url=%s", (r0["pdf_url"],))
+                ids = [r["id"] for r in cur.fetchall()] or ids
+            members = [fetch_payment_for_mail(cur, i) for i in ids]
+            members = [m for m in members if m]
+        if not members:
             return jsonify({"success": False, "message": "Payment record கிடைக்கவில்லை"}), 404
-        pdf_bytes = html_to_pdf_bytes(build_payment_intimation_html(p))
+        members.sort(key=lambda m: (voucher_sort_key(m["voucherNo"]), m["magazine"]))
+        pdf_bytes = html_to_pdf_bytes(build_group_intimation_html(members))
+        base = members[0]["magazine"] if len(members) == 1 else members[0]["vendorName"]
         return send_file(
             io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
             as_attachment=False,
-            download_name=f"{p['magazine']} - {p['quarter']}.pdf",
+            download_name=f"{base} - {members[0]['quarter']}.pdf".replace("/", "-"),
         )
     finally:
         conn.close()

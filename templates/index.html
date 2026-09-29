@@ -340,6 +340,25 @@
     .report-btn .r-title { font-size: 14px; font-weight: 700; color: var(--navy); margin-top: 4px; }
     .report-content-area { background: var(--bg); border-radius: 12px; padding: 24px; min-height: 300px; border: 1.5px solid var(--border); }
 
+    /* ───── GROUP (ஒரே Vendor/Beneficiary Code) ───── */
+    .data-table tbody tr.grp-head td { background:#e8eefb; font-weight:700; color:var(--navy); border-top:2px solid var(--navy); }
+    .data-table tbody tr.grp-item td { background:#fbfcff; }
+    .data-table tbody tr.grp-total td { background:#fff8e1; font-weight:700; color:var(--navy); border-bottom:2px solid var(--accent); }
+    .data-table tbody tr.grp-warn td { background:#fdecea; color:#a12b20; font-size:13.5px; }
+    .data-table tbody tr.mail-blocked td { background:#fdf3f2; }
+    .grp-break { font-weight:500; font-size:12.5px; color:var(--muted); }
+    .grp-code  { font-weight:500; font-size:12.5px; color:var(--muted); margin-left:6px; }
+    .mail-sub  { font-size:12.5px; color:var(--muted); margin-top:4px; line-height:1.6; }
+    .mail-warn { font-size:12.5px; color:#a12b20; margin-top:6px; font-weight:600; }
+    .gs-list   { margin-top:12px; display:flex; flex-direction:column; gap:6px; }
+    .gs-row    { display:flex; align-items:center; gap:10px; font-size:14px; background:var(--bg); border-radius:10px; padding:9px 12px; }
+    .gs-row .gs-ic { flex:0 0 auto; font-size:16px; }
+    .gs-row .gs-name { flex:1 1 auto; font-weight:700; color:var(--navy); word-break:break-word; }
+    .gs-row .gs-note { flex:0 0 auto; font-size:12px; color:var(--muted); text-align:right; }
+    .gs-row.pending { background:#fff6e0; border:1px solid #f0d58a; }
+    .gs-row.noinv   { background:#fdecea; border:1px solid #f1b8b1; }
+    .cc-card.wide { max-width: 560px; }
+
     /* ───── MAIL OPTIONS ───── */
     .sub-menu-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 18px; }
     .sub-menu-card {
@@ -946,7 +965,7 @@
         <div class="ph-icon">🏦</div>
         <div>
           <h2>Bank Transaction Number பதிவு</h2>
-          <p>Payment Date உள்ள இதழ்களுக்கு Transaction No பதிவு செய்</p>
+          <p>Payment Date உள்ள இதழ்களுக்கு Transaction No பதிவு செய் — Voucher வரிசையில்; ஒரே Vendor Code இதழ்களுக்கு ஒரே Transaction No</p>
         </div>
       </div>
       <div class="card">
@@ -964,7 +983,7 @@
         <div class="data-table-wrap">
           <table class="data-table">
             <thead><tr>
-              <th class="ctr">S.No</th>
+              <th class="ctr">Voucher No</th>
               <th>இதழ் பெயர்</th>
               <th class="num">தொகை (₹)</th>
               <th class="ctr">வழங்கிய தேதி</th>
@@ -994,7 +1013,7 @@
         <div class="ph-icon">📨</div>
         <div>
           <h2>Publisher-க்கு மெயில் + PDF அனுப்பு</h2>
-          <p>Transaction Number பதிவு செய்யப்பட்ட இதழ்கள்</p>
+          <p>Transaction Number பதிவு செய்யப்பட்ட இதழ்கள் — ஒரே Vendor Code இதழ்களுக்கு ஒரே மெயில், ஒரே PDF</p>
         </div>
       </div>
       <div class="card">
@@ -1549,9 +1568,9 @@
     getPaymentsWithTransactionDate: q => get('/api/payments/transactions?' + Q({ quarter: q || '' })),
     saveTransactionNumbers: u => soft('/api/payments/transactions', postOpt(u)),
 
-    getEmailReadyPayments: q => get('/api/mail/ready?' + Q({ quarter: q || '' }),
-      d => (d.rows || []).map(r => Object.assign({}, r, { amountPaid: r.netAmount }))),
-    sendPublisherEmailWithPDF: p => soft('/api/mail/send', postOpt({ row: p.row })),
+    getEmailReadyPayments: q => get('/api/mail/ready?' + Q({ quarter: q || '' }), d => d.groups || []),
+    sendPublisherEmailWithPDF: p => soft('/api/mail/send', postOpt({ rows: p.rows || (p.row ? [p.row] : []) })),
+    getGroupStatus: (q, m) => get('/api/payments/group-status?' + Q({ quarter: q, magazine: m })),
 
     getPendingInvoicesForReminder: q => get('/api/reminders/pending-invoices?' + Q({ quarter: q }), d => d.rows || []),
     sendPendingInvoiceReminderEmails: list => soft('/api/reminders/send', postOpt({ items: list })),
@@ -1705,10 +1724,10 @@
         ];
         const ov = document.createElement('div');
         ov.className = 'cc-overlay';
-        ov.setAttribute('role', 'dialog');
+        ov.setAttribute('role', opts.locked ? 'alertdialog' : 'dialog');
         ov.setAttribute('aria-modal', 'true');
         ov.innerHTML =
-          '<div class="cc-card">' +
+          '<div class="cc-card' + (opts.wide ? ' wide' : '') + '">' +
             '<div class="cc-head"><div class="cc-icon">' + (opts.icon || '📋') + '</div>' +
               '<div><div class="cc-title">' + _ccEsc(opts.title || '') + '</div>' +
               (opts.subtitle ? '<div class="cc-sub">' + _ccEsc(opts.subtitle) + '</div>' : '') +
@@ -1726,7 +1745,11 @@
           resolve(opts.resolveWith ? opts.resolveWith(val, ov) : val);
         }
         function onKey(e) {
-          if (e.key === 'Escape') { e.preventDefault(); close(null); }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            if (opts.locked) { e.stopPropagation(); return; }   // locked: Esc மூடாது
+            close(null);
+          }
         }
         btns.forEach(b => {
           const el = document.createElement('button');
@@ -1736,7 +1759,7 @@
           el.onclick = () => close(b.value);
           actions.appendChild(el);
         });
-        ov.addEventListener('mousedown', e => { if (e.target === ov) close(null); });
+        ov.addEventListener('mousedown', e => { if (e.target === ov && !opts.locked) close(null); });
         document.addEventListener('keydown', onKey, true);
         document.body.appendChild(ov);
         if (opts.onMount) opts.onMount(ov, close);
@@ -1749,6 +1772,7 @@
         });
       });
     }
+    let _skipGroupPopupOnce = false;
     let magazines = [];
     let masterData = {};
     let despatchData = {};
@@ -2342,6 +2366,11 @@
 
         setStatus('paymentStatus', 'success', '✅ தரவு ஏற்றப்பட்டது!');
         calculateNetPayable();
+
+        // ஒரே Vendor/Beneficiary Code உள்ள மற்ற இதழ்கள் — கட்டாய popup
+        // (சேமித்தபின் பட்டியலிலிருந்து வந்தால் மீண்டும் காட்டத் தேவையில்லை)
+        if (_skipGroupPopupOnce) { _skipGroupPopupOnce = false; }
+        else { await showGroupMandatoryPopup(magazine, currentQuarter); }
       } catch(e) {
         setStatus('paymentStatus', 'error', '❌ பிழை: ' + e.message);
       }
@@ -2477,6 +2506,7 @@
         });
         if (result.success) {
           setStatus('paymentStatus', 'success', '✅ வெற்றி! ' + result.message);
+          const _savedMag = magazine, _savedQtr = quarter;
           // Form reset
           document.getElementById('quarterSelect').value = '';
           document.getElementById('magazineSection').style.display = 'none';
@@ -2490,12 +2520,87 @@
           document.getElementById('remarks').value = '';
           document.getElementById('billSetNo').value = '';
           currentMagazineData = {};
+          // குழுவில் மீதமுள்ள இதழ்கள் — பட்டியல் + ஒரே கிளிக்கில் அடுத்ததற்குச் செல்ல
+          await showRemainingGroupCard(_savedMag, _savedQtr);
         }
       } catch(e) {
         setStatus('paymentStatus', 'error', '❌ பிழை: ' + e.message);
       } finally {
         hideLoading(btn);
       }
+    }
+
+    // ─── ஒரே Vendor/Beneficiary Code குழு: நிலை பட்டியல் HTML ───
+    function _groupStatusRows(siblings) {
+      return '<div class="gs-list">' + siblings.map(x => {
+        if (x.status === 'paid')
+          return '<div class="gs-row"><span class="gs-ic">✅</span><span class="gs-name">' + _ccEsc(x.magazine) +
+                 '</span><span class="gs-note">வழங்கப்பட்டது<br>' + _ccEsc(x.paymentDate || '') + ' · ₹ ' + _fmtAmt(x.paidAmt) + '</span></div>';
+        if (x.status === 'pending')
+          return '<div class="gs-row pending"><span class="gs-ic">⏳</span><span class="gs-name">' + _ccEsc(x.magazine) +
+                 '</span><span class="gs-note">வழங்க வேண்டும்<br>Bill ₹ ' + _fmtAmt(x.requestedAmt) + '</span></div>';
+        return '<div class="gs-row noinv"><span class="gs-ic">❗</span><span class="gs-name">' + _ccEsc(x.magazine) +
+               '</span><span class="gs-note">Invoice பதிவாகவில்லை</span></div>';
+      }).join('') + '</div>';
+    }
+
+    // ─── இதழைத் தேர்ந்தெடுத்ததும்: மற்ற இதழ்கள் பற்றிய கட்டாய popup (Esc / வெளியே கிளிக் மூடாது) ───
+    async function showGroupMandatoryPopup(magazine, quarter) {
+      let gs;
+      try {
+        gs = await new Promise((res, rej) => {
+          google.script.run.withSuccessHandler(res).withFailureHandler(rej).getGroupStatus(quarter, magazine);
+        });
+      } catch (e) { return; }   // popup பெற முடியாவிட்டாலும் படிவம் தொடரட்டும்
+      if (!gs || !gs.siblings || gs.siblings.length === 0) return;
+      await showConfirmCard({
+        icon: '🧾',
+        title: 'ஒரே நிறுவனத்தின் மற்ற இதழ்கள்',
+        subtitle: (gs.vendorName || '') + ' · Code: ' + gs.code + ' · ' + quarter,
+        wide: true,
+        locked: true,
+        html:
+          '<div class="cc-msg"><b>' + _ccEsc(magazine) + '</b> இதழுக்கு அனுப்பப்படும் தொகை, இதே நிறுவனத்தின் ' +
+          'கீழ்க்காணும் இதழ்களுடன் சேர்த்து <b>ஒரே Bank Transaction-ஆகவும் ஒரே மெயிலாகவும்</b> செல்லும். ' +
+          'எனவே இந்த Quarter-ல் இவற்றுக்கும் தொகை வழங்க வேண்டும்:</div>' +
+          _groupStatusRows(gs.siblings),
+        buttons: [{ label: '✅ சரி, மற்றவற்றுக்கும் வழங்குகிறேன்', value: true, style: 'primary' }]
+      });
+    }
+
+    // ─── சேமித்தபின்: குழுவில் மீதமுள்ளவை + ஒரே கிளிக்கில் அடுத்த இதழுக்குச் செல் ───
+    async function showRemainingGroupCard(magazine, quarter) {
+      let gs;
+      try {
+        gs = await new Promise((res, rej) => {
+          google.script.run.withSuccessHandler(res).withFailureHandler(rej).getGroupStatus(quarter, magazine);
+        });
+      } catch (e) { return; }
+      if (!gs || !gs.siblings || gs.siblings.length === 0) return;
+      const pending = gs.siblings.filter(x => x.status === 'pending');
+      const buttons = pending.map(x => ({ label: '➡️ ' + x.magazine, value: x.magazine, style: 'primary' }));
+      buttons.push({ label: pending.length ? 'பிறகு பார்க்கிறேன்' : '✔️ சரி', value: null, style: 'ghost' });
+      const chosen = await showConfirmCard({
+        icon: pending.length ? '⏳' : '✅',
+        title: pending.length ? 'குழுவில் இன்னும் தொகை வழங்க வேண்டியவை' : 'குழுவின் அனைத்து இதழ்களுக்கும் வழங்கப்பட்டது',
+        subtitle: (gs.vendorName || '') + ' · Code: ' + gs.code + ' · ' + quarter,
+        wide: true,
+        html:
+          '<div class="cc-msg"><b>' + _ccEsc(magazine) + '</b> சேமிக்கப்பட்டது. ' +
+          (pending.length
+            ? 'மீதமுள்ள இதழுக்குச் செல்ல கீழே கிளிக் செய்யவும்:'
+            : 'இனி Bank Transaction No பதிவு செய்து, மெயில் அனுப்பலாம்.') + '</div>' +
+          _groupStatusRows(gs.siblings),
+        buttons
+      });
+      if (!chosen) return;
+      _skipGroupPopupOnce = true;
+      try {
+        document.getElementById('quarterSelect').value = quarter;
+        await loadMagazinesForQuarter();
+        document.getElementById('magazineSelect').value = chosen;
+        await loadNonSupplyData();
+      } finally { _skipGroupPopupOnce = false; }
     }
 
     // ─── Reports ───
@@ -2508,31 +2613,80 @@
         .getReportHTML(reportNo);
     }
 
-    // ─── Transaction ───
+    // ─── Transaction (Voucher வரிசை + ஒரே Vendor Code குழு) ───
+    function _fmtAmt(n) { return Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 }); }
+    function _distinct(a) { return Array.from(new Set(a.filter(Boolean))); }
+
     async function loadTransactionEntries() {
       const quarter = document.getElementById('transQuarterFilter').value;
       setStatus('transStatus', 'loading', '<span class="spinner dark"></span> பதிவுகள் ஏற்றப்படுகின்றன...');
       try {
-        const payments = await new Promise((res, rej) => {
+        const res = await new Promise((res, rej) => {
           google.script.run.withSuccessHandler(res).withFailureHandler(rej).getPaymentsWithTransactionDate(quarter || null);
         });
+        const groups = (res && res.groups) || [];
         const tbody = document.getElementById('transactionTableBody');
         tbody.innerHTML = '';
-        if (payments.length === 0) {
+        if (groups.length === 0) {
           tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted);">இந்த காலாண்டில் Payment Date பதிவு செய்யப்பட்ட இதழ்கள் இல்லை.</td></tr>';
           clearStatus('transStatus'); return;
         }
-        payments.forEach(item => {
-          const tr = document.createElement('tr');
-          tr.innerHTML =
-            '<td class="ctr">' + item.sno + '</td>' +
-            '<td>' + item.magazine + '</td>' +
-            '<td class="num">₹ ' + (item.amountPaid||0).toFixed(2) + '</td>' +
-            '<td class="ctr">' + item.paymentDate + '</td>' +
-            '<td><input type="text" class="transInput" data-row="' + item.row + '" value="' + (item.transactionNo||'') + '" placeholder="Transaction No உள்ளிடவும்"></td>';
-          tbody.appendChild(tr);
+        let total = 0, blockedCnt = 0;
+        groups.forEach(g => {
+          total += g.items.length;
+          if (g.blocked) blockedCnt++;
+          const rowsAttr = g.rows.join(',');
+          if (g.items.length === 1 && !g.blocked) {
+            const it = g.items[0];
+            const tr = document.createElement('tr');
+            tr.innerHTML =
+              '<td class="ctr">' + _ccEsc(it.voucherNo || '—') + '</td>' +
+              '<td>' + _ccEsc(it.magazine) + '</td>' +
+              '<td class="num">₹ ' + _fmtAmt(it.amountPaid) + '</td>' +
+              '<td class="ctr">' + _ccEsc(it.paymentDate) + '</td>' +
+              '<td><input type="text" class="transInput" data-rows="' + rowsAttr + '" placeholder="Transaction No உள்ளிடவும்"></td>';
+            tbody.appendChild(tr);
+            return;
+          }
+          // ── குழு: தலைப்பு ──
+          const head = document.createElement('tr');
+          head.className = 'grp-head';
+          head.innerHTML = '<td colspan="5">🏢 ' + _ccEsc(g.vendorName) +
+            '<span class="grp-code">Code: ' + _ccEsc(g.code) + ' · ' + _ccEsc(g.quarter) + ' · ' + g.items.length + ' இதழ்கள்</span></td>';
+          tbody.appendChild(head);
+          // ── குழு: ஒவ்வொரு இதழ் (Break-up) ──
+          g.items.forEach(it => {
+            const tr = document.createElement('tr');
+            tr.className = 'grp-item';
+            tr.innerHTML =
+              '<td class="ctr">' + _ccEsc(it.voucherNo || '—') + '</td>' +
+              '<td>' + _ccEsc(it.magazine) + '</td>' +
+              '<td class="num">₹ ' + _fmtAmt(it.amountPaid) + '</td>' +
+              '<td class="ctr">' + _ccEsc(it.paymentDate) + '</td><td></td>';
+            tbody.appendChild(tr);
+          });
+          // ── குழு: மொத்தம் + ஒரே Transaction No பெட்டி ──
+          const tot = document.createElement('tr');
+          tot.className = 'grp-total';
+          const brk = g.items.map(it => _fmtAmt(it.amountPaid)).join(' + ');
+          tot.innerHTML =
+            '<td colspan="2" style="text-align:right;">மொத்தம் <span class="grp-break">(' + _ccEsc(brk) + ')</span></td>' +
+            '<td class="num">₹ ' + _fmtAmt(g.total) + '</td><td></td>' +
+            '<td>' + (g.blocked
+              ? '<input type="text" class="transInput" data-rows="' + rowsAttr + '" disabled placeholder="🔒 மற்ற இதழ்களுக்கும் வழங்கிய பின்">'
+              : '<input type="text" class="transInput" data-rows="' + rowsAttr + '" placeholder="குழுவுக்கு ஒரே Transaction No">') + '</td>';
+          tbody.appendChild(tot);
+          if (g.blocked) {
+            const w = document.createElement('tr');
+            w.className = 'grp-warn';
+            w.innerHTML = '<td colspan="5">⚠️ இதே நிறுவனத்தின் <b>' + g.pending.map(_ccEsc).join(', ') +
+              '</b> இதழுக்கு இன்னும் தொகை வழங்கப்படவில்லை. அனைத்திற்கும் வழங்கிய பின்தான் மொத்தத் தொகை உறுதியாகும்; அதுவரை Transaction No பதிவு செய்ய முடியாது.</td>';
+            tbody.appendChild(w);
+          }
         });
-        setStatus('transStatus', 'success', '✅ ' + payments.length + ' பதிவுகள் ஏற்றப்பட்டன');
+        setStatus('transStatus', blockedCnt ? 'error' : 'success',
+          (blockedCnt ? '⚠️ ' : '✅ ') + total + ' பதிவுகள் / ' + groups.length + ' Transaction-கள் ஏற்றப்பட்டன' +
+          (blockedCnt ? ' — ' + blockedCnt + ' குழு(க்கள்) தொகை வழங்கலுக்காகக் காத்திருக்கின்றன' : ''));
       } catch(e) {
         setStatus('transStatus', 'error', '❌ பிழை: ' + e.message);
       }
@@ -2542,9 +2696,12 @@
       const btn = document.getElementById('saveTransactionBtn');
       showLoading(btn, 'சேமிக்கிறது...');
       const updates = [];
-      document.querySelectorAll('.transInput').forEach(input => {
-        const row = parseInt(input.dataset.row);
-        if (row) updates.push({ row, transactionNo: input.value.trim() });
+      document.querySelectorAll('.transInput:not(:disabled)').forEach(input => {
+        const tx = input.value.trim();
+        (input.dataset.rows || '').split(',').forEach(r => {
+          const row = parseInt(r);
+          if (row) updates.push({ row, transactionNo: tx });   // குழுவின் ஒவ்வொரு இதழுக்கும் ஒரே Transaction No
+        });
       });
       if (updates.length === 0) {
         setStatus('transStatus', 'loading', 'சேமிக்க எதுவும் இல்லை');
@@ -2563,42 +2720,58 @@
       } finally { hideLoading(btn); }
     }
 
-    // ─── Email ───
+    // ─── Email (ஒரு Vendor Code குழுவுக்கு ஒரே மெயில் + ஒரே PDF) ───
     async function loadEmailReadyPayments() {
       const quarter = document.getElementById('emailQuarterFilter').value;
       setStatus('emailStatus', 'loading', '<span class="spinner dark"></span> மெயில் அனுப்ப தயாரான பதிவுகள்...');
       try {
-        const payments = await new Promise((res, rej) => {
+        const groups = await new Promise((res, rej) => {
           google.script.run.withSuccessHandler(res).withFailureHandler(rej).getEmailReadyPayments(quarter || null);
         });
         const tbody = document.getElementById('emailTableBody');
         tbody.innerHTML = '';
-        if (payments.length === 0) {
+        if (groups.length === 0) {
           tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--muted);">Transaction Number பதிவு செய்யப்பட்ட இதழ்கள் இல்லை.</td></tr>';
           clearStatus('emailStatus'); return;
         }
-        payments.forEach(item => {
+        let ready = 0, blockedCnt = 0;
+        groups.forEach(g => {
           const tr = document.createElement('tr');
+          if (g.blocked) { tr.className = 'mail-blocked'; blockedCnt++; } else ready++;
+          const multi = g.items.length > 1;
+          let nameCell;
+          if (multi) {
+            nameCell = '<b>' + _ccEsc(g.vendorName) + '</b><span class="grp-code">Code: ' + _ccEsc(g.code) + ' · ' + g.items.length + ' இதழ்கள்</span>' +
+              '<div class="mail-sub">' + g.items.map(it =>
+                '• ' + _ccEsc(it.voucherNo ? it.voucherNo + ' — ' : '') + _ccEsc(it.magazine) + ' — ₹ ' + _fmtAmt(it.netAmount)).join('<br>') + '</div>';
+          } else {
+            nameCell = _ccEsc(g.items[0].magazine);
+          }
+          if (g.blocked) nameCell += '<div class="mail-warn">⚠️ ' + _ccEsc(g.blockReason) + ' — அனைத்தும் முடிந்த பின்தான் மெயில் அனுப்ப முடியும்</div>';
+          const amtCell = '₹ ' + _fmtAmt(g.totalNet) +
+            (multi ? '<div class="grp-break">' + _ccEsc(g.items.map(it => _fmtAmt(it.netAmount)).join(' + ')) + '</div>' : '');
           tr.innerHTML =
-            '<td class="ctr"><input type="checkbox" class="mailCheck" data-row="' + item.row + '"></td>' +
-            '<td>' + item.magazine + '</td>' +
-            '<td class="num">₹ ' + item.amountPaid.toFixed(2) + '</td>' +
-            '<td>' + item.transactionNo + '</td>' +
-            '<td class="ctr">' + item.paymentDate + '</td>' +
-            '<td>' + item.email + '</td>';
+            '<td class="ctr"><input type="checkbox" class="mailCheck" data-rows="' + g.rows.join(',') + '"' + (g.blocked ? ' disabled' : '') + '></td>' +
+            '<td>' + nameCell + '</td>' +
+            '<td class="num">' + amtCell + '</td>' +
+            '<td>' + _ccEsc(_distinct(g.items.map(it => it.transactionNo)).join(', ')) + '</td>' +
+            '<td class="ctr">' + _ccEsc(_distinct(g.items.map(it => it.paymentDate)).join(', ')) + '</td>' +
+            '<td>' + _ccEsc(g.email) + '</td>';
           tbody.appendChild(tr);
         });
 
-        // Select All checkbox logic
+        // Select All checkbox logic (தடுக்கப்பட்ட குழுக்களைத் தவிர்க்கும்)
         const selectAllChk = document.getElementById('selectAllMail');
         if (selectAllChk) {
           selectAllChk.checked = false;
           selectAllChk.onchange = function() {
-            document.querySelectorAll('.mailCheck').forEach(cb => cb.checked = this.checked);
+            document.querySelectorAll('.mailCheck:not(:disabled)').forEach(cb => cb.checked = this.checked);
           };
         }
 
-        setStatus('emailStatus', 'success', '✅ ' + payments.length + ' மெயில்கள் அனுப்ப தயாராக உள்ளன');
+        setStatus('emailStatus', blockedCnt ? 'error' : 'success',
+          (blockedCnt ? '⚠️ ' : '✅ ') + ready + ' மெயில்கள் அனுப்பத் தயார்' +
+          (blockedCnt ? ' — ' + blockedCnt + ' குழு(க்கள்) மற்ற இதழ்களுக்கான தொகை/Transaction No-க்காகக் காத்திருக்கின்றன' : ''));
       } catch(e) {
         setStatus('emailStatus', 'error', '❌ பிழை: ' + e.message);
       }
@@ -2608,26 +2781,29 @@
       const btn = document.getElementById('sendEmailBtn');
       showLoading(btn, 'அனுப்பப்படுகிறது...');
       try {
-        const payments = await new Promise((res, rej) => {
-          google.script.run.withSuccessHandler(res).withFailureHandler(rej).getEmailReadyPayments(document.getElementById('emailQuarterFilter').value || null);
-        });
         const checkedBoxes = document.querySelectorAll('.mailCheck:checked');
         if (checkedBoxes.length === 0) {
-          setStatus('emailStatus', 'error', '❗ குறைந்தது ஒரு இதழையாவது தேர்வு செய்யவும்');
+          setStatus('emailStatus', 'error', '❗ குறைந்தது ஒரு மெயிலையாவது தேர்வு செய்யவும்');
           hideLoading(btn); return;
         }
-        let successCount = 0;
+        let mailCount = 0, magCount = 0;
+        const fails = [];
         for (let cb of checkedBoxes) {
-          const row = parseInt(cb.dataset.row);
-          const payment = payments.find(p => p.row === row);
-          if (!payment) continue;
+          const rows = (cb.dataset.rows || '').split(',').map(x => parseInt(x)).filter(Boolean);
+          if (!rows.length) continue;
           const result = await new Promise(res => {
-            google.script.run.withSuccessHandler(res).withFailureHandler(res).sendPublisherEmailWithPDF(payment);
+            google.script.run.withSuccessHandler(res).withFailureHandler(e => res({ success: false, message: e.message })).sendPublisherEmailWithPDF({ rows });
           });
-          if (result.success) successCount++;
+          if (result && result.success) { mailCount++; magCount += (result.count || rows.length); }
+          else fails.push((result && result.message) || 'பிழை');
         }
-        setStatus('emailStatus', 'success', '✅ ' + successCount + ' மெயில்கள் வெற்றிகரமாக அனுப்பப்பட்டன!');
-        setTimeout(() => backToWelcome(), 2500);
+        if (fails.length) {
+          setStatus('emailStatus', 'error', '❌ ' + mailCount + ' மெயில்கள் அனுப்பப்பட்டன; ' + fails.length + ' தோல்வி — ' + fails.join(' | '));
+          loadEmailReadyPayments();
+        } else {
+          setStatus('emailStatus', 'success', '✅ ' + mailCount + ' மெயில்கள் (' + magCount + ' இதழ்கள்) வெற்றிகரமாக அனுப்பப்பட்டன!');
+          setTimeout(() => backToWelcome(), 2500);
+        }
       } catch(e) {
         setStatus('emailStatus', 'error', '❌ பிழை: ' + e.message);
       } finally { hideLoading(btn); }
