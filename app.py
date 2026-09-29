@@ -711,7 +711,7 @@ def api_save_payment_processing():
     quarter = data.get("quarter")
     non_supply = q_int(data.get("nonSupply"))
     net_payable = q_num(data.get("netPayable"))
-    amount_now_paid = q_num(data.get("amountNowPaid"))
+    amount_now_paid = round(q_num(data.get("amountNowPaid")))  # Rupees மட்டும் — Paisa இல்லை
     payment_date = data.get("paymentDate") or None
     remarks = data.get("remarks")
     bill_set_no = data.get("billSetNo")
