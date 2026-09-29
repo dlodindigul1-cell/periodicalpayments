@@ -2411,7 +2411,7 @@
         const fmt = v => (v === undefined || v === null) ? '—' : Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
         document.getElementById('pic_name').textContent     = document.getElementById('magazineSelect').value || '—';
         document.getElementById('pic_price').textContent    = '₹ ' + fmt(d.masterPrice);
-        document.getElementById('pic_discount').textContent = fmt(d.masterDiscount);
+        document.getElementById('pic_discount').textContent = (d.masterDiscount === undefined || d.masterDiscount === null) ? '—' : Number(d.masterDiscount).toLocaleString('en-IN', { maximumFractionDigits: 2 }) + ' %';
         document.getElementById('pic_net').textContent      = '₹ ' + fmt(d.masterNetPrice);
         picEl.style.display = 'block';
       } else {
@@ -4284,7 +4284,7 @@ function _pdfHelper(fnName, targetId) {
           '<td class="ctr">' + r.quarterCount + '</td>' +
           '<td>' + (r.latestQuarter || '-') + '</td>' +
           '<td class="num-cell">' + fmtMasterNum(r.price) + '</td>' +
-          '<td class="num-cell">' + fmtMasterNum(r.discount) + '</td>' +
+          '<td class="num-cell">' + (r.discount === null || r.discount === undefined ? '-' : fmtMasterNum(r.discount) + ' %') + '</td>' +
           '<td class="num-cell"><b>' + fmtMasterNum(r.issuePrice) + '</b></td>' +
           '<td class="ctr">' +
             '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="editMasterMagazine(\'' + r.name.replace(/'/g, "\\'") + '\')">✏️</button> ' +
