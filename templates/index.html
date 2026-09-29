@@ -467,6 +467,27 @@
       .cc-actions { flex-direction: column-reverse; }
       .cc-btn { flex: 1 1 auto; width: 100%; }
     }
+
+    .cc-field-label { margin-top: 16px; font-size: 12.5px; font-weight: 600; color: var(--muted); text-align: center; }
+    .cc-stepper { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 6px; }
+    .cc-step {
+      width: 44px; height: 44px; border-radius: 12px; cursor: pointer;
+      border: 1.5px solid var(--border); background: #fff; color: var(--navy);
+      font-size: 22px; font-weight: 700; line-height: 1;
+    }
+    .cc-step:hover { background: var(--bg); }
+    .cc-step:focus-visible { outline: 3px solid var(--accent2); outline-offset: 2px; }
+    .cc-qty {
+      width: 110px; height: 48px; text-align: center;
+      font: 700 22px 'Noto Sans Tamil', sans-serif; color: var(--navy);
+      border: 2px solid var(--blue); border-radius: 12px; background: #fff;
+      -moz-appearance: textfield; appearance: textfield;
+    }
+    .cc-qty::-webkit-outer-spin-button, .cc-qty::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .cc-qty:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(200,168,75,.25); }
+    .cc-note { margin-top: 8px; font-size: 12px; color: var(--muted); text-align: center; line-height: 1.5; }
+    .cc-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; filter: none; box-shadow: none; }
+    #qtrIssues[readonly] { cursor: pointer; background: #fff; }
   </style>
 </head>
 <body>
@@ -611,9 +632,9 @@
         </div>
         <div class="field">
           <label>3. QTR Issues <span class="req">*</span></label>
-          <input type="number" id="qtrIssues" placeholder="எ.கா: 3" oninput="updatePreview()" onchange="confirmQtrIssuesAmount()" disabled>
+          <input type="number" id="qtrIssues" placeholder="கிளிக் செய்து உள்ளிடவும்" readonly onclick="reopenQtrIssuesCard()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();reopenQtrIssuesCard();}" disabled>
           <div style="font-size:12px; color:var(--muted); margin-top:4px;">
-            QTR Issues உள்ளிட்டதும், Master விலை அடிப்படையில் கணக்கிடப்பட்ட தொகையை சரிபார்க்குமாறு கேட்கப்படும்.
+            QTR Issues-ஐ Card வழியாக மட்டுமே பதிவு செய்ய முடியும். இதழைத் தேர்ந்தெடுத்ததும் Card தானாகத் திறக்கும்; மாற்ற இந்தப் பெட்டியைக் கிளிக் செய்யவும்.
           </div>
         </div>
       </div>
@@ -1661,7 +1682,7 @@
           document.removeEventListener('keydown', onKey, true);
           ov.classList.remove('show');
           setTimeout(() => ov.remove(), 200);
-          resolve(val);
+          resolve(opts.resolveWith ? opts.resolveWith(val, ov) : val);
         }
         function onKey(e) {
           if (e.key === 'Escape') { e.preventDefault(); close(null); }
@@ -1677,8 +1698,11 @@
         ov.addEventListener('mousedown', e => { if (e.target === ov) close(null); });
         document.addEventListener('keydown', onKey, true);
         document.body.appendChild(ov);
+        if (opts.onMount) opts.onMount(ov, close);
         requestAnimationFrame(() => {
           ov.classList.add('show');
+          const fEl = opts.focusSelector && ov.querySelector(opts.focusSelector);
+          if (fEl) { fEl.focus(); if (fEl.select) fEl.select(); return; }
           const last = actions.querySelector('.cc-btn.primary, .cc-btn.danger') || actions.lastElementChild;
           if (last) last.focus();
         });
@@ -1798,8 +1822,8 @@
       qtrInput.disabled = false;
       loadMagazineDetails();
       checkDuplicateOnSelect();
-      // periodicity அடிப்படையில் QTR Issues தானாக நிரப்பப்பட்டிருந்தால், உடனே தொகை சரிபார்ப்பு கேட்கவும்
-      if (parseInt(qtrInput.value) > 0) confirmQtrIssuesAmount();
+      // Card தானாகத் திறக்கும் — periodicity அடிப்படையிலான மதிப்பு முன்பே நிரப்பப்பட்டிருக்கும்
+      openQtrIssuesCard();
     }
 
     function resetQtrIssuesAndLock() {
@@ -1819,40 +1843,101 @@
       document.getElementById('invoiceDetailsLockedNote').style.display = 'none';
     }
 
-    async function confirmQtrIssuesAmount() {
+    // periodicity அடிப்படையிலான இயல்புநிலை QTR Issues
+    function _qtrDefaultFor(m) {
+      const map = { Monthly:3, Fortnightly:6, Weekly:12, Bimonthly:5, Yearly:1, Quarterly:1, Semiannually:1, Triweekly:28 };
+      return map[(m.periodicity || '').trim()] || 0;
+    }
+
+    function reopenQtrIssuesCard() {
+      const q = document.getElementById('qtrIssues');
+      if (!q || q.disabled) return;
+      openQtrIssuesCard();
+    }
+
+    let _qtrCardOpen = false;
+    async function openQtrIssuesCard() {
+      if (_qtrCardOpen) return;
       const magName = document.getElementById('magazine').value;
-      const qtrIssues = parseInt(document.getElementById('qtrIssues').value) || 0;
-      if (!magName || !qtrIssues) { lockInvoiceFields(); return; }
+      if (!magName) return;
+      const qtrInput = document.getElementById('qtrIssues');
       const m = masterData[magName] || {};
-      const issuePrice  = parseFloat(m.issuePrice)    || 0;
-      const libraries   = parseInt(m.noOfLibraries)   || 0;
-      const actualCost  = issuePrice * libraries * qtrIssues;
-      const ok = await showConfirmCard({
-        icon: '🧾',
-        title: 'தொகை சரிபார்ப்பு',
-        subtitle: 'Master விலை அடிப்படையில் கணக்கிடப்பட்டது',
-        html:
-          '<div class="cc-name"><small>இதழ்</small>' + _ccEsc(magName) + '</div>' +
-          '<div class="cc-chips">' +
-            '<div class="cc-chip"><span>Issue Price</span><b>₹' + issuePrice.toFixed(2) + '</b></div>' +
-            '<div class="cc-times">×</div>' +
-            '<div class="cc-chip"><span>Libraries</span><b>' + libraries + '</b></div>' +
-            '<div class="cc-times">×</div>' +
-            '<div class="cc-chip"><span>QTR Issues</span><b>' + qtrIssues + '</b></div>' +
-          '</div>' +
-          '<div class="cc-total"><span>மொத்த தொகை</span><b>₹' + actualCost.toFixed(2) + '</b></div>' +
-          '<div class="cc-ask">இந்த தொகை உங்களிடம் உள்ள Invoice-ல் உள்ளதா?</div>',
-        buttons: [
-          { label: '✏️ இல்லை, திருத்துகிறேன்', value: false, style: 'ghost' },
-          { label: '✅ ஆம், சரி',               value: true,  style: 'primary' }
-        ]
-      });
-      if (ok) {
+      const issuePrice = parseFloat(m.issuePrice)  || 0;
+      const libraries  = parseInt(m.noOfLibraries) || 0;
+
+      const current = parseInt(qtrInput.value) || 0;           // ஏற்கனவே பதிவானது
+      const dflt    = _qtrDefaultFor(m);                       // periodicity இயல்பு
+      const start   = current > 0 ? current : (dflt > 0 ? dflt : '');
+      const note    = current > 0
+        ? 'தற்போது பதிவாகியுள்ள மதிப்பு — தேவைப்பட்டால் திருத்தலாம்.'
+        : (dflt > 0 ? 'இதழ் காலம் (' + _ccEsc((m.periodicity || '').trim()) + ') அடிப்படையில் தானாக நிரப்பப்பட்டது — தேவைப்பட்டால் திருத்தலாம்.' : '');
+
+      _qtrCardOpen = true;
+      let res;
+      try {
+        res = await showConfirmCard({
+          icon: '🧾',
+          title: 'QTR Issues & தொகை சரிபார்ப்பு',
+          subtitle: 'எண்ணை உள்ளிடவும் — தொகை உடனே கணக்கிடப்படும்',
+          html:
+            '<div class="cc-name"><small>இதழ்</small>' + _ccEsc(magName) + '</div>' +
+            '<div class="cc-chips">' +
+              '<div class="cc-chip"><span>Issue Price</span><b>₹' + issuePrice.toFixed(2) + '</b></div>' +
+              '<div class="cc-times">×</div>' +
+              '<div class="cc-chip"><span>Libraries</span><b>' + libraries + '</b></div>' +
+            '</div>' +
+            '<div class="cc-field-label">QTR Issues <span style="color:#c0392b">*</span></div>' +
+            '<div class="cc-stepper">' +
+              '<button type="button" class="cc-step" id="ccMinus" aria-label="குறை">−</button>' +
+              '<input type="number" id="ccQtrInput" class="cc-qty" min="1" max="99" step="1" inputmode="numeric" value="' + start + '" placeholder="0">' +
+              '<button type="button" class="cc-step" id="ccPlus" aria-label="கூட்டு">+</button>' +
+            '</div>' +
+            (note ? '<div class="cc-note">' + note + '</div>' : '') +
+            '<div class="cc-total"><span>மொத்த தொகை</span><b id="ccTotal">—</b></div>' +
+            '<div class="cc-ask">இந்த தொகை உங்களிடம் உள்ள Invoice-ல் உள்ளதா?</div>',
+          buttons: [
+            { label: 'ரத்து', value: false, style: 'ghost' },
+            { label: '✅ சரி, பதிவு செய்', value: true, style: 'primary' }
+          ],
+          focusSelector: '#ccQtrInput',
+          onMount: function (ov) {
+            const inp = ov.querySelector('#ccQtrInput');
+            const tot = ov.querySelector('#ccTotal');
+            const ok  = ov.querySelector('.cc-btn.primary');
+            const valid = () => { const n = Number(inp.value); return inp.value !== '' && Number.isInteger(n) && n >= 1 && n <= 99; };
+            const refresh = () => {
+              tot.textContent = valid() ? '₹' + (issuePrice * libraries * Number(inp.value)).toFixed(2) : '—';
+              ok.disabled = !valid();
+            };
+            inp.addEventListener('input', refresh);
+            inp.addEventListener('wheel', () => inp.blur(), { passive: true });
+            inp.addEventListener('keydown', e => {
+              if (e.key === 'Enter') { e.preventDefault(); if (!ok.disabled) ok.click(); }
+            });
+            ov.querySelector('#ccMinus').onclick = () => { inp.value = Math.max(1, (parseInt(inp.value) || 2) - 1); refresh(); inp.focus(); };
+            ov.querySelector('#ccPlus').onclick  = () => { inp.value = Math.min(99, (parseInt(inp.value) || 0) + 1); refresh(); inp.focus(); };
+            refresh();
+          },
+          resolveWith: function (val, ov) {
+            if (val !== true) return null;
+            const inp = ov.querySelector('#ccQtrInput');
+            const n = Number(inp.value);
+            return (inp.value !== '' && Number.isInteger(n) && n >= 1 && n <= 99) ? n : null;
+          }
+        });
+      } finally { _qtrCardOpen = false; }
+
+      if (res) {
+        // சரி → QTR Issues உரிய இடத்தில் பதிவு; Invoice விவரங்கள் திறக்கும்
+        qtrInput.value = res;
+        loadMagazineDetails();
         unlockInvoiceFields();
-        setStatus('status', 'success', '✅ தொகை சரிபார்க்கப்பட்டது. இப்போது Invoice விவரங்களை நிரப்பலாம்.');
-      } else {
+        setStatus('status', 'success', '✅ QTR Issues ' + res + ' பதிவானது — மொத்த தொகை ₹' + (issuePrice * libraries * res).toFixed(2) + '. இப்போது Invoice விவரங்களை நிரப்பலாம்.');
+      } else if (!(parseInt(qtrInput.value) > 0)) {
+        // ஏற்கனவே பதிவு இல்லாமல் ரத்து செய்தால்
         lockInvoiceFields();
-        setStatus('status', 'error', '⚠️ QTR Issues-ஐ Invoice-உடன் ஒப்பிட்டு சரிசெய்து, மீண்டும் உள்ளிடவும்.');
+        document.getElementById('pE').textContent = '—';
+        setStatus('status', 'error', '⚠️ QTR Issues பதிவு செய்யப்படவில்லை. QTR Issues பெட்டியைக் கிளிக் செய்து உள்ளிடவும்.');
       }
     }
 
@@ -1937,7 +2022,7 @@
       const periodicityMap = { Monthly:3, Fortnightly:6, Weekly:12, Bimonthly:5, Yearly:1, Quarterly:1, Semiannually:1, Triweekly:28 };
       const qtrInput = document.getElementById('qtrIssues');
       const periodicity = (m.periodicity || '').trim();
-      if (!qtrInput.value) qtrInput.value = periodicityMap[periodicity] || 0;
+      // QTR Issues மதிப்பு Card வழியாக மட்டுமே பதிவாகும் (இங்கே தானாக நிரப்பப்படுவதில்லை)
       const q = parseInt(qtrInput.value) || 0;
       document.getElementById('pE').textContent = q;
       document.getElementById('pF').textContent = (m.noOfLibraries || 0) * q;
