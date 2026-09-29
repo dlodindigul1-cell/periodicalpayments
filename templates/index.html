@@ -502,46 +502,50 @@
 
       <div class="card">
         <div class="card-title">இதழ் & காலாண்டு தகவல்</div>
-        <div class="field-row">
-          <div class="field">
-            <label>Quarter <span class="req">*</span></label>
-            <select id="quarter" onchange="onQuarterChangeInvoiceForm()">
-              <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-              <option value="2025-2026-Q4">2025-2026 Q4</option>
-              <option value="2026-2027-Q1">2026-2027 Q1</option>
-              <option value="2026-2027-Q2">2026-2027 Q2</option>
-              <option value="2026-2027-Q3">2026-2027 Q3</option>
-              <option value="2026-2027-Q4">2026-2027 Q4</option>
-            </select>
-          </div>
-          <div class="field">
-            <label>QTR Issues <span class="req">*</span></label>
-            <input type="number" id="qtrIssues" placeholder="எ.கா: 3" oninput="updatePreview()">
-          </div>
+        <div class="field">
+          <label>1. Quarter <span class="req">*</span></label>
+          <select id="quarter" onchange="onQuarterChangeInvoiceForm()">
+            <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
+            <option value="2025-2026-Q4">2025-2026 Q4</option>
+            <option value="2026-2027-Q1">2026-2027 Q1</option>
+            <option value="2026-2027-Q2">2026-2027 Q2</option>
+            <option value="2026-2027-Q3">2026-2027 Q3</option>
+            <option value="2026-2027-Q4">2026-2027 Q4</option>
+          </select>
         </div>
         <div class="field">
-          <label>பருவ இதழ் பெயர் <span class="req">*</span></label>
-          <select id="magazine" onchange="loadMagazineDetails(); checkDuplicateOnSelect();" disabled>
+          <label>2. பருவ இதழ் பெயர் <span class="req">*</span></label>
+          <select id="magazine" onchange="onMagazineChangeInvoiceForm()" disabled>
             <option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>
           </select>
+        </div>
+        <div class="field">
+          <label>3. QTR Issues <span class="req">*</span></label>
+          <input type="number" id="qtrIssues" placeholder="எ.கா: 3" oninput="updatePreview()" onchange="confirmQtrIssuesAmount()" disabled>
+          <div style="font-size:12px; color:var(--muted); margin-top:4px;">
+            QTR Issues உள்ளிட்டதும், Master விலை அடிப்படையில் கணக்கிடப்பட்ட தொகையை சரிபார்க்குமாறு கேட்கப்படும்.
+          </div>
         </div>
       </div>
 
       <div class="card">
         <div class="card-title">இன்வாய்ஸ் விவரம்</div>
+        <div id="invoiceDetailsLockedNote" style="font-size:13px; color:#a32020; font-weight:600; margin-bottom:14px;">
+          🔒 மேலே QTR Issues-ஐ உள்ளிட்டு, தொகையை சரிபார்த்து உறுதி செய்த பின்னரே இந்த புலங்களை நிரப்ப முடியும்.
+        </div>
         <div class="field-row">
           <div class="field">
             <label>Invoice Number <span class="req">*</span></label>
-            <input type="text" id="invoiceNo" placeholder="எ.கா: INV-2026-001">
+            <input type="text" id="invoiceNo" placeholder="எ.கா: INV-2026-001" disabled>
           </div>
           <div class="field">
             <label>Invoice Date <span class="req">*</span></label>
-            <input type="date" id="invoiceDate">
+            <input type="date" id="invoiceDate" disabled>
           </div>
         </div>
         <div class="field">
-          <label>Requested Amount (₹)</label>
-          <input type="number" id="requestedAmt" step="0.01" placeholder="0.00">
+          <label>Requested Amount (₹) <span style="font-weight:400; color:var(--muted); font-size:12px;">— Invoice-ல் உள்ள எந்த தொகையும் இங்கே பதிவு செய்யலாம்</span></label>
+          <input type="number" id="requestedAmt" step="0.01" placeholder="0.00" disabled>
         </div>
       </div>
 
@@ -703,8 +707,8 @@
         <div class="card-title">கட்டண விவரங்கள்</div>
         <div class="field-row">
           <div class="field">
-            <label>5. இப்போது வழங்கும் தொகை <span class="req">*</span></label>
-            <input type="number" id="amountNowPaid" step="0.01" placeholder="0.00">
+            <label>5. இப்போது வழங்கும் தொகை <span class="req">*</span> <span style="font-weight:400; color:var(--muted); font-size:12px;">(Rupees மட்டும், Paisa இல்லை)</span></label>
+            <input type="number" id="amountNowPaid" step="1" placeholder="0" onchange="this.value = this.value ? Math.round(parseFloat(this.value)) : ''">
           </div>
           <div class="field">
             <label>6. வழங்கும் தேதி <span class="req">*</span></label>
@@ -1612,6 +1616,9 @@
       const magSel = document.getElementById('magazine');
       magSel.innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
       magSel.disabled = true;
+      document.getElementById('qtrIssues').value = '';
+      document.getElementById('qtrIssues').disabled = true;
+      lockInvoiceFields();
       clearStatus('status');
     }
 
@@ -1625,6 +1632,7 @@
       document.getElementById('existingInvoiceCard').style.display = 'none';
       document.getElementById('appendBtn').style.display = 'none';
       isDuplicateExists = false;
+      resetQtrIssuesAndLock();
 
       if (!quarter) {
         magSel.innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
@@ -1635,6 +1643,60 @@
       magSel.disabled = false;
       loadAllData(quarter);
     }
+
+    function onMagazineChangeInvoiceForm() {
+      resetQtrIssuesAndLock();
+      const magName = document.getElementById('magazine').value;
+      const qtrInput = document.getElementById('qtrIssues');
+      if (!magName) { qtrInput.disabled = true; return; }
+      qtrInput.disabled = false;
+      loadMagazineDetails();
+      checkDuplicateOnSelect();
+      // periodicity அடிப்படையில் QTR Issues தானாக நிரப்பப்பட்டிருந்தால், உடனே தொகை சரிபார்ப்பு கேட்கவும்
+      if (parseInt(qtrInput.value) > 0) confirmQtrIssuesAmount();
+    }
+
+    function resetQtrIssuesAndLock() {
+      document.getElementById('qtrIssues').value = '';
+      document.getElementById('qtrIssues').disabled = true;
+      document.getElementById('pE').textContent = '—';
+      lockInvoiceFields();
+    }
+
+    function lockInvoiceFields() {
+      ['invoiceNo', 'invoiceDate', 'requestedAmt'].forEach(id => { document.getElementById(id).disabled = true; });
+      document.getElementById('invoiceDetailsLockedNote').style.display = 'block';
+    }
+
+    function unlockInvoiceFields() {
+      ['invoiceNo', 'invoiceDate', 'requestedAmt'].forEach(id => { document.getElementById(id).disabled = false; });
+      document.getElementById('invoiceDetailsLockedNote').style.display = 'none';
+    }
+
+    function confirmQtrIssuesAmount() {
+      const magName = document.getElementById('magazine').value;
+      const qtrIssues = parseInt(document.getElementById('qtrIssues').value) || 0;
+      if (!magName || !qtrIssues) { lockInvoiceFields(); return; }
+      const m = masterData[magName] || {};
+      const issuePrice  = parseFloat(m.issuePrice)    || 0;
+      const libraries   = parseInt(m.noOfLibraries)   || 0;
+      const actualCost  = issuePrice * libraries * qtrIssues;
+      const ok = confirm(
+        '📋 Master விலை அடிப்படையில் கணக்கிடப்பட்ட தொகை:\n\n' +
+        'இதழ்: ' + magName + '\n' +
+        'Issue Price: ₹' + issuePrice.toFixed(2) + '  ×  Libraries: ' + libraries + '  ×  QTR Issues: ' + qtrIssues + '\n' +
+        '= மொத்த தொகை: ₹' + actualCost.toFixed(2) + '\n\n' +
+        'இந்த தொகை உங்களிடம் உள்ள Invoice-ல் உள்ளதா? சரிபார்த்து உறுதி செய்யவும்.'
+      );
+      if (ok) {
+        unlockInvoiceFields();
+        setStatus('status', 'success', '✅ தொகை சரிபார்க்கப்பட்டது. இப்போது Invoice விவரங்களை நிரப்பலாம்.');
+      } else {
+        lockInvoiceFields();
+        setStatus('status', 'error', '⚠️ QTR Issues-ஐ Invoice-உடன் ஒப்பிட்டு சரிசெய்து, மீண்டும் உள்ளிடவும்.');
+      }
+    }
+
     function showPaymentForm() {
       hideAll();
       document.getElementById('paymentForm').style.display = 'block';
@@ -1780,6 +1842,10 @@
     }
 
     function forceAppend() {
+      if (document.getElementById('invoiceNo').disabled) {
+        setStatus('status', 'error', '❌ முதலில் QTR Issues-ஐ உள்ளிட்டு தொகையை சரிபார்த்து உறுதி செய்யவும்.');
+        return;
+      }
       if (!currentPayload) {
         // payload இல்லாவிட்டால் form values எடு
         buildPayload();
@@ -1810,6 +1876,10 @@
     // ─── Submit Invoice ───
     async function submitPayment() {
       const btn = document.getElementById('invoiceBtn');
+      if (document.getElementById('invoiceNo').disabled) {
+        setStatus('status', 'error', '❌ முதலில் QTR Issues-ஐ உள்ளிட்டு தொகையை சரிபார்த்து உறுதி செய்யவும்.');
+        return;
+      }
       showLoading(btn, 'Saving...');
       const magName      = document.getElementById('magazine').value;
       const invoiceNo    = document.getElementById('invoiceNo').value.trim();
@@ -1853,7 +1923,12 @@
           setStatus('status', 'success', isUpdate
             ? '✅ Update வெற்றி! Row ' + result.row + ' புதுப்பிக்கப்பட்டது.'
             : '✅ வெற்றி! Row ' + result.row + ' இல் பதிவு — ' + payload.magazine + ' / ' + payload.quarter);
-          ['invoiceNo','invoiceDate','requestedAmt','quarter','qtrIssues'].forEach(id => document.getElementById(id).value = '');
+          ['invoiceNo','invoiceDate','requestedAmt','qtrIssues'].forEach(id => document.getElementById(id).value = '');
+          document.getElementById('quarter').value = '';
+          document.getElementById('magazine').innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
+          document.getElementById('magazine').disabled = true;
+          document.getElementById('qtrIssues').disabled = true;
+          lockInvoiceFields();
           document.getElementById('existingInvoiceCard').style.display = 'none';
           document.getElementById('appendBtn').style.display = 'none';
           document.getElementById('invoiceBtn').innerHTML = '✅ இன்வாய்ஸ் பதிவு செய்';
@@ -2005,8 +2080,11 @@
       document.getElementById('netPayableLarge').textContent =
         '₹ ' + netPayable.toLocaleString('en-IN', { minimumFractionDigits: 2 });
 
-      // ✅ இப்போது வழங்கும் தொகை — netPayable தானாக நிரப்பு (editable)
-      document.getElementById('amountNowPaid').value = netPayable.toFixed(2);
+      // ✅ இப்போது வழங்கும் தொகை — Invoice Amount, Net Payable இதில் எது குறைவோ அது,
+      // Rupees-ஆக Round செய்யப்பட்டு தானாக நிரப்பப்படும் (paisa வராது; editable)
+      const requestedAmtForPay = currentMagazineData.requestedAmt || 0;
+      const payAmount = requestedAmtForPay > 0 ? Math.min(netPayable, requestedAmtForPay) : netPayable;
+      document.getElementById('amountNowPaid').value = Math.round(payAmount);
 
       // ✅ வழங்கும் தேதி — இன்றைய தேதி தானாக நிரப்பு (editable)
       const todayEl = document.getElementById('paymentDate');
@@ -2088,7 +2166,7 @@
       const payload = {
         magazine, quarter, nonSupply,
         netPayable: netPayable,
-        amountNowPaid: parseFloat(document.getElementById('amountNowPaid').value) || 0,
+        amountNowPaid: Math.round(parseFloat(document.getElementById('amountNowPaid').value) || 0),
         paymentDate: document.getElementById('paymentDate').value,
         remarks: document.getElementById('remarks').value.trim(),
         billSetNo: document.getElementById('billSetNo').value,
