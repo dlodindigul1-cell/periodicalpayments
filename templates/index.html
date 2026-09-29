@@ -377,6 +377,96 @@
       .field-row, .field-row3 { grid-template-columns: 1fr; }
       .btn-row { flex-direction: column; }
     }
+
+    /* ───── CONFIRM CARD (confirm() மாற்று) ───── */
+    .cc-overlay {
+      position: fixed; inset: 0; z-index: 10000;
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px;
+      background: rgba(15,35,71,0.55);
+      backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+      opacity: 0; transition: opacity .2s ease;
+    }
+    .cc-overlay.show { opacity: 1; }
+    .cc-card {
+      width: 100%; max-width: 460px;
+      background: var(--card);
+      border-radius: 18px;
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+      transform: translateY(18px) scale(.96);
+      transition: transform .25s cubic-bezier(.2,.9,.3,1.2);
+      font-family: 'Noto Sans Tamil', sans-serif;
+    }
+    .cc-overlay.show .cc-card { transform: none; }
+    .cc-head {
+      display: flex; align-items: center; gap: 14px;
+      padding: 18px 22px;
+      background: linear-gradient(135deg, var(--navy), var(--blue));
+      border-bottom: 3px solid var(--accent);
+      color: #fff;
+    }
+    .cc-icon {
+      width: 42px; height: 42px; flex: 0 0 42px;
+      border-radius: 12px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 22px;
+      background: rgba(200,168,75,0.22);
+    }
+    .cc-title { font-size: 17px; font-weight: 700; line-height: 1.3; }
+    .cc-sub   { font-size: 12.5px; opacity: .8; margin-top: 2px; }
+    .cc-body  { padding: 20px 22px 6px; color: var(--text); }
+    .cc-name  {
+      font-size: 18px; font-weight: 700; color: var(--navy);
+      margin-bottom: 14px; word-break: break-word;
+    }
+    .cc-name small { display:block; font-size:12px; font-weight:500; color: var(--muted); margin-bottom:2px; }
+    .cc-chips { display: flex; align-items: stretch; justify-content: center; gap: 8px; flex-wrap: wrap; }
+    .cc-chip  {
+      flex: 1 1 90px; text-align: center;
+      background: var(--bg); border: 1px solid var(--border);
+      border-radius: 12px; padding: 9px 6px;
+    }
+    .cc-chip span  { display:block; font-size: 11.5px; color: var(--muted); }
+    .cc-chip b     { display:block; font-size: 16px; color: var(--navy); margin-top: 2px; }
+    .cc-times { align-self: center; font-size: 18px; color: var(--muted); font-weight: 700; }
+    .cc-total {
+      margin-top: 14px; text-align: center;
+      background: linear-gradient(135deg, #fff8e1, #fdf0c4);
+      border: 1.5px solid var(--accent);
+      border-radius: 14px; padding: 12px 10px;
+    }
+    .cc-total span { display:block; font-size: 12.5px; color: #7a6220; font-weight: 600; }
+    .cc-total b    { display:block; font-size: 28px; color: var(--navy); margin-top: 2px; letter-spacing: .3px; }
+    .cc-msg   { font-size: 14.5px; line-height: 1.7; white-space: pre-line; }
+    .cc-list  { margin-top: 12px; display: flex; flex-direction: column; gap: 6px; }
+    .cc-row   {
+      display: flex; gap: 10px; font-size: 13.5px; line-height: 1.5;
+      background: var(--bg); border-radius: 10px; padding: 8px 12px;
+    }
+    .cc-row span { color: var(--muted); flex: 0 0 auto; }
+    .cc-row b    { color: var(--navy); word-break: break-word; }
+    .cc-ask   { margin-top: 16px; font-size: 14.5px; font-weight: 600; text-align: center; color: var(--text); }
+    .cc-actions {
+      display: flex; gap: 10px; padding: 16px 22px 20px;
+      flex-wrap: wrap; justify-content: flex-end;
+    }
+    .cc-btn {
+      flex: 1 1 140px; cursor: pointer; border: 0;
+      padding: 12px 16px; border-radius: 12px;
+      font: 600 14px 'Noto Sans Tamil', sans-serif;
+      transition: transform .12s ease, box-shadow .12s ease, filter .12s ease;
+    }
+    .cc-btn:hover { transform: translateY(-1px); filter: brightness(1.05); }
+    .cc-btn:active { transform: translateY(0); }
+    .cc-btn:focus-visible { outline: 3px solid var(--accent2); outline-offset: 2px; }
+    .cc-btn.primary { background: var(--navy); color: #fff; box-shadow: 0 4px 14px rgba(15,35,71,.25); }
+    .cc-btn.danger  { background: #c0392b; color: #fff; box-shadow: 0 4px 14px rgba(192,57,43,.28); }
+    .cc-btn.ghost   { background: #fff; color: var(--navy); border: 1.5px solid var(--border); }
+    @media (max-width: 480px) {
+      .cc-actions { flex-direction: column-reverse; }
+      .cc-btn { flex: 1 1 auto; width: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -1538,6 +1628,62 @@
 </script>
 
   <script>
+    // ─── CONFIRM CARD: browser confirm()-க்கு அழகான மாற்று ───
+    // opts: { icon, title, subtitle, html, buttons:[{label,value,style}] }
+    // முடிவு: பட்டனின் value; Esc / வெளியே கிளிக் செய்தால் null
+    function _ccEsc(t) {
+      return String(t == null ? '' : t).replace(/[&<>"']/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+    function showConfirmCard(opts) {
+      return new Promise(resolve => {
+        const btns = opts.buttons || [
+          { label: '✏️ இல்லை', value: false, style: 'ghost' },
+          { label: '✅ ஆம்',    value: true,  style: 'primary' }
+        ];
+        const ov = document.createElement('div');
+        ov.className = 'cc-overlay';
+        ov.setAttribute('role', 'dialog');
+        ov.setAttribute('aria-modal', 'true');
+        ov.innerHTML =
+          '<div class="cc-card">' +
+            '<div class="cc-head"><div class="cc-icon">' + (opts.icon || '📋') + '</div>' +
+              '<div><div class="cc-title">' + _ccEsc(opts.title || '') + '</div>' +
+              (opts.subtitle ? '<div class="cc-sub">' + _ccEsc(opts.subtitle) + '</div>' : '') +
+            '</div></div>' +
+            '<div class="cc-body">' + (opts.html || '') + '</div>' +
+            '<div class="cc-actions"></div>' +
+          '</div>';
+        const actions = ov.querySelector('.cc-actions');
+        let done = false;
+        function close(val) {
+          if (done) return; done = true;
+          document.removeEventListener('keydown', onKey, true);
+          ov.classList.remove('show');
+          setTimeout(() => ov.remove(), 200);
+          resolve(val);
+        }
+        function onKey(e) {
+          if (e.key === 'Escape') { e.preventDefault(); close(null); }
+        }
+        btns.forEach(b => {
+          const el = document.createElement('button');
+          el.type = 'button';
+          el.className = 'cc-btn ' + (b.style || 'ghost');
+          el.textContent = b.label;
+          el.onclick = () => close(b.value);
+          actions.appendChild(el);
+        });
+        ov.addEventListener('mousedown', e => { if (e.target === ov) close(null); });
+        document.addEventListener('keydown', onKey, true);
+        document.body.appendChild(ov);
+        requestAnimationFrame(() => {
+          ov.classList.add('show');
+          const last = actions.querySelector('.cc-btn.primary, .cc-btn.danger') || actions.lastElementChild;
+          if (last) last.focus();
+        });
+      });
+    }
     let magazines = [];
     let masterData = {};
     let despatchData = {};
@@ -1673,7 +1819,7 @@
       document.getElementById('invoiceDetailsLockedNote').style.display = 'none';
     }
 
-    function confirmQtrIssuesAmount() {
+    async function confirmQtrIssuesAmount() {
       const magName = document.getElementById('magazine').value;
       const qtrIssues = parseInt(document.getElementById('qtrIssues').value) || 0;
       if (!magName || !qtrIssues) { lockInvoiceFields(); return; }
@@ -1681,13 +1827,26 @@
       const issuePrice  = parseFloat(m.issuePrice)    || 0;
       const libraries   = parseInt(m.noOfLibraries)   || 0;
       const actualCost  = issuePrice * libraries * qtrIssues;
-      const ok = confirm(
-        '📋 Master விலை அடிப்படையில் கணக்கிடப்பட்ட தொகை:\n\n' +
-        'இதழ்: ' + magName + '\n' +
-        'Issue Price: ₹' + issuePrice.toFixed(2) + '  ×  Libraries: ' + libraries + '  ×  QTR Issues: ' + qtrIssues + '\n' +
-        '= மொத்த தொகை: ₹' + actualCost.toFixed(2) + '\n\n' +
-        'இந்த தொகை உங்களிடம் உள்ள Invoice-ல் உள்ளதா? சரிபார்த்து உறுதி செய்யவும்.'
-      );
+      const ok = await showConfirmCard({
+        icon: '🧾',
+        title: 'தொகை சரிபார்ப்பு',
+        subtitle: 'Master விலை அடிப்படையில் கணக்கிடப்பட்டது',
+        html:
+          '<div class="cc-name"><small>இதழ்</small>' + _ccEsc(magName) + '</div>' +
+          '<div class="cc-chips">' +
+            '<div class="cc-chip"><span>Issue Price</span><b>₹' + issuePrice.toFixed(2) + '</b></div>' +
+            '<div class="cc-times">×</div>' +
+            '<div class="cc-chip"><span>Libraries</span><b>' + libraries + '</b></div>' +
+            '<div class="cc-times">×</div>' +
+            '<div class="cc-chip"><span>QTR Issues</span><b>' + qtrIssues + '</b></div>' +
+          '</div>' +
+          '<div class="cc-total"><span>மொத்த தொகை</span><b>₹' + actualCost.toFixed(2) + '</b></div>' +
+          '<div class="cc-ask">இந்த தொகை உங்களிடம் உள்ள Invoice-ல் உள்ளதா?</div>',
+        buttons: [
+          { label: '✏️ இல்லை, திருத்துகிறேன்', value: false, style: 'ghost' },
+          { label: '✅ ஆம், சரி',               value: true,  style: 'primary' }
+        ]
+      });
       if (ok) {
         unlockInvoiceFields();
         setStatus('status', 'success', '✅ தொகை சரிபார்க்கப்பட்டது. இப்போது Invoice விவரங்களை நிரப்பலாம்.');
@@ -2335,8 +2494,18 @@
     }
 
     // ─── PDF Report helpers ───
-    function _pdfHelper(fnName, targetId) {
-      if (!confirm("PDF உருவாக்கி சேமிக்க வேண்டுமா?")) return;
+    async function _pdfHelper(fnName, targetId) {
+      const okPdf = await showConfirmCard({
+        icon: '📄',
+        title: 'PDF உருவாக்கம்',
+        subtitle: 'அறிக்கையை PDF ஆகச் சேமித்தல்',
+        html: '<div class="cc-msg" style="text-align:center;">PDF உருவாக்கி சேமிக்க வேண்டுமா?</div>',
+        buttons: [
+          { label: 'ரத்து', value: false, style: 'ghost' },
+          { label: '✅ ஆம், உருவாக்கு', value: true, style: 'primary' }
+        ]
+      });
+      if (!okPdf) return;
       const container = document.getElementById(targetId || 'reportContent');
       const statusDiv = document.createElement('div');
       statusDiv.style.cssText = "margin-top:16px;padding:16px;background:var(--success-bg);color:var(--success-fg);border-radius:8px;";
@@ -3745,7 +3914,23 @@ function _pdfHelper(fnName, targetId) {
         payment: 'Payment Details (Voucher + Bank + Mail) — மூன்றும்',
         invoice: 'Invoice Details உட்பட இந்த Quarter பதிவு முழுவதும் (ஒட்டுமொத்தம்)'
       };
-      if (!confirm("'" + magazine + "' (" + quarter + ") —\n\n" + scopeLabels[scope] + "\n\nநீக்கப்படும். தொடர வேண்டுமா?")) return;
+      const okDel = await showConfirmCard({
+        icon: '🗑️',
+        title: 'நீக்கம் உறுதிப்படுத்தல்',
+        subtitle: 'இந்த செயலை மீட்க முடியாது',
+        html:
+          '<div class="cc-list">' +
+            '<div class="cc-row"><span>இதழ்:</span><b>' + _ccEsc(magazine) + '</b></div>' +
+            '<div class="cc-row"><span>Quarter:</span><b>' + _ccEsc(quarter) + '</b></div>' +
+            '<div class="cc-row"><span>நீக்கப்படுவது:</span><b>' + _ccEsc(scopeLabels[scope]) + '</b></div>' +
+          '</div>' +
+          '<div class="cc-ask">தொடர வேண்டுமா?</div>',
+        buttons: [
+          { label: 'ரத்து', value: false, style: 'ghost' },
+          { label: '🗑️ ஆம், நீக்கு', value: true, style: 'danger' }
+        ]
+      });
+      if (!okDel) return;
 
       const btn = document.getElementById('deleteTxnBtn');
       showLoading(btn, 'நீக்கப்படுகிறது...');
@@ -3890,7 +4075,24 @@ function _pdfHelper(fnName, targetId) {
     async function deleteMasterMagazineQuarters(name) {
       const quarter = prompt("எந்த Quarter-க்கான விலைப் பதிவை நீக்க வேண்டும்? (எ.கா: 2026-2027-Q1)\n'" + name + "' இதழுக்காக:");
       if (!quarter) return;
-      const onward = confirm("இந்த Quarter மற்றும் அதற்குப் பின் உள்ள அனைத்து Quarter-களின் விலைப் பதிவையும் நீக்க வேண்டுமா?\n\nOK = ஆம், இந்த Quarter முதல் பின்னுள்ள அனைத்தும்\nCancel = இந்த Quarter மட்டும்");
+      const choice = await showConfirmCard({
+        icon: '🗑️',
+        title: 'விலைப் பதிவு நீக்கம்',
+        subtitle: 'எவ்வளவு நீக்க வேண்டும்?',
+        html:
+          '<div class="cc-list">' +
+            '<div class="cc-row"><span>இதழ்:</span><b>' + _ccEsc(name) + '</b></div>' +
+            '<div class="cc-row"><span>Quarter:</span><b>' + _ccEsc(quarter.trim()) + '</b></div>' +
+          '</div>' +
+          '<div class="cc-ask">இந்த Quarter மட்டுமா, அல்லது இதற்குப் பின் உள்ள அனைத்துமா?</div>',
+        buttons: [
+          { label: 'ரத்து', value: null, style: 'ghost' },
+          { label: 'இந்த Quarter மட்டும்', value: 'one', style: 'primary' },
+          { label: 'இந்த Quarter முதல் பின்னுள்ள அனைத்தும்', value: 'onward', style: 'danger' }
+        ]
+      });
+      if (!choice) return;
+      const onward = (choice === 'onward');
       try {
         const res = await fetch('/api/admin/delete-magazine-quarters', {
           method: 'POST',
