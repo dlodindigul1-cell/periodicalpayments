@@ -488,6 +488,36 @@
     .cc-note { margin-top: 8px; font-size: 12px; color: var(--muted); text-align: center; line-height: 1.5; }
     .cc-btn:disabled { opacity: .4; cursor: not-allowed; transform: none; filter: none; box-shadow: none; }
     #qtrIssues[readonly] { cursor: pointer; background: #fff; }
+
+    /* ───── MASTER PANELS — அகலம் குறைப்பு ───── */
+    .master-panel { max-width: 900px; margin-left: auto; margin-right: auto; }
+    #masterMagTable { font-size: 13.5px; }
+    #masterMagTable th, #masterMagTable td { padding: 10px 8px; }
+    #masterMagTable td:nth-child(2) { min-width: 190px; }
+    #masterMagTable td:last-child, #masterMagTable th:last-child { white-space: nowrap; }
+    #masterMagTable td:last-child .btn-secondary { padding: 4px 7px !important; }
+    #masterMagTable td:nth-child(2) { min-width: 170px; }
+    .num-cell { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+    /* ───── இதழ் விலை விவர Card (Non-editable) ───── */
+    .price-info-card {
+      margin-top: 14px; border: 1.5px solid var(--border); border-radius: 14px;
+      background: #fff; overflow: hidden; box-shadow: var(--shadow);
+    }
+    .price-info-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 16px; background: var(--bg); border-bottom: 1px solid var(--border);
+      font-size: 13px; font-weight: 700; color: var(--navy);
+    }
+    .price-info-head .lock { margin-left: auto; font-weight: 500; font-size: 11.5px; color: var(--muted); }
+    .price-info-name { padding: 12px 16px 4px; font-size: 16px; font-weight: 700; color: var(--navy); word-break: break-word; }
+    .price-info-name small { display: block; font-size: 11.5px; font-weight: 500; color: var(--muted); }
+    .price-info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 8px 16px 16px; }
+    .price-info-cell { background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 10px 8px; text-align: center; }
+    .price-info-cell span { display: block; font-size: 12px; color: var(--muted); }
+    .price-info-cell b { display: block; font-size: 18px; color: var(--navy); margin-top: 2px; }
+    .price-info-cell.net { background: linear-gradient(135deg, #fff8e1, #fdf0c4); border-color: var(--accent); }
+    @media (max-width: 480px) { .price-info-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -811,6 +841,17 @@
         <div id="excessWarning" style="display:none; margin-top:14px;
              background:#fdecea; border:2px solid #e74c3c; border-radius:10px;
              padding:14px 18px; font-size:14px; font-weight:600; color:#a32020;">
+        </div>
+
+        <!-- 📋 இதழ் விலை விவரம் (Non-editable) — தொகை வித்தியாசம் இருக்கும்போது மட்டும் -->
+        <div id="priceInfoCard" class="price-info-card" style="display:none;">
+          <div class="price-info-head">📋 இதழ் விலை விவரம் <span class="lock">🔒 மாற்ற இயலாது</span></div>
+          <div class="price-info-name"><small>இதழ் பெயர்</small><span id="pic_name">—</span></div>
+          <div class="price-info-grid">
+            <div class="price-info-cell"><span>விலை</span><b id="pic_price">—</b></div>
+            <div class="price-info-cell"><span>கழிவு</span><b id="pic_discount">—</b></div>
+            <div class="price-info-cell net"><span>நிகர விலை</span><b id="pic_net">—</b></div>
+          </div>
         </div>
       </div>
 
@@ -1951,7 +1992,7 @@
       document.getElementById('paymentExtraCard').style.display = 'none';
       document.getElementById('paymentBtn').style.display = 'none';
       document.getElementById('alreadyPaidBanner').style.display = 'none';
-      document.getElementById('excessWarning').style.display    = 'none';
+      document.getElementById('excessWarning').style.display    = 'none'; document.getElementById('priceInfoCard').style.display = 'none';
       document.getElementById('paymentDate').value = '';
       document.getElementById('remarks').value = '';
       document.getElementById('billSetNo').value = '';
@@ -2362,6 +2403,20 @@
       } else {
         warnEl.style.display = 'none';
       }
+
+      // 📋 வித்தியாசம் இருந்தால் மட்டும் இதழ் விலை விவர Card காட்டு (non-editable)
+      const picEl = document.getElementById('priceInfoCard');
+      if (requestedAmt > 0 && netPayable !== requestedAmt) {
+        const d = currentMagazineData || {};
+        const fmt = v => (v === undefined || v === null) ? '—' : Number(v).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        document.getElementById('pic_name').textContent     = document.getElementById('magazineSelect').value || '—';
+        document.getElementById('pic_price').textContent    = '₹ ' + fmt(d.masterPrice);
+        document.getElementById('pic_discount').textContent = fmt(d.masterDiscount);
+        document.getElementById('pic_net').textContent      = '₹ ' + fmt(d.masterNetPrice);
+        picEl.style.display = 'block';
+      } else {
+        picEl.style.display = 'none';
+      }
     }
 
     // ─── Payment Submit — Re-process Guard ───
@@ -2429,7 +2484,7 @@
           document.getElementById('paymentExtraCard').style.display = 'none';
           document.getElementById('paymentBtn').style.display = 'none';
           document.getElementById('alreadyPaidBanner').style.display = 'none';
-          document.getElementById('excessWarning').style.display    = 'none';
+          document.getElementById('excessWarning').style.display    = 'none'; document.getElementById('priceInfoCard').style.display = 'none';
           document.getElementById('amountNowPaid').value = '';
           document.getElementById('paymentDate').value = '';
           document.getElementById('remarks').value = '';
@@ -3582,7 +3637,7 @@ function _pdfHelper(fnName, targetId) {
       </div>
 
       <!-- ══════════ MAGAZINE MASTER PANEL ══════════ -->
-      <div id="mastersMagazinePanel" style="display:none;">
+      <div id="mastersMagazinePanel" class="master-panel" style="display:none;">
 
         <div class="card">
           <div class="card-title">📥 CSV மூலம் இதழ்கள் Import (Google Sheet Export)</div>
@@ -3678,13 +3733,16 @@ function _pdfHelper(fnName, targetId) {
                   <th>இதழ் பெயர்</th>
                   <th>மொழி</th>
                   <th>Periodicity</th>
-                  <th class="ctr">Quarter Count</th>
+                  <th class="ctr">Quarters</th>
                   <th>Latest Quarter</th>
-                  <th class="ctr" style="width:170px;">Actions</th>
+                  <th class="num-cell">விலை</th>
+                  <th class="num-cell">கழிவு</th>
+                  <th class="num-cell">நிகர விலை</th>
+                  <th class="ctr" style="width:96px;">Actions</th>
                 </tr>
               </thead>
               <tbody id="masterMagTableBody">
-                <tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted);">
+                <tr><td colspan="10" style="text-align:center;padding:32px;color:var(--muted);">
                   <span class="spinner dark"></span> ஏற்றப்படுகிறது...
                 </td></tr>
               </tbody>
@@ -3698,7 +3756,7 @@ function _pdfHelper(fnName, targetId) {
       </div>
 
       <!-- ══════════ VENDOR / BANK MASTER PANEL ══════════ -->
-      <div id="mastersVendorPanel" style="display:none;">
+      <div id="mastersVendorPanel" class="master-panel" style="display:none;">
 
         <div class="card">
           <div class="card-title">📥 CSV மூலம் Vendor / Bank விவரம் Import (Excel Export)</div>
@@ -3805,7 +3863,7 @@ function _pdfHelper(fnName, targetId) {
       </div>
 
       <!-- ══════════ DELETE TRANSACTION PANEL ══════════ -->
-      <div id="mastersDeleteTxnPanel" style="display:none;">
+      <div id="mastersDeleteTxnPanel" class="master-panel" style="display:none;">
 
         <div class="card">
           <div class="card-title">🗑️ தவறான / TEST Invoice-Payment பதிவு நீக்கு</div>
@@ -4195,22 +4253,26 @@ function _pdfHelper(fnName, targetId) {
     // ─── Magazine Master: List ───
     async function loadMasterMagazinesList() {
       const tbody = document.getElementById('masterMagTableBody');
-      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--muted);"><span class="spinner dark"></span> ஏற்றப்படுகிறது...</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:32px;color:var(--muted);"><span class="spinner dark"></span> ஏற்றப்படுகிறது...</td></tr>';
       try {
         const res = await fetch('/api/admin/magazines-list');
         const result = await res.json();
-        if (!result.success) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:#c0392b;">பிழை ஏற்பட்டது</td></tr>'; return; }
+        if (!result.success) { tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:24px;color:#c0392b;">பிழை ஏற்பட்டது</td></tr>'; return; }
         allMasterMagazines = result.rows || [];
         renderMasterMagazinesTable(allMasterMagazines);
       } catch (e) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:#c0392b;">பிழை: ' + e.message + '</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:24px;color:#c0392b;">பிழை: ' + e.message + '</td></tr>';
       }
+    }
+
+    function fmtMasterNum(v) {
+      return (v === null || v === undefined) ? '-' : Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 });
     }
 
     function renderMasterMagazinesTable(rows) {
       const tbody = document.getElementById('masterMagTableBody');
       if (!rows.length) {
-        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--muted);">இதழ்கள் எதுவும் இல்லை</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:24px;color:var(--muted);">இதழ்கள் எதுவும் இல்லை</td></tr>';
         return;
       }
       tbody.innerHTML = rows.map((r, i) => (
@@ -4221,6 +4283,9 @@ function _pdfHelper(fnName, targetId) {
           '<td>' + (r.periodicity || '-') + '</td>' +
           '<td class="ctr">' + r.quarterCount + '</td>' +
           '<td>' + (r.latestQuarter || '-') + '</td>' +
+          '<td class="num-cell">' + fmtMasterNum(r.price) + '</td>' +
+          '<td class="num-cell">' + fmtMasterNum(r.discount) + '</td>' +
+          '<td class="num-cell"><b>' + fmtMasterNum(r.issuePrice) + '</b></td>' +
           '<td class="ctr">' +
             '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="editMasterMagazine(\'' + r.name.replace(/'/g, "\\'") + '\')">✏️</button> ' +
             '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="deleteMasterMagazineQuarters(\'' + r.name.replace(/'/g, "\\'") + '\')">🗑️</button>' +

@@ -675,9 +675,22 @@ def api_payment_details():
             cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (magazine,))
             m = cur.fetchone()
             vendor_code = (m["tnpfts_code"] or "").strip() if m else ""
+            # இந்த Quarter-க்கான Master விலை விவரங்கள் (விலை / கழிவு / நிகர விலை)
+            cur.execute(
+                """SELECT q.price, q.discount, q.issue_price
+                   FROM magazine_quarters q
+                   JOIN magazines mg ON mg.id = q.magazine_id
+                   WHERE mg.name=%s AND q.quarter=%s""",
+                (magazine, quarter),
+            )
+            mq = cur.fetchone()
+        master_price = float(mq["price"] or 0) if mq else 0.0
+        master_discount = float(mq["discount"] or 0) if mq else 0.0
+        master_net = float(mq["issue_price"] or 0) if mq else 0.0
         if not row:
             return jsonify(
                 {
+                    "masterPrice": master_price, "masterDiscount": master_discount, "masterNetPrice": master_net,
                     "issuePrice": 0, "totalIssues": 0, "requestedAmt": 0, "paymentDate": None, "billSetNo": "",
                     "vendorCode": vendor_code, "vendorType": classify_vendor_code(vendor_code),
                     "voucherNo": "", "transactionNo": "", "mailSent": False,
@@ -685,6 +698,9 @@ def api_payment_details():
             )
         return jsonify(
             {
+                "masterPrice": master_price,
+                "masterDiscount": master_discount,
+                "masterNetPrice": master_net or float(row["issue_price"] or 0),
                 "issuePrice": float(row["issue_price"] or 0),
                 "totalIssues": int(row["total_issues"] or 0),
                 "requestedAmt": float(row["requested_amt"] or 0),
@@ -966,11 +982,17 @@ def api_admin_magazines_list():
             cur.execute(
                 """
                 SELECT m.id, m.name, m.language, m.periodicity,
-                       COUNT(q.id) AS quarter_count,
-                       MAX(q.quarter) AS latest_quarter
+                       (SELECT COUNT(*) FROM magazine_quarters c WHERE c.magazine_id = m.id) AS quarter_count,
+                       lq.quarter AS latest_quarter,
+                       lq.price AS price, lq.discount AS discount, lq.issue_price AS issue_price
                 FROM magazines m
-                LEFT JOIN magazine_quarters q ON q.magazine_id = m.id
-                GROUP BY m.id, m.name, m.language, m.periodicity
+                LEFT JOIN LATERAL (
+                    SELECT quarter, price, discount, issue_price
+                    FROM magazine_quarters
+                    WHERE magazine_id = m.id
+                    ORDER BY quarter DESC
+                    LIMIT 1
+                ) lq ON TRUE
                 ORDER BY m.name
                 """
             )
@@ -985,6 +1007,9 @@ def api_admin_magazines_list():
                         "periodicity": r["periodicity"] or "",
                         "quarterCount": r["quarter_count"],
                         "latestQuarter": r["latest_quarter"] or "",
+                        "price": float(r["price"]) if r["price"] is not None else None,
+                        "discount": float(r["discount"]) if r["discount"] is not None else None,
+                        "issuePrice": float(r["issue_price"]) if r["issue_price"] is not None else None,
                     }
                     for r in rows
                 ],
