@@ -133,6 +133,30 @@ def voucher_sort_key(v):
     return (0, int(m.group(1)), v) if m else (1, 0, v)
 
 
+def _qlist(quarter):
+    """None / "" / "Q1" / "Q1,Q2" / ["Q1","Q2"]  ->  ["Q1","Q2"] (வரிசைப்படுத்தி, நகல் நீக்கி)."""
+    if not quarter:
+        return []
+    items = [quarter] if isinstance(quarter, str) else list(quarter)
+    out = set()
+    for it in items:
+        for part in str(it or "").split(","):
+            part = part.strip()
+            if part:
+                out.add(part)
+    return sorted(out)
+
+
+def get_quarters_arg():
+    """?quarter=Q1&quarter=Q2 அல்லது ?quarter=Q1,Q2 (அல்லது ?quarters=...) -> ["Q1","Q2"].  காலி = அனைத்தும்."""
+    vals = request.args.getlist("quarter") + request.args.getlist("quarters")
+    return _qlist(vals)
+
+
+def quarter_label(q):
+    return (q or "").replace("-Q", " Q")
+
+
 def fetch_group_blockers(cur, quarter=None):
     """(quarter, CODE) -> {'pending': [...], 'missingTxn': [...]}
     pending    = அதே Code + அதே Quarter-ல் Invoice பதிவாகி, இன்னும் தொகை வழங்காத இதழ்கள்
@@ -143,9 +167,10 @@ def fetch_group_blockers(cur, quarter=None):
         "WHERE (p.payment_date IS NULL OR p.transaction_no IS NULL OR p.transaction_no = '')"
     )
     params = ()
-    if quarter:
-        sql += " AND p.quarter=%s"
-        params = (quarter,)
+    ql = _qlist(quarter)
+    if ql:
+        sql += " AND p.quarter = ANY(%s)"
+        params = (ql,)
     cur.execute(sql, params)
     out = {}
     for r in cur.fetchall():
@@ -1060,7 +1085,7 @@ def api_paid_list():
 def api_get_transactions():
     """Bank Transaction பதிவுக்கான பட்டியல் — Voucher எண் (எண் மதிப்பு) வரிசையில், ஒரே Vendor/Beneficiary Code
     (அதே Quarter) உள்ள இதழ்கள் ஒரே குழுவாக. குழுவில் இன்னும் தொகை வழங்காத இதழ் இருந்தால் blocked=true."""
-    quarter = request.args.get("quarter") or None
+    quarter = get_quarters_arg() or None
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -1072,7 +1097,7 @@ def api_get_transactions():
             )
             params = ()
             if quarter:
-                sql += " AND p.quarter=%s"
+                sql += " AND p.quarter = ANY(%s)"
                 params = (quarter,)
             cur.execute(sql, params)
             rows = cur.fetchall()
@@ -1222,6 +1247,48 @@ def api_group_status():
         return jsonify({"success": True, "code": code, "vendorName": vendor, "siblings": siblings})
     finally:
         conn.close()
+
+
+# --------------------------------------------------------------------------- #
+# Quarter பட்டியல் — DB-யில் உள்ளவை (புதிய Quarter சேர்ந்தால் தானாக வரும்)
+# --------------------------------------------------------------------------- #
+def all_known_quarters(cur):
+    """magazine_quarters ∪ payments-ல் உள்ள அனைத்து Quarter-களும் (வரிசைப்படி)."""
+    cur.execute(
+        "SELECT quarter FROM magazine_quarters WHERE quarter IS NOT NULL AND quarter<>'' "
+        "UNION SELECT quarter FROM payments WHERE quarter IS NOT NULL AND quarter<>'' "
+        "ORDER BY quarter"
+    )
+    return [r["quarter"] for r in cur.fetchall()]
+
+
+def next_quarters(last, n=4):
+    """'2026-2027-Q4' -> ['2027-2028-Q1', ...n]"""
+    m = re.match(r"^(\d{4})-(\d{4})-Q([1-4])$", last or "")
+    if not m:
+        return []
+    y1, y2, q = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    out = []
+    for _ in range(n):
+        q += 1
+        if q > 4:
+            q, y1, y2 = 1, y1 + 1, y2 + 1
+        out.append(f"{y1}-{y2}-Q{q}")
+    return out
+
+
+@app.route("/api/quarters")
+def api_quarters():
+    """quarters = DB-யில் உள்ள Quarter-கள் (வடிகட்டிகளுக்கு);
+    addable = quarters + அடுத்த 4 (புதிய Quarter உருவாக்க / Invoice பதிவுக்கு)."""
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            qs = all_known_quarters(cur)
+    finally:
+        conn.close()
+    addable = sorted(set(qs) | set(next_quarters(qs[-1] if qs else "")))
+    return jsonify({"success": True, "quarters": qs, "addable": addable})
 
 
 # --------------------------------------------------------------------------- #
@@ -2319,29 +2386,33 @@ def get_master_magazines_for_quarter(cur, quarter):
 
 @app.route("/api/reminders/pending-invoices")
 def api_pending_invoices():
-    quarter = request.args.get("quarter", "").strip()
-    if not quarter:
-        return jsonify({"success": False, "message": "Quarter தேர்வு செய்யவும்."}), 400
+    quarters = get_quarters_arg()
 
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            master_magazines = get_master_magazines_for_quarter(cur, quarter)
-
-            cur.execute(
-                "SELECT magazine FROM payments WHERE quarter=%s AND invoice_no IS NOT NULL AND invoice_no<>''",
-                (quarter,),
-            )
-            has_invoice = {r["magazine"] for r in cur.fetchall()}
+            if not quarters:                      # காலி = அனைத்து Quarter-களும்
+                quarters = all_known_quarters(cur)
+            if not quarters:
+                return jsonify({"success": False, "message": "Quarter தேர்வு செய்யவும்."}), 400
 
             cur.execute("SELECT name, email_id FROM magazines")
             email_map = {r["name"]: (r["email_id"] or "").strip() for r in cur.fetchall()}
 
-        pending = [
-            {"magazine": name, "quarter": quarter, "email": email_map.get(name, "")}
-            for name in master_magazines
-            if name not in has_invoice
-        ]
+            pending = []
+            for quarter in quarters:
+                master_magazines = get_master_magazines_for_quarter(cur, quarter)
+                cur.execute(
+                    "SELECT magazine FROM payments WHERE quarter=%s AND invoice_no IS NOT NULL AND invoice_no<>''",
+                    (quarter,),
+                )
+                has_invoice = {r["magazine"] for r in cur.fetchall()}
+                pending += [
+                    {"magazine": name, "quarter": quarter, "email": email_map.get(name, "")}
+                    for name in master_magazines
+                    if name not in has_invoice
+                ]
+        pending.sort(key=lambda x: ((x["magazine"] or "").lower(), x["quarter"]))
         return jsonify({"success": True, "rows": pending})
     finally:
         conn.close()
@@ -3153,7 +3224,7 @@ def api_payment_advice_pdf():
 def api_mail_ready():
     """மெயில் அனுப்பத் தயாரான பட்டியல் — ஒரே Vendor/Beneficiary Code (அதே Quarter) உள்ள இதழ்கள் ஒரே வரியாக.
     குழுவில் தொகை வழங்காத / Transaction No பதிவாகாத இதழ் இருந்தால் blocked=true."""
-    quarter = request.args.get("quarter", "").strip()
+    quarter = get_quarters_arg()
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -3166,7 +3237,7 @@ def api_mail_ready():
             )
             params = ()
             if quarter:
-                sql += " AND p.quarter=%s"
+                sql += " AND p.quarter = ANY(%s)"
                 params = (quarter,)
             cur.execute(sql, params)
             rows = cur.fetchall()
@@ -3351,15 +3422,15 @@ def _csv_num(v):
 def api_export_sheet_csv():
     """payments அட்டவணையை Google Sheet-ன் A:V columns வரிசையிலேயே CSV ஆகத் தரும்.
     ?quarter=2026-2027-Q2 (விடுத்தால் எல்லா Quarter-களும்). வரிசை: இதழ் பெயர் A→Z, பிறகு Quarter."""
-    quarter = request.args.get("quarter", "").strip()
+    quarters = get_quarters_arg()
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             sql = "SELECT * FROM payments"
             params = ()
-            if quarter:
-                sql += " WHERE quarter=%s"
-                params = (quarter,)
+            if quarters:
+                sql += " WHERE quarter = ANY(%s)"
+                params = (quarters,)
             cur.execute(sql, params)
             rows = cur.fetchall()
     finally:
@@ -3402,7 +3473,7 @@ def api_export_sheet_csv():
 
     # UTF-8 BOM — Excel-ல் தமிழ் எழுத்துகள் சரியாகத் திறக்க
     data = ("\ufeff" + buf.getvalue()).encode("utf-8")
-    fname = f"payments_{quarter or 'all'}_{date.today().strftime('%Y%m%d')}.csv"
+    fname = f"payments_{'+'.join(quarters) or 'all'}_{date.today().strftime('%Y%m%d')}.csv"
     return Response(
         data,
         mimetype="text/csv; charset=utf-8",
@@ -3441,13 +3512,14 @@ PAY_EXPORT_COLS = [
 _PAY_SUM_KEYS = ("actual_cost", "deduction", "net_payable", "requested_amt", "paid_amt")
 
 
-def fetch_payment_export_rows(cur, quarter=None, host_url=""):
+def fetch_payment_export_rows(cur, quarters=None, host_url=""):
     """payments அட்டவணையை A:V வடிவில் — இதழ் பெயர் A–Z (பின் Quarter) வரிசையில். S.No 1,2,3… என மீண்டும் எண்ணிடப்படும்."""
     sql = "SELECT * FROM payments"
     params = ()
-    if quarter:
-        sql += " WHERE quarter=%s"
-        params = (quarter,)
+    quarters = _qlist(quarters)
+    if quarters:
+        sql += " WHERE quarter = ANY(%s)"
+        params = (quarters,)
     cur.execute(sql, params)
     rows = cur.fetchall()
     rows.sort(key=lambda r: ((r["magazine"] or "").strip().lower(), r["quarter"] or ""))
@@ -3499,7 +3571,8 @@ def _pay_totals(rows):
 
 
 def _pay_export_title(quarter):
-    return "Payment Details — " + ((quarter or "").replace("-Q", " Q") if quarter else "All Quarters")
+    ql = _qlist(quarter)
+    return "Payment Details — " + (", ".join(quarter_label(q) for q in ql) if ql else "All Quarters")
 
 
 def build_payments_csv(rows):
@@ -3599,8 +3672,8 @@ def build_payments_pdf(rows, quarter=None):
     pdf.set_font("Tamil", size=15)
     pdf.cell(0, 8, "திண்டுக்கல் மாவட்ட நூலக ஆணைக்குழு", align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Tamil", size=11)
-    pdf.cell(0, 7, f"{_pay_export_title(quarter)}  |  பதிவுகள்: {len(rows)}  |  {datetime.now().strftime('%d/%m/%Y')}",
-             align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.multi_cell(0, 7, f"{_pay_export_title(quarter)}  |  பதிவுகள்: {len(rows)}  |  {datetime.now().strftime('%d/%m/%Y')}",
+                   align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(2)
 
     rel = [6, 26, 9, 10, 8, 11, 13, 10, 11, 13, 15, 12, 13, 13, 12, 22, 15, 6, 8, 9, 15, 10]
@@ -3642,7 +3715,7 @@ def build_payments_pdf(rows, quarter=None):
 def api_export_payments():
     """format=json (திரைக் காட்சி) | csv | xlsx | pdf ;  quarter (விருப்பம்)"""
     fmt = (request.args.get("format") or "json").strip().lower()
-    quarter = (request.args.get("quarter") or "").strip() or None
+    quarter = get_quarters_arg()          # [] = அனைத்தும்
     conn = get_conn()
     try:
         with conn.cursor() as cur:
@@ -3650,7 +3723,7 @@ def api_export_payments():
     finally:
         conn.close()
 
-    stem = "Payment_Details_" + (quarter or "All") + "_" + datetime.now().strftime("%Y%m%d")
+    stem = "Payment_Details_" + ("+".join(quarter) if quarter else "All") + "_" + datetime.now().strftime("%Y%m%d")
     try:
         if fmt == "csv":
             return send_file(io.BytesIO(build_payments_csv(rows)), mimetype="text/csv",

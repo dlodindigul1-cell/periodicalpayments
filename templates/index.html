@@ -372,6 +372,19 @@
     .sub-menu-card h3 { font-size: 16px; font-weight: 700; color: var(--navy); }
     .sub-menu-card p { font-size: 13px; color: var(--muted); margin-top: 5px; }
 
+    /* ───── QUARTER MULTI-SELECT (டிக் பெட்டிகள்) ───── */
+    .qsel { display: flex; flex-wrap: wrap; gap: 8px; }
+    .field .qsel label.qs-item, .qsel label.qs-item {
+      display: inline-flex; align-items: center; gap: 7px; margin: 0;
+      padding: 7px 13px; border: 1.5px solid var(--border); border-radius: 999px;
+      background: #fff; font-size: 13.5px; font-weight: 500; color: var(--text);
+      cursor: pointer; user-select: none; letter-spacing: 0; transition: background .15s, border-color .15s;
+    }
+    .qsel label.qs-item input { width: 16px; height: 16px; margin: 0; }
+    .qsel label.qs-item:hover { border-color: var(--blue); }
+    .qsel label.qs-item.on { border-color: var(--blue); background: #eaf1ff; color: var(--navy); }
+    .qsel label.qs-all { font-weight: 700; }
+
     /* checkbox styled */
     input[type="checkbox"] {
       width: 18px; height: 18px; accent-color: var(--blue); cursor: pointer;
@@ -677,13 +690,8 @@
         <div class="card-title">இதழ் & காலாண்டு தகவல்</div>
         <div class="field">
           <label>1. Quarter <span class="req">*</span></label>
-          <select id="quarter" onchange="onQuarterChangeInvoiceForm()">
+          <select id="quarter" onchange="onQuarterChangeInvoiceForm()" class="qsel-dyn" data-qsrc="addable">
             <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-            <option value="2025-2026-Q4">2025-2026 Q4</option>
-            <option value="2026-2027-Q1">2026-2027 Q1</option>
-            <option value="2026-2027-Q2">2026-2027 Q2</option>
-            <option value="2026-2027-Q3">2026-2027 Q3</option>
-            <option value="2026-2027-Q4">2026-2027 Q4</option>
           </select>
         </div>
         <div class="field">
@@ -809,13 +817,8 @@
         <div class="field-row">
           <div class="field">
             <label>1. Quarter <span class="req">*</span></label>
-            <select id="quarterSelect" onchange="loadMagazinesForQuarter()">
+            <select id="quarterSelect" onchange="loadMagazinesForQuarter()" class="qsel-dyn" data-qsrc="addable">
               <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-              <option value="2025-2026-Q4">2025-2026 Q4</option>
-              <option value="2026-2027-Q1">2026-2027 Q1</option>
-              <option value="2026-2027-Q2">2026-2027 Q2</option>
-              <option value="2026-2027-Q3">2026-2027 Q3</option>
-              <option value="2026-2027-Q4">2026-2027 Q4</option>
             </select>
           </div>
           <div class="field" id="magazineSection" style="display:none;">
@@ -982,16 +985,9 @@
         </div>
       </div>
       <div class="card">
-        <div class="field" style="max-width:320px;">
-          <label>Quarter வாரியாக வடிகட்டு</label>
-          <select id="transQuarterFilter" onchange="loadTransactionEntries()">
-            <option value="">-- அனைத்து காலாண்டுகளும் --</option>
-            <option value="2025-2026-Q4">2025-2026 Q4</option>
-            <option value="2026-2027-Q1">2026-2027 Q1</option>
-            <option value="2026-2027-Q2">2026-2027 Q2</option>
-            <option value="2026-2027-Q3">2026-2027 Q3</option>
-              <option value="2026-2027-Q4">2026-2027 Q4</option>
-          </select>
+        <div class="field">
+          <label>Quarter வாரியாக வடிகட்டு (ஒன்று அல்லது பல டிக் செய்யலாம்)</label>
+          <div class="qsel" id="transQuarterFilter" data-onchange="loadTransactionEntries"></div>
         </div>
         <div class="data-table-wrap">
           <table class="data-table">
@@ -1030,16 +1026,9 @@
         </div>
       </div>
       <div class="card">
-        <div class="field" style="max-width:320px;">
-          <label>Quarter தேர்ந்தெடுக்கவும்</label>
-          <select id="emailQuarterFilter" onchange="loadEmailReadyPayments()">
-            <option value="">-- அனைத்து காலாண்டுகளும் --</option>
-            <option value="2025-2026-Q4">2025-2026 Q4</option>
-            <option value="2026-2027-Q1">2026-2027 Q1</option>
-            <option value="2026-2027-Q2">2026-2027 Q2</option>
-            <option value="2026-2027-Q3">2026-2027 Q3</option>
-              <option value="2026-2027-Q4">2026-2027 Q4</option>
-          </select>
+        <div class="field">
+          <label>Quarter தேர்ந்தெடுக்கவும் (ஒன்று அல்லது பல டிக் செய்யலாம்)</label>
+          <div class="qsel" id="emailQuarterFilter" data-onchange="loadEmailReadyPayments"></div>
         </div>
         <div class="data-table-wrap">
           <table class="data-table">
@@ -1135,15 +1124,8 @@
       <div class="card">
         <div class="field-row">
           <div class="field">
-            <label>Quarter தேர்ந்தெடுக்கவும் <span class="req">*</span></label>
-            <select id="reminderQuarter">
-              <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-              <option value="2025-2026-Q4">2025-2026 Q4</option>
-              <option value="2026-2027-Q1">2026-2027 Q1</option>
-              <option value="2026-2027-Q2">2026-2027 Q2</option>
-              <option value="2026-2027-Q3">2026-2027 Q3</option>
-              <option value="2026-2027-Q4">2026-2027 Q4</option>
-            </select>
+            <label>Quarter (ஒன்று அல்லது பல டிக் செய்யலாம்)</label>
+            <div class="qsel" id="reminderQuarter" data-onchange=""></div>
           </div>
           <div class="field" style="align-self:flex-end;">
             <button class="btn-primary" onclick="loadPendingInvoices()" style="width:100%; padding:12px;">
@@ -1280,13 +1262,8 @@
           <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
             <div style="min-width:200px;">
               <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Quarter தேர்ந்தெடுக்கவும்</label>
-              <select id="voucherCreateQuarterSelect" onchange="onVoucherCreateQuarterChange()">
+              <select id="voucherCreateQuarterSelect" onchange="onVoucherCreateQuarterChange()" class="qsel-dyn" data-qsrc="existing">
                 <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-                <option value="2025-2026-Q4">2025-2026 Q4</option>
-                <option value="2026-2027-Q1">2026-2027 Q1</option>
-                <option value="2026-2027-Q2">2026-2027 Q2</option>
-                <option value="2026-2027-Q3">2026-2027 Q3</option>
-                <option value="2026-2027-Q4">2026-2027 Q4</option>
               </select>
             </div>
             <div style="min-width:220px;">
@@ -1360,13 +1337,8 @@
           <div style="display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
             <div style="min-width:200px;">
               <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Quarter தேர்ந்தெடுக்கவும்</label>
-              <select id="adviceQuarterSelect" onchange="onAdviceQuarterChange()">
+              <select id="adviceQuarterSelect" onchange="onAdviceQuarterChange()" class="qsel-dyn" data-qsrc="existing">
                 <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-                <option value="2025-2026-Q4">2025-2026 Q4</option>
-                <option value="2026-2027-Q1">2026-2027 Q1</option>
-                <option value="2026-2027-Q2">2026-2027 Q2</option>
-                <option value="2026-2027-Q3">2026-2027 Q3</option>
-                <option value="2026-2027-Q4">2026-2027 Q4</option>
               </select>
             </div>
             <div style="min-width:220px;">
@@ -1412,13 +1384,8 @@
           <div style="display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
             <div style="min-width:200px;">
               <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Quarter தேர்ந்தெடுக்கவும்</label>
-              <select id="voucherPrintQuarterSelect" onchange="onVoucherPrintQuarterChange()">
+              <select id="voucherPrintQuarterSelect" onchange="onVoucherPrintQuarterChange()" class="qsel-dyn" data-qsrc="existing">
                 <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-                <option value="2025-2026-Q4">2025-2026 Q4</option>
-                <option value="2026-2027-Q1">2026-2027 Q1</option>
-                <option value="2026-2027-Q2">2026-2027 Q2</option>
-                <option value="2026-2027-Q3">2026-2027 Q3</option>
-                <option value="2026-2027-Q4">2026-2027 Q4</option>
               </select>
             </div>
             <div style="min-width:220px;">
@@ -1493,9 +1460,7 @@
         <!-- Filter -->
         <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
           <div style="min-width:200px;">
-            <select id="mismatchQuarterFilter" onchange="filterMismatchTable()">
-              <option value="">-- அனைத்து Quarters --</option>
-            </select>
+            <div class="qsel" id="mismatchQuarterFilter" data-onchange="filterMismatchTable"></div>
           </div>
           <div style="min-width:180px;">
             <select id="mismatchStatusFilter" onchange="filterMismatchTable()">
@@ -2062,19 +2027,17 @@
     }
     // ─── Google Sheet-க்கான CSV பதிவிறக்கம் (A:V அமைப்பு) ───
     function showCsvExport() {
-      const quarters = ['2025-2026-Q4','2026-2027-Q1','2026-2027-Q2','2026-2027-Q3','2026-2027-Q4'];
       document.getElementById('reportContent').innerHTML =
         '<h3 style="color:#1e4d8c;text-align:center;margin-bottom:20px;">⬇️ Google Sheet CSV பதிவிறக்கம்</h3>' +
         '<p style="text-align:center;color:var(--muted);line-height:1.7;">உங்கள் Sheet-ன் A முதல் V வரையிலான columns வரிசையிலேயே தரவு வரும்.<br>' +
         'இதழ் பெயர் A→Z வரிசையில் (ஒரே இதழுக்குள் Quarter வரிசை).</p>' +
-        '<div class="field" style="max-width:320px;margin:20px auto;"><label>Quarter</label>' +
-        '<select id="csvQuarter"><option value="">-- அனைத்து Quarter-களும் --</option>' +
-        quarters.map(q => '<option value="' + q + '">' + q.replace('-Q', ' Q') + '</option>').join('') +
-        '</select></div>' +
+        '<div class="field" style="max-width:720px;margin:20px auto;"><label>Quarter (ஒன்று அல்லது பல டிக் செய்யலாம்)</label>' +
+        '<div class="qsel" id="csvQuarter"></div></div>' +
         '<div style="text-align:center;"><button class="btn-primary" onclick="downloadSheetCsv()">⬇️ CSV பதிவிறக்கு</button></div>';
+      QSel.mount('csvQuarter');
     }
     function downloadSheetCsv() {
-      const q = document.getElementById('csvQuarter').value;
+      const q = QSel.csv('csvQuarter');
       const a = document.createElement('a');
       a.href = '/api/export/sheet-csv' + (q ? '?quarter=' + encodeURIComponent(q) : '');
       a.style.display = 'none';
@@ -2659,7 +2622,7 @@
     function _distinct(a) { return Array.from(new Set(a.filter(Boolean))); }
 
     async function loadTransactionEntries() {
-      const quarter = document.getElementById('transQuarterFilter').value;
+      const quarter = QSel.csv('transQuarterFilter');
       setStatus('transStatus', 'loading', '<span class="spinner dark"></span> பதிவுகள் ஏற்றப்படுகின்றன...');
       try {
         const res = await new Promise((res, rej) => {
@@ -2763,7 +2726,7 @@
 
     // ─── Email (ஒரு Vendor Code குழுவுக்கு ஒரே மெயில் + ஒரே PDF) ───
     async function loadEmailReadyPayments() {
-      const quarter = document.getElementById('emailQuarterFilter').value;
+      const quarter = QSel.csv('emailQuarterFilter');
       setStatus('emailStatus', 'loading', '<span class="spinner dark"></span> மெயில் அனுப்ப தயாரான பதிவுகள்...');
       try {
         const groups = await new Promise((res, rej) => {
@@ -2904,8 +2867,7 @@
 
     // ─── Pending Invoice Reminder ───
     async function loadPendingInvoices() {
-      const quarter = document.getElementById('reminderQuarter').value;
-      if (!quarter) { setStatus('reminderStatus','error','❌ Quarter தேர்ந்தெடுக்கவும்!'); return; }
+      const quarter = QSel.csv('reminderQuarter');     // காலி = அனைத்து Quarter-களும்
       setStatus('reminderStatus', 'loading', '<span class="spinner dark"></span> Pending magazines ஏற்றப்படுகின்றன...');
       const container = document.getElementById('pendingTableContainer');
       try {
@@ -2919,7 +2881,7 @@
         }
         let html = '<div class="data-table-wrap"><table class="data-table"><thead><tr><th class="ctr">✔</th><th>Magazine Name</th><th class="ctr">Quarter</th><th>Publisher Email</th></tr></thead><tbody>';
         result.forEach(item => {
-          html += '<tr><td class="ctr"><input type="checkbox" class="pendingCheck" data-mag="' + item.magazine + '" data-email="' + item.email + '"></td><td>' + item.magazine + '</td><td class="ctr">' + item.quarter + '</td><td>' + item.email + '</td></tr>';
+          html += '<tr><td class="ctr"><input type="checkbox" class="pendingCheck" data-mag="' + item.magazine + '" data-email="' + item.email + '" data-quarter="' + item.quarter + '"></td><td>' + item.magazine + '</td><td class="ctr">' + item.quarter + '</td><td>' + item.email + '</td></tr>';
         });
         html += '</tbody></table></div>';
         container.innerHTML = html;
@@ -3458,15 +3420,6 @@
             <div style="font-size:12px;color:var(--muted);margin-top:3px;">${s.label}</div>
           </div>`).join('');
 
-        // Quarter filter populate
-        const quarters = [...new Set(allMismatchData.map(r => r.quarter).filter(Boolean))].sort();
-        const qSel = document.getElementById('mismatchQuarterFilter');
-        qSel.innerHTML = '<option value="">-- அனைத்து Quarters --</option>';
-        quarters.forEach(q => {
-          const o = document.createElement('option');
-          o.value = q; o.textContent = q; qSel.appendChild(o);
-        });
-
         renderMismatchTable(allMismatchData);
         clearStatus('mismatchStatus');
 
@@ -3508,10 +3461,10 @@
     }
 
     function filterMismatchTable() {
-      const qFilter = document.getElementById('mismatchQuarterFilter').value;
+      const qFilter = QSel.get('mismatchQuarterFilter');
       const sFilter = document.getElementById('mismatchStatusFilter').value;
       const filtered = allMismatchData.filter(row => {
-        const matchQ = !qFilter || row.quarter === qFilter;
+        const matchQ = !qFilter.length || qFilter.includes(row.quarter);
         const matchS = !sFilter || row.status === sFilter;
         return matchQ && matchS;
       });
@@ -3524,7 +3477,7 @@
       setStatus('reminderStatus', 'loading', '<span class="spinner dark"></span> மெயில்கள் அனுப்பப்படுகின்றன...');
       const selected = [];
       checkedBoxes.forEach(cb => {
-        selected.push({ magazine: cb.dataset.mag, email: cb.dataset.email, quarter: document.getElementById('reminderQuarter').value });
+        selected.push({ magazine: cb.dataset.mag, email: cb.dataset.email, quarter: cb.dataset.quarter });
       });
       try {
         const result = await new Promise((res, rej) => {
@@ -3934,13 +3887,7 @@ function _pdfHelper(fnName, targetId) {
           </div>
           <div class="field">
             <label>மேலே உள்ள விலை எந்த Quarter(கள்)-க்கு பொருந்தும் <span class="req">*</span></label>
-            <div id="masterMagQuarterChecks" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;">
-              <label style="font-weight:500;"><input type="checkbox" value="2025-2026-Q4"> 2025-2026 Q4</label>
-              <label style="font-weight:500;"><input type="checkbox" value="2026-2027-Q1"> 2026-2027 Q1</label>
-              <label style="font-weight:500;"><input type="checkbox" value="2026-2027-Q2"> 2026-2027 Q2</label>
-              <label style="font-weight:500;"><input type="checkbox" value="2026-2027-Q3"> 2026-2027 Q3</label>
-              <label style="font-weight:500;"><input type="checkbox" value="2026-2027-Q4"> 2026-2027 Q4</label>
-            </div>
+            <div id="masterMagQuarterChecks" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;"></div>
           </div>
           <div id="masterMagExistingWrap" style="display:none; margin-top:6px;">
             <label style="font-size:13px; font-weight:600; color:var(--blue);">இந்த இதழுக்கு ஏற்கனவே உள்ள Quarter-வாரி விலைகள்:</label>
@@ -4114,15 +4061,8 @@ function _pdfHelper(fnName, targetId) {
           <div class="card-title">📊 Payment Details — Invoice, தொகை வழங்கல், Voucher, Transaction, Mail (A–V)</div>
           <div class="field-row">
             <div class="field">
-              <label>Quarter</label>
-              <select id="payExportQuarter" onchange="loadPaymentExport()">
-                <option value="">-- அனைத்து காலாண்டுகளும் --</option>
-                <option value="2025-2026-Q4">2025-2026 Q4</option>
-                <option value="2026-2027-Q1">2026-2027 Q1</option>
-                <option value="2026-2027-Q2">2026-2027 Q2</option>
-                <option value="2026-2027-Q3">2026-2027 Q3</option>
-                <option value="2026-2027-Q4">2026-2027 Q4</option>
-              </select>
+              <label>Quarter (ஒன்று அல்லது பல டிக் செய்யலாம்)</label>
+              <div class="qsel" id="payExportQuarter" data-onchange="loadPaymentExport"></div>
             </div>
             <div class="field">
               <label>தேடு (இதழ் / Invoice / Transaction / Voucher)</label>
@@ -4135,7 +4075,7 @@ function _pdfHelper(fnName, targetId) {
             <button class="btn-primary" onclick="downloadPaymentExport('pdf')">⬇️ PDF</button>
           </div>
           <p style="font-size:12.5px; color:var(--muted); margin-bottom:10px;">
-            இதழ் பெயர் A–Z (பின் Quarter) வரிசையில்; S.No 1, 2, 3… என எண்ணிடப்படும். பதிவிறக்கம் தேர்ந்தெடுத்த Quarter-ன் அனைத்துப் பதிவுகளையும் கொண்டிருக்கும் (தேடல் வடிகட்டி பதிவிறக்கத்தைப் பாதிக்காது).
+            இதழ் பெயர் A–Z (பின் Quarter) வரிசையில்; S.No 1, 2, 3… என எண்ணிடப்படும். CSV / Excel / PDF-ல் டிக் செய்த Quarter-களின் பதிவுகள் மட்டுமே வரும்; PDF தலைப்பிலும் அந்த Quarter-கள் காட்டப்படும் (தேடல் வடிகட்டி பதிவிறக்கத்தைப் பாதிக்காது).
           </p>
           <div id="payExportStatus" class="status"></div>
           <div class="data-table-wrap" style="max-height:520px;">
@@ -4162,13 +4102,8 @@ function _pdfHelper(fnName, targetId) {
           <div class="field-row">
             <div class="field">
               <label>Quarter தேர்ந்தெடுக்கவும் <span class="req">*</span></label>
-              <select id="deleteTxnQuarter" onchange="loadDeleteTxnMagazines()">
+              <select id="deleteTxnQuarter" onchange="loadDeleteTxnMagazines()" class="qsel-dyn" data-qsrc="existing">
                 <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-                <option value="2025-2026-Q4">2025-2026 Q4</option>
-                <option value="2026-2027-Q1">2026-2027 Q1</option>
-                <option value="2026-2027-Q2">2026-2027 Q2</option>
-                <option value="2026-2027-Q3">2026-2027 Q3</option>
-                <option value="2026-2027-Q4">2026-2027 Q4</option>
               </select>
             </div>
             <div class="field">
@@ -4248,7 +4183,7 @@ function _pdfHelper(fnName, targetId) {
       loadPaymentExport();
     }
     async function loadPaymentExport() {
-      const q = document.getElementById('payExportQuarter').value;
+      const q = QSel.csv('payExportQuarter');
       setStatus('payExportStatus', 'loading', '<span class="spinner dark"></span> பதிவுகள் ஏற்றப்படுகின்றன...');
       try {
         const r = await fetch('/api/export/payments?' + new URLSearchParams({ format: 'json', quarter: q }));
@@ -4258,7 +4193,7 @@ function _pdfHelper(fnName, targetId) {
         document.getElementById('payExportHead').innerHTML =
           '<tr>' + d.headers.map(t => '<th style="white-space:normal; min-width:70px; font-size:11.5px;">' + _ccEsc(t) + '</th>').join('') + '</tr>';
         filterPaymentExport();
-        setStatus('payExportStatus', 'success', '✅ ' + d.count + ' பதிவுகள்');
+        setStatus('payExportStatus', 'success', '✅ ' + d.count + ' பதிவுகள் — ' + (QSel.label('payExportQuarter') || 'அனைத்து Quarter-களும்'));
       } catch (e) {
         setStatus('payExportStatus', 'error', '❌ பிழை: ' + e.message);
       }
@@ -4290,7 +4225,7 @@ function _pdfHelper(fnName, targetId) {
       body.innerHTML = h;
     }
     function downloadPaymentExport(fmt) {
-      const q = document.getElementById('payExportQuarter').value;
+      const q = QSel.csv('payExportQuarter');
       const a = document.createElement('a');
       a.href = '/api/export/payments?' + new URLSearchParams({ format: fmt, quarter: q });
       a.style.display = 'none';
@@ -4908,6 +4843,114 @@ function _pdfHelper(fnName, targetId) {
       renderMasterVendorsTable(allMasterVendors.filter(r =>
         r.name.toLowerCase().includes(q) || (r.code || '').toLowerCase().includes(q)));
     }
+</script>
+
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   QSel — Quarter பல-தேர்வு (டிக் பெட்டிகள்)
+   • "அனைத்தும்" ஆரம்பத்தில் டிக்; ஒரு Quarter டிக் செய்தால் "அனைத்தும்" நீங்கும்
+   • "அனைத்தும்" டிக் செய்தால் மற்றவை நீங்கும்; எல்லாவற்றையும் நீக்கினால் "அனைத்தும்" மீண்டும் டிக்
+   • Quarter பட்டியல் /api/quarters-ல் இருந்து — புதிய Quarter தானாக வரும்
+   ═══════════════════════════════════════════════════════════════ */
+window.QSel = (function () {
+  const FALLBACK = ['2025-2026-Q4','2026-2027-Q1','2026-2027-Q2','2026-2027-Q3','2026-2027-Q4'];
+  let quarters = FALLBACK.slice(), addable = FALLBACK.slice();
+  const st = {};
+  const lbl = q => String(q || '').replace('-Q', ' Q');
+  const esc = v => String(v).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+
+  function renderBox(id) {
+    const el = document.getElementById(id), s = st[id];
+    if (!el || !s) return;
+    let h = '<label class="qs-item qs-all' + (s.all ? ' on' : '') + '"><input type="checkbox" data-q=""' + (s.all ? ' checked' : '') + '> அனைத்தும்</label>';
+    quarters.forEach(q => {
+      const on = s.sel.has(q);
+      h += '<label class="qs-item' + (on ? ' on' : '') + '"><input type="checkbox" data-q="' + esc(q) + '"' + (on ? ' checked' : '') + '> ' + esc(lbl(q)) + '</label>';
+    });
+    el.innerHTML = h;
+  }
+
+  function mount(id, onChange) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (!st[id]) st[id] = { all: true, sel: new Set() };
+    if (onChange) el._qsOnChange = onChange;
+    if (!el._qsBound) {
+      el._qsBound = true;
+      el.addEventListener('change', e => {
+        const cb = e.target;
+        if (!cb.matches || !cb.matches('input[type=checkbox]')) return;
+        const s = st[id], q = cb.dataset.q;
+        if (q === '') { s.all = true; s.sel.clear(); }
+        else {
+          if (cb.checked) s.sel.add(q); else s.sel.delete(q);
+          s.all = s.sel.size === 0;
+        }
+        renderBox(id);
+        const fn = el._qsOnChange || (el.dataset.onchange && window[el.dataset.onchange]);
+        if (typeof fn === 'function') fn();
+      });
+    }
+    renderBox(id);
+  }
+
+  const get = id => (st[id] && !st[id].all) ? Array.from(st[id].sel).sort() : [];
+  const csv = id => get(id).join(',');
+  const label = id => get(id).map(lbl).join(', ');
+
+  function fillSelects() {
+    document.querySelectorAll('select.qsel-dyn').forEach(sel => {
+      const src = sel.dataset.qsrc === 'addable' ? addable : quarters;
+      const cur = sel.value;
+      const first = sel.options[0] ? sel.options[0].outerHTML : '';
+      sel.innerHTML = first + src.map(q => '<option value="' + esc(q) + '">' + esc(lbl(q)) + '</option>').join('');
+      if (cur && src.includes(cur)) sel.value = cur;
+    });
+  }
+  function renderMasterChecks() {
+    const box = document.getElementById('masterMagQuarterChecks');
+    if (!box) return;
+    const on = new Set(Array.from(box.querySelectorAll('input:checked')).map(c => c.value));
+    box.innerHTML = addable.map(q =>
+      '<label style="font-weight:500;"><input type="checkbox" value="' + esc(q) + '"' + (on.has(q) ? ' checked' : '') + '> ' + esc(lbl(q)) + '</label>').join('');
+  }
+
+  let busy = null;
+  function reload() {
+    if (busy) return busy;
+    busy = fetch('/api/quarters').then(r => r.json()).then(d => {
+      if (d && d.success) {
+        quarters = d.quarters && d.quarters.length ? d.quarters : quarters;
+        addable = d.addable && d.addable.length ? d.addable : quarters;
+      }
+    }).catch(() => {}).then(() => {
+      Object.keys(st).forEach(id => {
+        const s = st[id];
+        s.sel = new Set(Array.from(s.sel).filter(q => quarters.includes(q)));
+        if (!s.sel.size) s.all = true;
+        renderBox(id);
+      });
+      fillSelects(); renderMasterChecks();
+      busy = null;
+    });
+    return busy;
+  }
+
+  function init() {
+    document.querySelectorAll('.qsel').forEach(el => mount(el.id));
+    fillSelects(); renderMasterChecks();
+    reload();
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init); else init();
+
+  ['hideAll','showMastersPayments','showMastersMagazines','showMastersDeleteTxn','showMastersDashboard','loadMasterMagazinesList'].forEach(n => {
+    const f = window[n];
+    if (typeof f === 'function') window[n] = function () { reload(); return f.apply(this, arguments); };
+  });
+
+  return { mount, get, csv, label, reload };
+})();
 </script>
 
 </body>
