@@ -1102,6 +1102,11 @@
           <div class="r-num">அறிக்கை 05</div>
           <div class="r-title">Email &amp; PDF Sent Status</div>
         </div>
+        <div class="report-btn" onclick="showCsvExport()">
+          <div class="r-icon">⬇️</div>
+          <div class="r-num">பதிவிறக்கம்</div>
+          <div class="r-title">Google Sheet CSV (A:V)</div>
+        </div>
       </div>
       <div class="report-content-area" id="reportContent">
         <p style="text-align:center; padding:40px; color:var(--muted);">
@@ -2054,6 +2059,27 @@
       document.getElementById('reportsDashboard').style.display = 'block';
       document.getElementById('reportContent').innerHTML =
         '<p style="text-align:center;padding:40px;color:var(--muted);">மேலே உள்ள அறிக்கை பட்டன்களில் ஒன்றை கிளிக் செய்யவும்</p>';
+    }
+    // ─── Google Sheet-க்கான CSV பதிவிறக்கம் (A:V அமைப்பு) ───
+    function showCsvExport() {
+      const quarters = ['2025-2026-Q4','2026-2027-Q1','2026-2027-Q2','2026-2027-Q3','2026-2027-Q4'];
+      document.getElementById('reportContent').innerHTML =
+        '<h3 style="color:#1e4d8c;text-align:center;margin-bottom:20px;">⬇️ Google Sheet CSV பதிவிறக்கம்</h3>' +
+        '<p style="text-align:center;color:var(--muted);line-height:1.7;">உங்கள் Sheet-ன் A முதல் V வரையிலான columns வரிசையிலேயே தரவு வரும்.<br>' +
+        'இதழ் பெயர் A→Z வரிசையில் (ஒரே இதழுக்குள் Quarter வரிசை).</p>' +
+        '<div class="field" style="max-width:320px;margin:20px auto;"><label>Quarter</label>' +
+        '<select id="csvQuarter"><option value="">-- அனைத்து Quarter-களும் --</option>' +
+        quarters.map(q => '<option value="' + q + '">' + q.replace('-Q', ' Q') + '</option>').join('') +
+        '</select></div>' +
+        '<div style="text-align:center;"><button class="btn-primary" onclick="downloadSheetCsv()">⬇️ CSV பதிவிறக்கு</button></div>';
+    }
+    function downloadSheetCsv() {
+      const q = document.getElementById('csvQuarter').value;
+      const a = document.createElement('a');
+      a.href = '/api/export/sheet-csv' + (q ? '?quarter=' + encodeURIComponent(q) : '');
+      a.style.display = 'none';
+      document.body.appendChild(a); a.click();
+      setTimeout(() => a.remove(), 1000);
     }
     function showPendingInvoiceReminder() {
       hideAll();
@@ -3844,6 +3870,13 @@ function _pdfHelper(fnName, targetId) {
             <div style="font-size:13px; color:var(--muted); margin-top:3px;">Invoice / Payment / Voucher / Mail நீக்கு</div>
           </div>
         </div>
+        <div class="menu-card" onclick="showMastersPayments()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
+          <div style="font-size:36px;">📊</div>
+          <div>
+            <div style="font-size:16px; font-weight:700; color:var(--navy);">Payment Details</div>
+            <div style="font-size:13px; color:var(--muted); margin-top:3px;">எல்லா பதிவுகளும் (A–V) — CSV / Excel / PDF பதிவிறக்கம்</div>
+          </div>
+        </div>
       </div>
 
       <!-- ══════════ MAGAZINE MASTER PANEL ══════════ -->
@@ -4075,6 +4108,48 @@ function _pdfHelper(fnName, targetId) {
         </div>
       </div>
 
+      <!-- ══════════ PAYMENT DETAILS PANEL ══════════ -->
+      <div id="mastersPaymentsPanel" class="master-panel" style="display:none;">
+        <div class="card">
+          <div class="card-title">📊 Payment Details — Invoice, தொகை வழங்கல், Voucher, Transaction, Mail (A–V)</div>
+          <div class="field-row">
+            <div class="field">
+              <label>Quarter</label>
+              <select id="payExportQuarter" onchange="loadPaymentExport()">
+                <option value="">-- அனைத்து காலாண்டுகளும் --</option>
+                <option value="2025-2026-Q4">2025-2026 Q4</option>
+                <option value="2026-2027-Q1">2026-2027 Q1</option>
+                <option value="2026-2027-Q2">2026-2027 Q2</option>
+                <option value="2026-2027-Q3">2026-2027 Q3</option>
+                <option value="2026-2027-Q4">2026-2027 Q4</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>தேடு (இதழ் / Invoice / Transaction / Voucher)</label>
+              <input type="text" id="payExportSearch" oninput="filterPaymentExport()" placeholder="தேடவும்...">
+            </div>
+          </div>
+          <div class="btn-row" style="margin:6px 0 14px;">
+            <button class="btn-secondary" onclick="downloadPaymentExport('csv')">⬇️ CSV</button>
+            <button class="btn-secondary" onclick="downloadPaymentExport('xlsx')">⬇️ Excel</button>
+            <button class="btn-primary" onclick="downloadPaymentExport('pdf')">⬇️ PDF</button>
+          </div>
+          <p style="font-size:12.5px; color:var(--muted); margin-bottom:10px;">
+            இதழ் பெயர் A–Z (பின் Quarter) வரிசையில்; S.No 1, 2, 3… என எண்ணிடப்படும். பதிவிறக்கம் தேர்ந்தெடுத்த Quarter-ன் அனைத்துப் பதிவுகளையும் கொண்டிருக்கும் (தேடல் வடிகட்டி பதிவிறக்கத்தைப் பாதிக்காது).
+          </p>
+          <div id="payExportStatus" class="status"></div>
+          <div class="data-table-wrap" style="max-height:520px;">
+            <table class="data-table" style="font-size:12.5px; white-space:nowrap;">
+              <thead id="payExportHead"></thead>
+              <tbody id="payExportBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn-secondary" onclick="showMastersDashboard()">← Master Data-க்கு</button>
+        </div>
+      </div>
+
       <!-- ══════════ DELETE TRANSACTION PANEL ══════════ -->
       <div id="mastersDeleteTxnPanel" class="master-panel" style="display:none;">
 
@@ -4162,6 +4237,65 @@ function _pdfHelper(fnName, targetId) {
       document.getElementById('mastersMagazinePanel').style.display = 'none';
       document.getElementById('mastersVendorPanel').style.display = 'none';
       document.getElementById('mastersDeleteTxnPanel').style.display = 'none';
+      document.getElementById('mastersPaymentsPanel').style.display = 'none';
+    }
+
+    // ─── Payment Details (A–V) — பார்வை + CSV / Excel / PDF ───
+    let _payExport = null;
+    function showMastersPayments() {
+      hideMasterPanels();
+      document.getElementById('mastersPaymentsPanel').style.display = 'block';
+      loadPaymentExport();
+    }
+    async function loadPaymentExport() {
+      const q = document.getElementById('payExportQuarter').value;
+      setStatus('payExportStatus', 'loading', '<span class="spinner dark"></span> பதிவுகள் ஏற்றப்படுகின்றன...');
+      try {
+        const r = await fetch('/api/export/payments?' + new URLSearchParams({ format: 'json', quarter: q }));
+        const d = await r.json();
+        if (!r.ok || d.success === false) throw new Error((d && d.message) || 'சர்வர் பிழை');
+        _payExport = d;
+        document.getElementById('payExportHead').innerHTML =
+          '<tr>' + d.headers.map(t => '<th style="white-space:normal; min-width:70px; font-size:11.5px;">' + _ccEsc(t) + '</th>').join('') + '</tr>';
+        filterPaymentExport();
+        setStatus('payExportStatus', 'success', '✅ ' + d.count + ' பதிவுகள்');
+      } catch (e) {
+        setStatus('payExportStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+    }
+    function filterPaymentExport() {
+      if (!_payExport) return;
+      const term = document.getElementById('payExportSearch').value.trim().toLowerCase();
+      const d = _payExport, body = document.getElementById('payExportBody');
+      const rows = term ? d.rows.filter(r => r.join(' ').toLowerCase().includes(term)) : d.rows;
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="' + d.headers.length + '" style="text-align:center; padding:24px; color:var(--muted);">பதிவுகள் இல்லை</td></tr>';
+        return;
+      }
+      let h = '';
+      rows.forEach(r => {
+        h += '<tr>' + r.map((v, i) => {
+          const k = d.kinds[i], key = d.keys[i];
+          let cell = _ccEsc(v);
+          if (key === 'url' && v) cell = '<a href="' + _ccEsc(v) + '" target="_blank">PDF</a>';
+          const al = k === 'money' ? 'right' : (k === 'int' || k === 'date' ? 'center' : 'left');
+          return '<td style="text-align:' + al + ';">' + cell + '</td>';
+        }).join('') + '</tr>';
+      });
+      const t = d.totals;
+      h += '<tr style="background:#fff8e1; font-weight:700;">' + d.keys.map((key, i) => {
+        if (i === 1) return '<td style="text-align:right;">TOTAL</td>';
+        return '<td style="text-align:right;">' + (t[key] !== undefined ? _ccEsc(t[key]) : '') + '</td>';
+      }).join('') + '</tr>';
+      body.innerHTML = h;
+    }
+    function downloadPaymentExport(fmt) {
+      const q = document.getElementById('payExportQuarter').value;
+      const a = document.createElement('a');
+      a.href = '/api/export/payments?' + new URLSearchParams({ format: fmt, quarter: q });
+      a.style.display = 'none';
+      document.body.appendChild(a); a.click();
+      setTimeout(() => a.remove(), 1000);
     }
 
     function showMastersDashboard() {

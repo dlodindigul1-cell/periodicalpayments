@@ -5,3 +5,4 @@ gunicorn==22.0.0
 xhtml2pdf==0.2.16
 fpdf2==2.8.8
 uharfbuzz==0.56.2
+XlsxWriter==3.2.0

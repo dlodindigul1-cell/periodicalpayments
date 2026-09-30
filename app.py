@@ -3327,5 +3327,355 @@ def api_mail_pdf(payment_id):
         conn.close()
 
 
+# --------------------------------------------------------------------------- #
+# CSV Export — Google Sheet (A:V) அமைப்பிலேயே தரவைப் பதிவிறக்க
+# --------------------------------------------------------------------------- #
+_SHEET_CSV_HEADERS = [
+    "S.no", "NAME OF THE MAGAZINE", "ISSUE PRICE", "No.of Subscription", "QTR1 ISSUES",
+    "TOTAL ISSUES AS PER SUBSCRIPTION", "ACTUAL COST TO BE PAID", "NON SUPPLY COPIES AS PER REPORT",
+    "DEDUCTION  AMOUNT", "NET PAYABLE AMOUNT", "INVOICE NUMBER", "INVOICE DATE", "REQUESTED AMOUNT",
+    "PAID AMOUNT", "PAID DATE", "NET BANKING REFERENCE NUMBER", "REMARKS", "SET NUMBER",
+    "MAIL SENT OR NOT", "URL", "Quarter details", "Voucher number",
+]
+
+
+def _csv_num(v):
+    """எண்: 6000.00 -> 6000 ; 12.5 -> 12.5 ; இல்லையெனில் காலி."""
+    if v is None:
+        return ""
+    f = float(v)
+    return int(f) if f == int(f) else round(f, 2)
+
+
+@app.route("/api/export/sheet-csv")
+def api_export_sheet_csv():
+    """payments அட்டவணையை Google Sheet-ன் A:V columns வரிசையிலேயே CSV ஆகத் தரும்.
+    ?quarter=2026-2027-Q2 (விடுத்தால் எல்லா Quarter-களும்). வரிசை: இதழ் பெயர் A→Z, பிறகு Quarter."""
+    quarter = request.args.get("quarter", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            sql = "SELECT * FROM payments"
+            params = ()
+            if quarter:
+                sql += " WHERE quarter=%s"
+                params = (quarter,)
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+
+    rows.sort(key=lambda r: ((r["magazine"] or "").strip().lower(), r["quarter"] or ""))
+    base = request.host_url.rstrip("/")
+
+    buf = io.StringIO()
+    w = csv.writer(buf, quoting=csv.QUOTE_MINIMAL)
+    w.writerow(_SHEET_CSV_HEADERS)
+    for r in rows:
+        pdf = (r["pdf_url"] or "").strip()
+        if pdf.startswith("/"):
+            pdf = base + pdf
+        w.writerow([
+            r["sno"] if r["sno"] is not None else "",
+            r["magazine"] or "",
+            _csv_num(r["issue_price"]),
+            r["subscriptions"] if r["subscriptions"] is not None else "",
+            r["qtr_issues"] if r["qtr_issues"] is not None else "",
+            r["total_issues"] if r["total_issues"] is not None else "",
+            _csv_num(r["actual_cost"]),
+            r["non_supply"] if r["non_supply"] is not None else "",
+            _csv_num(r["deduction"]),
+            _csv_num(r["net_payable"]),
+            r["invoice_no"] or "",
+            fmt_date(r["invoice_date"]),
+            _csv_num(r["requested_amt"]),
+            _csv_num(r["paid_amt"]) if (r["paid_amt"] or 0) else "",
+            fmt_date(r["payment_date"]),
+            r["transaction_no"] or "",
+            r["remarks"] or "",
+            r["bill_set_no"] or "",
+            "Sent" if r["mail_sent"] else "",
+            pdf,
+            r["quarter"] or "",
+            r["voucher_no"] or "",
+        ])
+
+    # UTF-8 BOM — Excel-ல் தமிழ் எழுத்துகள் சரியாகத் திறக்க
+    data = ("\ufeff" + buf.getvalue()).encode("utf-8")
+    fname = f"payments_{quarter or 'all'}_{date.today().strftime('%Y%m%d')}.csv"
+    return Response(
+        data,
+        mimetype="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# =============================================================================
+# Master Data — Payment Details (A:V) — திரையில் பார்க்க + CSV / Excel / PDF பதிவிறக்கம்
+# =============================================================================
+# (தலைப்பு, key, வகை)  — வகை: txt | int | money | date
+PAY_EXPORT_COLS = [
+    ("S.No", "sno", "int"),
+    ("NAME OF THE MAGAZINE", "magazine", "txt"),
+    ("ISSUE PRICE", "issue_price", "money"),
+    ("No. of SUBSCRIPTION", "subscriptions", "int"),
+    ("QTR ISSUES", "qtr_issues", "int"),
+    ("TOTAL ISSUES AS PER SUBSCRIPTION", "total_issues", "int"),
+    ("ACTUAL COST TO BE PAID", "actual_cost", "money"),
+    ("NON SUPPLY COPIES AS PER REPORT", "non_supply", "int"),
+    ("DEDUCTION AMOUNT", "deduction", "money"),
+    ("NET PAYABLE AMOUNT", "net_payable", "money"),
+    ("INVOICE NUMBER", "invoice_no", "txt"),
+    ("INVOICE DATE", "invoice_date", "date"),
+    ("REQUESTED AMOUNT", "requested_amt", "money"),
+    ("PAID AMOUNT", "paid_amt", "money"),
+    ("PAID DATE", "payment_date", "date"),
+    ("NET BANKING REFERENCE NUMBER", "transaction_no", "txt"),
+    ("REMARKS", "remarks", "txt"),
+    ("SET NUMBER", "bill_set_no", "txt"),
+    ("MAIL SENT OR NOT", "mail", "txt"),
+    ("URL", "url", "txt"),
+    ("Quarter details", "quarter", "txt"),
+    ("Voucher number", "voucher_no", "txt"),
+]
+_PAY_SUM_KEYS = ("actual_cost", "deduction", "net_payable", "requested_amt", "paid_amt")
+
+
+def fetch_payment_export_rows(cur, quarter=None, host_url=""):
+    """payments அட்டவணையை A:V வடிவில் — இதழ் பெயர் A–Z (பின் Quarter) வரிசையில். S.No 1,2,3… என மீண்டும் எண்ணிடப்படும்."""
+    sql = "SELECT * FROM payments"
+    params = ()
+    if quarter:
+        sql += " WHERE quarter=%s"
+        params = (quarter,)
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+    rows.sort(key=lambda r: ((r["magazine"] or "").strip().lower(), r["quarter"] or ""))
+    base = (host_url or "").rstrip("/")
+    out = []
+    for n, r in enumerate(rows, 1):
+        paid = r["payment_date"] is not None or float(r["paid_amt"] or 0) > 0
+        pdf = r["pdf_url"] or ""
+        out.append({
+            "sno": n,
+            "magazine": r["magazine"] or "",
+            "issue_price": float(r["issue_price"] or 0),
+            "subscriptions": int(r["subscriptions"] or 0),
+            "qtr_issues": int(r["qtr_issues"] or 0),
+            "total_issues": int(r["total_issues"] or 0),
+            "actual_cost": float(r["actual_cost"] or 0),
+            "non_supply": int(r["non_supply"] or 0),
+            "deduction": float(r["deduction"] or 0),
+            "net_payable": float(r["net_payable"] or 0),
+            "invoice_no": r["invoice_no"] or "",
+            "invoice_date": r["invoice_date"],
+            "requested_amt": float(r["requested_amt"] or 0),
+            "paid_amt": float(r["paid_amt"] or 0) if paid else None,
+            "payment_date": r["payment_date"],
+            "transaction_no": r["transaction_no"] or "",
+            "remarks": r["remarks"] or "",
+            "bill_set_no": r["bill_set_no"] or "",
+            "mail": "Sent" if r["mail_sent"] else "",
+            "url": (base + pdf) if pdf.startswith("/") and base else pdf,
+            "quarter": r["quarter"] or "",
+            "voucher_no": r["voucher_no"] or "",
+        })
+    return out
+
+
+def _pay_cell_text(row, key, kind):
+    v = row.get(key)
+    if v is None or v == "":
+        return ""
+    if kind == "date":
+        return fmt_date(v)
+    if kind == "money":
+        return indian_grouping(v)
+    return str(v)
+
+
+def _pay_totals(rows):
+    return {k: sum((r.get(k) or 0) for r in rows) for k in _PAY_SUM_KEYS}
+
+
+def _pay_export_title(quarter):
+    return "Payment Details — " + ((quarter or "").replace("-Q", " Q") if quarter else "All Quarters")
+
+
+def build_payments_csv(rows):
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([c[0] for c in PAY_EXPORT_COLS])
+    for r in rows:
+        line = []
+        for _h, key, kind in PAY_EXPORT_COLS:
+            v = r.get(key)
+            if v is None:
+                line.append("")
+            elif kind == "date":
+                line.append(fmt_date(v))
+            elif kind == "money":
+                line.append(("%.2f" % v).rstrip("0").rstrip("."))
+            else:
+                line.append(v)
+        w.writerow(line)
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")   # BOM — Excel-ல் தமிழ் சரியாகத் தெரிய
+
+
+def build_payments_xlsx(rows, quarter=None):
+    import xlsxwriter
+
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"in_memory": True})
+    ws = wb.add_worksheet("Payment Details")
+    head = wb.add_format({"bold": True, "font_color": "#FFFFFF", "bg_color": "#0F2347", "border": 1,
+                          "text_wrap": True, "align": "center", "valign": "vcenter"})
+    txt = wb.add_format({"border": 1, "valign": "top"})
+    txtc = wb.add_format({"border": 1, "valign": "top", "align": "center"})
+    num = wb.add_format({"border": 1, "valign": "top", "num_format": "#,##0.00"})
+    integer = wb.add_format({"border": 1, "valign": "top", "align": "center", "num_format": "0"})
+    dt = wb.add_format({"border": 1, "valign": "top", "align": "center", "num_format": "dd/mm/yyyy"})
+    tot_l = wb.add_format({"bold": True, "border": 1, "bg_color": "#FFF3C4", "align": "right"})
+    tot_n = wb.add_format({"bold": True, "border": 1, "bg_color": "#FFF3C4", "num_format": "#,##0.00"})
+    tot_b = wb.add_format({"bold": True, "border": 1, "bg_color": "#FFF3C4"})
+
+    widths = [7, 34, 10, 12, 10, 14, 14, 12, 12, 14, 18, 12, 14, 14, 12, 28, 22, 8, 10, 34, 16, 12]
+    for i, w in enumerate(widths):
+        ws.set_column(i, i, w)
+    ws.set_row(0, 48)
+    for c, (h, _k, _t) in enumerate(PAY_EXPORT_COLS):
+        ws.write(0, c, h, head)
+    for r_i, r in enumerate(rows, start=1):
+        for c, (_h, key, kind) in enumerate(PAY_EXPORT_COLS):
+            v = r.get(key)
+            if v is None or v == "":
+                ws.write_blank(r_i, c, None, txt)
+            elif kind == "date":
+                ws.write_datetime(r_i, c, datetime(v.year, v.month, v.day), dt)
+            elif kind == "money":
+                ws.write_number(r_i, c, float(v), num)
+            elif kind == "int":
+                ws.write_number(r_i, c, int(v), integer)
+            elif key in ("mail", "bill_set_no", "quarter", "voucher_no"):
+                ws.write_string(r_i, c, str(v), txtc)
+            elif key == "url" and str(v).startswith("http"):
+                ws.write_url(r_i, c, str(v), txt, "PDF")
+            else:
+                ws.write_string(r_i, c, str(v), txt)
+    # மொத்த வரி — SUM formula
+    tr = len(rows) + 1
+    ws.write(tr, 0, "", tot_b)
+    for c, (_h, key, _t) in enumerate(PAY_EXPORT_COLS):
+        if c == 1:
+            ws.write(tr, c, "TOTAL", tot_l)
+        elif key in _PAY_SUM_KEYS and rows:
+            col = xlsxwriter.utility.xl_col_to_name(c)
+            ws.write_formula(tr, c, f"=SUM({col}2:{col}{tr})", tot_n, _pay_totals(rows)[key])
+        elif c:
+            ws.write(tr, c, "", tot_b)
+    ws.freeze_panes(1, 2)
+    if rows:
+        ws.autofilter(0, 0, len(rows), len(PAY_EXPORT_COLS) - 1)
+    ws.set_landscape()
+    ws.set_paper(8)          # A3
+    ws.fit_to_pages(1, 0)
+    ws.repeat_rows(0)
+    wb.close()
+    return buf.getvalue()
+
+
+def build_payments_pdf(rows, quarter=None):
+    """A3 landscape, 22 columns — fpdf2 + uharfbuzz (இதே அமைப்பு Payment Advice PDF-ல் பயன்படுகிறது)."""
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+
+    pdf = FPDF(orientation="L", unit="mm", format="A3")
+    pdf.set_margins(8, 10, 8)
+    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.add_font("Tamil", "", TAMIL_FONT_PATH)
+    pdf.set_text_shaping(True)
+    pdf.add_page()
+
+    pdf.set_font("Tamil", size=15)
+    pdf.cell(0, 8, "திண்டுக்கல் மாவட்ட நூலக ஆணைக்குழு", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Tamil", size=11)
+    pdf.cell(0, 7, f"{_pay_export_title(quarter)}  |  பதிவுகள்: {len(rows)}  |  {datetime.now().strftime('%d/%m/%Y')}",
+             align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+    rel = [6, 26, 9, 10, 8, 11, 13, 10, 11, 13, 15, 12, 13, 13, 12, 22, 15, 6, 8, 9, 15, 10]
+    avail = 420 - 16
+    widths = tuple(round(w * avail / sum(rel), 2) for w in rel)
+    aligns = []
+    for _h, _k, kind in PAY_EXPORT_COLS:
+        aligns.append("RIGHT" if kind == "money" else ("CENTER" if kind in ("int", "date") else "LEFT"))
+
+    pdf.set_font("Tamil", size=6.5)
+    head_style = FontFace(color=(255, 255, 255), fill_color=(15, 35, 71))
+    with pdf.table(col_widths=widths, text_align=tuple(aligns), headings_style=head_style,
+                   line_height=3.6, padding=0.7, borders_layout="ALL") as table:
+        h = table.row()
+        for t, _k, _tp in PAY_EXPORT_COLS:
+            h.cell(t, align="C")
+        for r in rows:
+            row = table.row()
+            for _h, key, kind in PAY_EXPORT_COLS:
+                if key == "url":
+                    u = r.get("url") or ""
+                    if u.startswith("http"):
+                        row.cell("PDF", align="C", link=u)
+                    else:
+                        row.cell("")
+                else:
+                    row.cell(_pay_cell_text(r, key, kind))
+        if rows:
+            t = _pay_totals(rows)
+            fill = FontFace(fill_color=(255, 243, 196))
+            tot = table.row()
+            tot.cell("TOTAL", colspan=6, align="R", style=fill)
+            for _h, key, _kind in PAY_EXPORT_COLS[6:]:
+                tot.cell(indian_grouping(t[key]) if key in t else "", align="R", style=fill)
+    return bytes(pdf.output())
+
+
+@app.route("/api/export/payments")
+def api_export_payments():
+    """format=json (திரைக் காட்சி) | csv | xlsx | pdf ;  quarter (விருப்பம்)"""
+    fmt = (request.args.get("format") or "json").strip().lower()
+    quarter = (request.args.get("quarter") or "").strip() or None
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            rows = fetch_payment_export_rows(cur, quarter, request.host_url)
+    finally:
+        conn.close()
+
+    stem = "Payment_Details_" + (quarter or "All") + "_" + datetime.now().strftime("%Y%m%d")
+    try:
+        if fmt == "csv":
+            return send_file(io.BytesIO(build_payments_csv(rows)), mimetype="text/csv",
+                             as_attachment=True, download_name=stem + ".csv")
+        if fmt == "xlsx":
+            return send_file(io.BytesIO(build_payments_xlsx(rows, quarter)),
+                             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             as_attachment=True, download_name=stem + ".xlsx")
+        if fmt == "pdf":
+            return send_file(io.BytesIO(build_payments_pdf(rows, quarter)), mimetype="application/pdf",
+                             as_attachment=True, download_name=stem + ".pdf")
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"success": False, "message": f"{fmt.upper()} உருவாக்கத்தில் பிழை: {e}"}), 500
+
+    totals = _pay_totals(rows)
+    return jsonify({
+        "success": True,
+        "headers": [c[0] for c in PAY_EXPORT_COLS],
+        "keys": [c[1] for c in PAY_EXPORT_COLS],
+        "kinds": [c[2] for c in PAY_EXPORT_COLS],
+        "rows": [[_pay_cell_text(r, k, t) if k != "url" else (r.get("url") or "") for _h, k, t in PAY_EXPORT_COLS] for r in rows],
+        "totals": {k: indian_grouping(v) for k, v in totals.items()},
+        "count": len(rows),
+    })
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=int(os.environ.get("PORT", 5000)))
