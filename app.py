@@ -211,8 +211,40 @@ def smtp_configured():
     return bool(os.environ.get("SMTP_HOST") and os.environ.get("SMTP_USER") and os.environ.get("SMTP_PASSWORD"))
 
 
+_EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-']+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+$")
+
+
+def parse_email_list(value):
+    """ஒரு பெட்டியில் காற்புள்ளி / semicolon / இடைவெளி / புதிய வரியால் பிரிக்கப்பட்ட பல முகவரிகளைப்
+    (அல்லது முகவரிப் பட்டியலை) தனித்தனியாகப் பிரித்து, நகல் நீக்கி (வரிசை மாறாமல்) தரும்.
+    திருப்புவது: (valid_list, invalid_list)"""
+    if value is None:
+        return [], []
+    parts = []
+    for v in (value if isinstance(value, (list, tuple, set)) else [value]):
+        parts += re.split(r"[,;\s]+", str(v or ""))
+    valid, invalid, seen = [], [], set()
+    for a in parts:
+        a = a.strip().strip("<>").strip()
+        if not a:
+            continue
+        key = a.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        (valid if _EMAIL_RE.match(a) else invalid).append(a)
+    return valid, invalid
+
+
 def send_email(to_addr, subject, html_body, attachment_bytes=None, attachment_name=None):
-    """MAIL_PROVIDER env var-ஐ பொருத்து SMTP அல்லது Brevo HTTP API வழியாக மெயில் அனுப்பும்."""
+    """MAIL_PROVIDER env var-ஐ பொருத்து SMTP அல்லது Brevo HTTP API வழியாக மெயில் அனுப்பும்.
+    to_addr: ஒரு முகவரி, காற்புள்ளியால் பிரித்த பல முகவரிகள், அல்லது பட்டியல் — எல்லாவற்றுக்கும் ஒரே மெயில்."""
+    to_list, bad = parse_email_list(to_addr)
+    if bad:
+        raise RuntimeError("தவறான Email முகவரி: " + ", ".join(bad) + " — Master Data → Vendors-ல் திருத்தவும்.")
+    if not to_list:
+        raise RuntimeError("Email முகவரி இல்லை")
+    to_addr = to_list
     provider = mail_provider()
     if provider == "brevo":
         _send_email_brevo(to_addr, subject, html_body, attachment_bytes, attachment_name)
@@ -234,7 +266,7 @@ def _send_email_smtp(to_addr, subject, html_body, attachment_bytes=None, attachm
 
     msg = MIMEMultipart()
     msg["From"] = mail_from
-    msg["To"] = to_addr
+    msg["To"] = ", ".join(to_addr)
     msg["Subject"] = subject
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
@@ -247,7 +279,9 @@ def _send_email_smtp(to_addr, subject, html_body, attachment_bytes=None, attachm
         with smtplib.SMTP(host, port, timeout=20) as server:
             server.starttls()
             server.login(user, password)
-            server.sendmail(mail_from, [to_addr], msg.as_string())
+            refused = server.sendmail(mail_from, list(to_addr), msg.as_string())
+            if refused:
+                raise RuntimeError("SMTP சர்வர் இந்த முகவரிகளை ஏற்கவில்லை: " + ", ".join(refused))
     except OSError as e:
         raise RuntimeError(
             f"SMTP-ல் இணைக்க முடியவில்லை ({e}). இந்த hosting platform SMTP port ({port})-ஐ "
@@ -266,7 +300,7 @@ def _send_email_brevo(to_addr, subject, html_body, attachment_bytes=None, attach
 
     payload = {
         "sender": {"email": mail_from, "name": from_name},
-        "to": [{"email": to_addr}],
+        "to": [{"email": a} for a in to_addr],
         "subject": subject,
         "htmlContent": html_body,
     }
@@ -3156,9 +3190,9 @@ def api_mail_ready():
                     "totalNet": 0.0,
                     "_bk": blockers.get((r["quarter"], code)) if code else None,
                 }
-            em = (r["email_id"] or "").strip()
-            if em and em not in g["emails"]:
-                g["emails"].append(em)
+            for em in parse_email_list(r["email_id"])[0] + parse_email_list(r["email_id"])[1]:
+                if em.lower() not in [x.lower() for x in g["emails"]]:
+                    g["emails"].append(em)
             bill, net = float(r["requested_amt"] or 0), float(r["paid_amt"] or 0)
             g["items"].append({
                 "row": r["id"], "voucherNo": r["voucher_no"] or "", "magazine": r["magazine"],
@@ -3185,7 +3219,7 @@ def api_mail_ready():
             g["blockReason"] = g["warning"]
             g["items"].sort(key=lambda it: (voucher_sort_key(it["voucherNo"]), it["magazine"]))
             g["rows"] = [it["row"] for it in g["items"]]
-            g["email"] = g["emails"][0]
+            g["email"] = ", ".join(g["emails"])
             out.append(g)
         out.sort(key=lambda g: (g["quarter"], voucher_sort_key(g["items"][0]["voucherNo"]), g["vendorName"]))
         return jsonify({"success": True, "groups": out})
@@ -3217,8 +3251,11 @@ def api_mail_send():
                 return jsonify({"success": False, "message": "இந்த இதழுக்கு ஏற்கனவே மெயில் அனுப்பப்பட்டுள்ளது அல்லது Transaction No பதிவாகவில்லை"}), 400
             if not set(ids) <= member_ids:
                 return jsonify({"success": False, "message": "தேர்ந்தெடுத்த இதழ்கள் ஒரே Vendor Code குழுவைச் சேர்ந்தவை அல்ல"}), 400
-            email = next((m["email"] for m in members if m["email"]), "")
+            email = ", ".join(parse_email_list([m["email"] for m in members])[0])
+            bad_emails = parse_email_list([m["email"] for m in members])[1]
             names = ", ".join(m["magazine"] for m in members)
+            if bad_emails:
+                return jsonify({"success": False, "message": f"'{names}' — தவறான Email முகவரி: {', '.join(bad_emails)}. Master Data → Vendors-ல் திருத்தவும்."}), 400
             if not email:
                 return jsonify({"success": False, "message": f"'{names}'-க்கு Email இல்லை. Master Data → Vendors-ல் சேர்க்கவும்."}), 400
 
