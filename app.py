@@ -138,7 +138,7 @@ def fetch_group_blockers(cur, quarter=None):
     pending    = அதே Code + அதே Quarter-ல் Invoice பதிவாகி, இன்னும் தொகை வழங்காத இதழ்கள்
     missingTxn = தொகை வழங்கியும் Bank Transaction No பதிவாகாத இதழ்கள்"""
     sql = (
-        "SELECT p.magazine, p.quarter, p.payment_date, m.tnpfts_code "
+        "SELECT p.magazine, p.quarter, p.payment_date, p.bill_set_no, m.tnpfts_code "
         "FROM payments p LEFT JOIN magazines m ON m.name = p.magazine "
         "WHERE (p.payment_date IS NULL OR p.transaction_no IS NULL OR p.transaction_no = '')"
     )
@@ -152,12 +152,29 @@ def fetch_group_blockers(cur, quarter=None):
         code = norm_code(r["tnpfts_code"])
         if not code:
             continue
-        d = out.setdefault((r["quarter"], code), {"pending": [], "missingTxn": []})
-        (d["pending"] if r["payment_date"] is None else d["missingTxn"]).append(r["magazine"])
+        d = out.setdefault((r["quarter"], code), {"pending": [], "missingTxn": [], "missingTxnBySet": {}})
+        if r["payment_date"] is None:
+            d["pending"].append(r["magazine"])
+        else:
+            d["missingTxn"].append(r["magazine"])
+            s = (r["bill_set_no"] or "").strip()
+            d["missingTxnBySet"].setdefault(s, []).append(r["magazine"])
     for d in out.values():
         d["pending"].sort()
         d["missingTxn"].sort()
+        for lst in d["missingTxnBySet"].values():
+            lst.sort()
     return out
+
+
+def group_key_for(r):
+    """குழு விதி: ஒரே Quarter + ஒரே Vendor/Beneficiary Code + ஒரே Bill Set No உள்ள இதழ்கள் மட்டுமே ஒரு குழு.
+    Code அல்லது Set No இல்லாத பதிவு தனியாகவே இருக்கும்.  r-ல்: id, quarter, tnpfts_code, bill_set_no."""
+    code = norm_code(r["tnpfts_code"])
+    s = (r["bill_set_no"] or "").strip()
+    if code and s:
+        return (r["quarter"], code, s)
+    return (r["quarter"], "#%d" % r["id"], "")
 
 
 def vendor_display_name(vendor_name, payee_name, fallback):
@@ -475,7 +492,7 @@ def fetch_mail_group(cur, lead_id):
     பதிவாகி, இன்னும் மெயில் அனுப்பாத) அனைத்து இதழ்களையும் voucher வரிசையில் திருப்பும்.
     திருப்புவது: (members | None, blockers | None)."""
     cur.execute(
-        "SELECT p.id, p.quarter, m.tnpfts_code FROM payments p "
+        "SELECT p.id, p.quarter, p.bill_set_no, p.transaction_no, m.tnpfts_code FROM payments p "
         "LEFT JOIN magazines m ON m.name = p.magazine WHERE p.id=%s",
         (lead_id,),
     )
@@ -483,17 +500,20 @@ def fetch_mail_group(cur, lead_id):
     if not lead:
         return None, None
     code = norm_code(lead["tnpfts_code"])
-    if code:
+    set_no = (lead["bill_set_no"] or "").strip()
+    if code and set_no:
+        # ஒரே Quarter + Code + Set No + Transaction No → ஒரே மெயில்/PDF; இல்லையெனில் தனியாக
         cur.execute(
             """
             SELECT p.id FROM payments p
             LEFT JOIN magazines m ON m.name = p.magazine
             WHERE p.quarter=%s AND UPPER(TRIM(COALESCE(m.tnpfts_code,'')))=%s
+              AND TRIM(COALESCE(p.bill_set_no,''))=%s
               AND p.payment_date IS NOT NULL
-              AND p.transaction_no IS NOT NULL AND p.transaction_no<>''
+              AND p.transaction_no = %s
               AND p.mail_sent = FALSE
             """,
-            (lead["quarter"], code),
+            (lead["quarter"], code, set_no, lead["transaction_no"]),
         )
         ids = [r["id"] for r in cur.fetchall()]
     else:
@@ -1011,7 +1031,7 @@ def api_get_transactions():
     try:
         with conn.cursor() as cur:
             sql = (
-                "SELECT p.id, p.voucher_no, p.magazine, p.paid_amt, p.payment_date, p.quarter, "
+                "SELECT p.id, p.voucher_no, p.magazine, p.paid_amt, p.payment_date, p.quarter, p.bill_set_no, "
                 "       m.tnpfts_code, m.vendor_name, m.payee_name "
                 "FROM payments p LEFT JOIN magazines m ON m.name = p.magazine "
                 "WHERE p.payment_date IS NOT NULL AND (p.transaction_no IS NULL OR p.transaction_no='')"
@@ -1027,20 +1047,21 @@ def api_get_transactions():
         groups = {}
         for r in rows:
             code = norm_code(r["tnpfts_code"])
-            key = (r["quarter"], code) if code else (r["quarter"], "#%d" % r["id"])
+            key = group_key_for(r)
             g = groups.get(key)
             if g is None:
                 b = blockers.get((r["quarter"], code)) if code else None
                 pending = list(b["pending"]) if b else []
                 g = groups[key] = {
-                    "key": "%s|%s" % key,
+                    "key": "|".join(key),
                     "quarter": r["quarter"] or "",
                     "code": (r["tnpfts_code"] or "").strip(),
+                    "billSetNo": (r["bill_set_no"] or "").strip(),
                     "vendorName": vendor_display_name(r["vendor_name"], r["payee_name"], r["magazine"]),
                     "items": [],
                     "total": 0.0,
-                    "pending": pending,
-                    "blocked": bool(pending),
+                    "pending": pending,   # எச்சரிக்கைக்கு மட்டும் — தடை இல்லை
+                    "blocked": False,
                 }
             amt = float(r["paid_amt"] or 0)
             g["items"].append(
@@ -1086,23 +1107,11 @@ def api_save_transactions():
                     (ids,),
                 )
                 info = {r["id"]: r for r in cur.fetchall()}
-            blockers = fetch_group_blockers(cur)
-
             for item in updates:
                 try:
                     row = int(item.get("row"))
                     tx = str(item.get("transactionNo", "")).strip()
-                    inf = info.get(row)
-                    # குழுவில் தொகை வழங்காத இதழ் இருந்தால் Transaction No பதிவைத் தடுக்கும்
-                    if tx and inf:
-                        code = norm_code(inf["tnpfts_code"])
-                        b = blockers.get((inf["quarter"], code)) if code else None
-                        if b and b["pending"]:
-                            blocked_msgs.add(
-                                f"{inf['magazine']}: இதே Vendor Code உள்ள {', '.join(b['pending'])} இதழுக்கு "
-                                f"இன்னும் தொகை வழங்கப்படவில்லை"
-                            )
-                            continue
+                    # குழுவில் மற்ற இதழ்கள் பாக்கி இருந்தாலும் தடை இல்லை — எச்சரிக்கை திரையில் மட்டும்
                     cur.execute(
                         "UPDATE payments SET transaction_no=%s, updated_at=now() WHERE id=%s",
                         (tx, row),
@@ -1150,12 +1159,13 @@ def api_group_status():
                 return jsonify({"success": True, "code": code, "vendorName": vendor, "siblings": []})
 
             cur.execute(
-                "SELECT magazine, payment_date, paid_amt, requested_amt, voucher_no "
+                "SELECT magazine, payment_date, paid_amt, requested_amt, voucher_no, bill_set_no "
                 "FROM payments WHERE quarter=%s AND magazine = ANY(%s)",
                 (quarter, list(names)),
             )
             pay = {r["magazine"]: r for r in cur.fetchall()}
-            in_quarter = set(get_master_magazines_for_quarter(cur, quarter))
+            # carry-forward இதழ்கள் குழுவில் வரக்கூடாது — அந்த Quarter-க்கு நேரடி Master பதிவு உள்ளவை மட்டும்
+            in_quarter = get_direct_master_magazines_for_quarter(cur, quarter)
 
         siblings = []
         for name in sorted(names):
@@ -1168,6 +1178,7 @@ def api_group_status():
                 siblings.append({
                     "magazine": name, "status": "paid",
                     "paidAmt": float(p["paid_amt"] or 0), "paymentDate": fmt_date(p["payment_date"]),
+                    "billSetNo": (p["bill_set_no"] or "").strip(),
                 })
             else:
                 siblings.append({
@@ -1249,6 +1260,8 @@ def api_admin_magazines_list():
                 """
                 SELECT m.id, m.name, m.language, m.periodicity,
                        (SELECT COUNT(*) FROM magazine_quarters c WHERE c.magazine_id = m.id) AS quarter_count,
+                       ARRAY(SELECT c2.quarter FROM magazine_quarters c2
+                             WHERE c2.magazine_id = m.id ORDER BY c2.quarter) AS quarters,
                        lq.quarter AS latest_quarter,
                        lq.price AS price, lq.discount AS discount, lq.issue_price AS issue_price
                 FROM magazines m
@@ -1272,6 +1285,7 @@ def api_admin_magazines_list():
                         "language": r["language"] or "",
                         "periodicity": r["periodicity"] or "",
                         "quarterCount": r["quarter_count"],
+                        "quarters": list(r["quarters"] or []),
                         "latestQuarter": r["latest_quarter"] or "",
                         "price": float(r["price"]) if r["price"] is not None else None,
                         "discount": float(r["discount"]) if r["discount"] is not None else None,
@@ -1281,6 +1295,73 @@ def api_admin_magazines_list():
                 ],
             }
         )
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/add-quarter", methods=["POST"])
+def api_admin_add_quarter():
+    """ஒரு அல்லது பல இதழ்களுக்கு புதிய Quarter சேர்க்கும். விலை/கழிவு/நிகர விலை/நூலகங்கள் —
+    அந்த இதழின் அருகிலுள்ள முந்தைய Quarter-லிருந்து (இல்லையெனில் அருகிலுள்ள பிந்தையதிலிருந்து) நகலெடுக்கப்படும்.
+    ஏற்கனவே அந்த Quarter உள்ள இதழ்களை மாற்றாது.
+    body: {quarter, magazines:[...]} அல்லது {quarter, magazine}"""
+    data = request.get_json(force=True) or {}
+    quarter = (data.get("quarter") or "").strip()
+    names = data.get("magazines") or ([data.get("magazine")] if data.get("magazine") else [])
+    names = [str(n).strip() for n in names if str(n or "").strip()]
+    if not re.fullmatch(r"\d{4}-\d{4}-Q[1-4]", quarter):
+        return jsonify({"success": False, "message": "Quarter வடிவம் தவறு (எ.கா. 2026-2027-Q2)"}), 400
+    if not names:
+        return jsonify({"success": False, "message": "குறைந்தது ஒரு இதழைத் தேர்ந்தெடுக்கவும்"}), 400
+
+    conn = get_conn()
+    added, existed, no_source, missing = [], [], [], []
+    try:
+        with conn.cursor() as cur:
+            for name in names:
+                cur.execute("SELECT id FROM magazines WHERE name=%s", (name,))
+                m = cur.fetchone()
+                if not m:
+                    missing.append(name)
+                    continue
+                mid = m["id"]
+                cur.execute("SELECT 1 FROM magazine_quarters WHERE magazine_id=%s AND quarter=%s", (mid, quarter))
+                if cur.fetchone():
+                    existed.append(name)
+                    continue
+                cur.execute(
+                    """SELECT price, discount, issue_price, no_of_libraries FROM magazine_quarters
+                       WHERE magazine_id=%s AND quarter<%s ORDER BY quarter DESC LIMIT 1""",
+                    (mid, quarter),
+                )
+                src = cur.fetchone()
+                if not src:
+                    cur.execute(
+                        """SELECT price, discount, issue_price, no_of_libraries FROM magazine_quarters
+                           WHERE magazine_id=%s AND quarter>%s ORDER BY quarter ASC LIMIT 1""",
+                        (mid, quarter),
+                    )
+                    src = cur.fetchone()
+                if not src:
+                    no_source.append(name)
+                    continue
+                cur.execute(
+                    """INSERT INTO magazine_quarters (magazine_id, quarter, price, discount, issue_price, no_of_libraries)
+                       VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (magazine_id, quarter) DO NOTHING""",
+                    (mid, quarter, src["price"], src["discount"], src["issue_price"], src["no_of_libraries"]),
+                )
+                added.append(name)
+            conn.commit()
+        msg = f"{quarter}: {len(added)} இதழ்களுக்குச் சேர்க்கப்பட்டது"
+        if existed:
+            msg += f" · {len(existed)} இதழ்களுக்கு ஏற்கனவே இருந்தது"
+        if no_source or missing:
+            msg += f" · {len(no_source) + len(missing)} இதழ்களுக்கு விலை மூலம் கிடைக்கவில்லை"
+        return jsonify({"success": True, "message": msg, "added": added, "existed": existed,
+                        "noSource": no_source, "missing": missing})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
     finally:
         conn.close()
 
@@ -2166,6 +2247,19 @@ def api_amount_mismatch():
 # =============================================================================
 # 14) Pending Invoice Reminder
 # =============================================================================
+def get_direct_master_magazines_for_quarter(cur, quarter):
+    """அந்த Quarter-க்கே நேரடியாகச் சேர்க்கப்பட்ட (carry-forward அல்லாத) இதழ்களின் பெயர் set."""
+    cur.execute(
+        """
+        SELECT m.name FROM magazine_quarters q
+        JOIN magazines m ON m.id = q.magazine_id
+        WHERE q.quarter = %s
+        """,
+        (quarter,),
+    )
+    return {r["name"] for r in cur.fetchall()}
+
+
 def get_master_magazines_for_quarter(cur, quarter):
     """/api/magazines-ல் உள்ள carry-forward தர்க்கத்தையே பயன்படுத்தி, ஒரு quarter-க்கு
     பொருந்தும் இதழ்களின் பெயர் பட்டியலை மட்டும் தரும்."""
@@ -3030,7 +3124,7 @@ def api_mail_ready():
     try:
         with conn.cursor() as cur:
             sql = (
-                "SELECT p.id, p.magazine, p.quarter, p.voucher_no, p.transaction_no, p.payment_date, "
+                "SELECT p.id, p.magazine, p.quarter, p.voucher_no, p.transaction_no, p.payment_date, p.bill_set_no, "
                 "p.requested_amt, p.paid_amt, m.email_id, m.tnpfts_code, m.vendor_name, m.payee_name "
                 "FROM payments p LEFT JOIN magazines m ON m.name = p.magazine "
                 "WHERE p.transaction_no IS NOT NULL AND p.transaction_no<>'' "
@@ -3047,13 +3141,14 @@ def api_mail_ready():
         groups = {}
         for r in rows:
             code = norm_code(r["tnpfts_code"])
-            key = (r["quarter"], code) if code else (r["quarter"], "#%d" % r["id"])
+            key = group_key_for(r) + ((r["transaction_no"] or "").strip(),)   # ஒரே Transaction No மட்டும் ஒரே மெயில்
             g = groups.get(key)
             if g is None:
                 g = groups[key] = {
-                    "key": "%s|%s" % key,
+                    "key": "|".join(key),
                     "quarter": r["quarter"] or "",
                     "code": (r["tnpfts_code"] or "").strip(),
+                    "billSetNo": (r["bill_set_no"] or "").strip(),
                     "vendorName": vendor_display_name(r["vendor_name"], r["payee_name"], r["magazine"]),
                     "emails": [],
                     "items": [],
@@ -3079,12 +3174,15 @@ def api_mail_ready():
                 continue  # மெயில் ID இல்லாத குழு — முன்பும் பட்டியலில் வராது
             bk = g.pop("_bk")
             reasons = []
-            if bk and bk["pending"]:
+            in_group = len(g["items"]) > 1
+            if bk and bk["pending"] and in_group:
                 reasons.append("இன்னும் தொகை வழங்காதவை: " + ", ".join(bk["pending"]))
-            if bk and bk["missingTxn"]:
-                reasons.append("Transaction No பதிவாகாதவை: " + ", ".join(bk["missingTxn"]))
-            g["blocked"] = bool(reasons)
-            g["blockReason"] = " | ".join(reasons)
+            same_set_missing = (bk["missingTxnBySet"].get(g["billSetNo"]) if bk and g["billSetNo"] else None)
+            if same_set_missing:
+                reasons.append("இதே Set-ல் Transaction No பதிவாகாதவை (தனி மெயிலாகச் செல்லும்): " + ", ".join(same_set_missing))
+            g["blocked"] = False          # இனி தடை இல்லை — எச்சரிக்கை மட்டும்
+            g["warning"] = " | ".join(reasons)
+            g["blockReason"] = g["warning"]
             g["items"].sort(key=lambda it: (voucher_sort_key(it["voucherNo"]), it["magazine"]))
             g["rows"] = [it["row"] for it in g["items"]]
             g["email"] = g["emails"][0]
@@ -3119,18 +3217,6 @@ def api_mail_send():
                 return jsonify({"success": False, "message": "இந்த இதழுக்கு ஏற்கனவே மெயில் அனுப்பப்பட்டுள்ளது அல்லது Transaction No பதிவாகவில்லை"}), 400
             if not set(ids) <= member_ids:
                 return jsonify({"success": False, "message": "தேர்ந்தெடுத்த இதழ்கள் ஒரே Vendor Code குழுவைச் சேர்ந்தவை அல்ல"}), 400
-            if blockers and (blockers["pending"] or blockers["missingTxn"]):
-                why = []
-                if blockers["pending"]:
-                    why.append("இன்னும் தொகை வழங்காதவை: " + ", ".join(blockers["pending"]))
-                if blockers["missingTxn"]:
-                    why.append("Transaction No பதிவாகாதவை: " + ", ".join(blockers["missingTxn"]))
-                return jsonify({
-                    "success": False,
-                    "message": "இந்தக் குழுவின் அனைத்து இதழ்களுக்கும் தொகை வழங்கி Transaction No பதிவு செய்த பின்பே "
-                               "மெயில் அனுப்ப முடியும் — " + " | ".join(why),
-                }), 400
-
             email = next((m["email"] for m in members if m["email"]), "")
             names = ", ".join(m["magazine"] for m in members)
             if not email:
