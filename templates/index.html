@@ -3569,6 +3569,7 @@
       clearStatus('paidStatus');
 
       const qtxt = (d.quarters || []).map(q => q.replace('-Q', ' Q')).join(', ') || 'All Quarters';
+      document.getElementById('paidAuditBox').style.display = 'none';
       document.getElementById('paidDetailTitle').textContent = '📋 ' + d.magazine;
       document.getElementById('paidVendorInfo').innerHTML =
         '<b>Vendor:</b> ' + _pe(d.vendorName) +
@@ -3604,6 +3605,36 @@
       document.getElementById('paidDetailTableBody').innerHTML = h;
       card.style.display = 'block';
     }
+
+    // ─── தரவு சரிபார்ப்பு — இதழ் பெயர் / Vendor Code / தொகை முரண்பாடுகள் ───
+    async function runPaidAudit() {
+      const mag = document.getElementById('paidMagSelect').value;
+      const box = document.getElementById('paidAuditBox');
+      if (!mag) return;
+      box.style.display = 'block';
+      box.innerHTML = '<span class="spinner dark"></span> சரிபார்க்கப்படுகிறது...';
+      let d;
+      try {
+        const res = await fetch('/api/payments/paid-report/audit?' + new URLSearchParams({ magazine: mag }).toString());
+        if (res.status === 401) { location.href = '/login'; return; }
+        d = await res.json();
+      } catch (e) { box.innerHTML = '❌ பிழை: ' + _pe(e.message); return; }
+      if (!d.success) { box.innerHTML = '❌ ' + _pe(d.message); return; }
+      const icon = { error: '❌', warn: '⚠️', info: 'ℹ️' };
+      const bg = { error: '#fdecea', warn: '#fff6e0', info: '#eef2f8' };
+      let h = '<div style="margin-bottom:6px;"><b>Vendor Code:</b> ' + _pe(d.vendorCode || '—') +
+              ' &nbsp;|&nbsp; <b>குழுவில் உள்ள இதழ்கள்:</b> ' + d.groupMagazines.map(_pe).join(', ') + '</div>';
+      if (!d.issues.length) {
+        h += '<div style="padding:8px 10px; background:#e8f6ec; border-radius:6px;">✅ எந்தத் தவறும் கண்டறியப்படவில்லை.</div>';
+      } else {
+        d.issues.forEach(i => {
+          h += '<div style="padding:7px 10px; margin:4px 0; border-radius:6px; background:' + (bg[i.level] || '#eee') + ';">' +
+               (icon[i.level] || '') + ' ' + _pe(i.message) + '</div>';
+        });
+      }
+      box.innerHTML = h;
+    }
+
     // ════ Payment Voucher Creation Functions ════
 
     function showPaymentVoucherCreation() {
@@ -3777,7 +3808,9 @@
             <button class="btn-primary" onclick="downloadPaidReport('pdf')">⬇️ PDF</button>
             <button class="btn-secondary" onclick="downloadPaidReport('xlsx')">⬇️ Excel</button>
             <button class="btn-secondary" onclick="downloadPaidReport('csv')">⬇️ CSV</button>
+            <button class="btn-secondary" onclick="runPaidAudit()">🔍 தரவு சரிபார்</button>
           </div>
+          <div id="paidAuditBox" style="display:none; margin:0 0 14px; font-size:13.5px; line-height:1.55;"></div>
           <div class="data-table-wrap" style="max-height:560px;">
             <table class="data-table">
               <thead>

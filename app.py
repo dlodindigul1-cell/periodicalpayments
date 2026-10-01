@@ -4137,6 +4137,103 @@ def paid_report_xlsx(rep):
     return buf.getvalue()
 
 
+def _paid_report_pdf_combined(pdf, rep, para):
+    """ஒன்றுக்கு மேற்பட்ட தொகை வழங்கல் இருந்தால்: கடித வாசகம் (Date, தலைப்பு, Ref, Kindly see below...)
+    முதல் பக்கத்தில் மட்டும்; அடுத்தடுத்த Quarter-கள் அதே அட்டவணையில் தொடரும் (Quarter பட்டை + மொத்தம்);
+    கையொப்பம் (Thanking and Regards...) கடைசியில் மட்டும்."""
+    from fpdf.fonts import FontFace
+
+    groups = rep["groups"]
+    pdf.add_page()
+    pdf.set_font("Tamil", "", 10.5)
+    pdf.cell(0, 6, "Date: " + datetime.now().strftime("%d/%m/%Y"), align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Tamil", "B", 21)
+    pdf.cell(0, 11, "District Library Office, Dindigul", align="C", new_x="LMARGIN", new_y="NEXT")
+    y = pdf.get_y()
+    pdf.set_line_width(0.9)
+    pdf.line(15, y + 0.5, 195, y + 0.5)
+    pdf.ln(3)
+
+    quarters = []
+    for g in groups:
+        if g["quarter"] and g["quarter"] not in quarters:
+            quarters.append(g["quarter"])
+    title = "PAYMENT CLEARED INTIMATION"
+    if quarters:
+        title += " FOR " + (quarters[0] if len(quarters) == 1 else quarters[0] + " TO " + quarters[-1])
+    pdf.set_font("Tamil", "B", 12.5)
+    pdf.multi_cell(0, 7, title, align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+
+    mags = sorted({x["magazine"] for g in groups for x in g["rows"]})
+    pdf.set_font("Tamil", "", 11)
+    pdf.cell(0, 6.5, "Sir,", new_x="LMARGIN", new_y="NEXT")
+    para([("Ref: Your Invoices listed in the tables below, for the supply of the magazines ", False, 11),
+          (", ".join(mags), True, 11)])
+    para([("Sir,", False, 11)], h=6.2)
+    pdf.set_y(pdf.get_y() - 2.5)
+    para([("Kindly see below the quarter-wise details of the payments (total ", False, 11),
+          ("Rs." + indian_grouping(rep["totalPaid"]), True, 11),
+          (") transferred to your Bank Account from ", False, 11),
+          ("The District Library Officer, Dindigul", True, 11),
+          (", for the supply of the above magazines, with the break-up shown against each magazine. "
+           "We kindly request you to acknowledge receipt of the same.", False, 11)])
+    pdf.ln(3)
+
+    head_style = FontFace(color=(255, 255, 255), fill_color=(30, 77, 140), emphasis="BOLD")
+    band_style = FontFace(fill_color=(225, 232, 245), emphasis="BOLD")
+    tot_style = FontFace(fill_color=(238, 242, 248), emphasis="BOLD")
+    pdf.set_font("Tamil", "", 8.5)
+    widths = (11, 35, 21, 22, 21, 20, 22, 28)
+    aligns = ("CENTER", "LEFT", "CENTER", "CENTER", "RIGHT", "RIGHT", "CENTER", "LEFT")
+    heads = ["S.NO", "MAGAZINE", "INVOICE NUMBER", "INVOICE DATE", "REQUESTED AMOUNT",
+             "PAID AMOUNT", "PAID DATE", "BANK TRANSACTION NUMBER"]
+    with pdf.table(col_widths=widths, text_align=aligns, headings_style=head_style,
+                   line_height=5.4, padding=1.2, borders_layout="ALL") as table:
+        h = table.row()
+        for t in heads:
+            h.cell(t, align="C")
+        for g in groups:
+            band = "QUARTER: " + g["quarterLabel"]
+            if g["ordinalLabel"]:
+                band += "  |  " + g["ordinalLabel"].upper()
+            if g["multi"]:
+                band += "  |  GROUPED PAYMENT (%d magazines)" % len(g["rows"])
+            b = table.row()
+            b.cell(band, colspan=8, align="L", style=band_style)
+            for x in g["rows"]:
+                r = table.row()
+                r.cell(str(x["sno"]))
+                r.cell(x["magazine"])
+                r.cell(x["invoiceNo"] or "-")
+                r.cell(x["invoiceDate"] or "-")
+                r.cell(indian_grouping(x["requestedAmt"]))
+                r.cell(indian_grouping(x["paidAmt"]))
+                r.cell(x["paidDate"] or "-")
+                r.cell(x["transactionNo"] or "-")
+            if g["multi"]:
+                tr = table.row()
+                tr.cell("GROUP TOTAL", colspan=4, align="R", style=tot_style)
+                tr.cell(indian_grouping(g["totalRequested"]), align="R", style=tot_style)
+                tr.cell(indian_grouping(g["totalPaid"]), align="R", style=tot_style)
+                tr.cell("", colspan=2, style=tot_style)
+        gt = table.row()
+        gt.cell("GRAND TOTAL", colspan=4, align="R", style=tot_style)
+        gt.cell(indian_grouping(rep["totalRequested"]), align="R", style=tot_style)
+        gt.cell(indian_grouping(rep["totalPaid"]), align="R", style=tot_style)
+        gt.cell("", colspan=2, style=tot_style)
+
+    # கையொப்பம் — கடைசிப் பக்கத்தில் மட்டும் (அட்டவணைக்குக் கீழே இடம் போதாவிட்டால் புதிய பக்கம்)
+    pdf.ln(12)
+    if pdf.get_y() > 255:
+        pdf.add_page()
+    pdf.set_font("Tamil", "", 11)
+    pdf.cell(0, 6, "Thanking and Regards,", align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, "District Library Officer", align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, "Dindigul", align="R", new_x="LMARGIN", new_y="NEXT")
+    return bytes(pdf.output())
+
+
 def paid_report_pdf(rep):
     """ஒவ்வொரு தொகை வழங்கலுக்கும் (Quarter + Bank Transaction No) ஒரு Payment Cleared Intimation கடிதம்,
     publisher-க்குச் செல்லும் mail PDF போலவே (A4 portrait, ஆங்கிலம்). Vendor Code / Bill Set காட்டப்படாது.
@@ -4168,6 +4265,9 @@ def paid_report_pdf(rep):
         pdf.set_font("Tamil", "", 12)
         pdf.cell(0, 8, "No paid records found for the selected quarter(s).", align="C", new_x="LMARGIN", new_y="NEXT")
         return bytes(pdf.output())
+
+    if len(rep["groups"]) > 1:
+        return _paid_report_pdf_combined(pdf, rep, para)
 
     for g in rep["groups"]:
         rows = g["rows"]
@@ -4262,6 +4362,181 @@ def paid_report_pdf(rep):
         pdf.cell(0, 6, "District Library Officer", align="R", new_x="LMARGIN", new_y="NEXT")
         pdf.cell(0, 6, "Dindigul", align="R", new_x="LMARGIN", new_y="NEXT")
     return bytes(pdf.output())
+
+
+# =============================================================================
+# தரவு சரிபார்ப்பு — Paid Details அறிக்கையில் இதழ் / Vendor Code தவறுகளைக் கண்டுபிடிக்க
+#   (/api/payments/paid-report/audit?magazine=...)
+# =============================================================================
+def _name_key(v):
+    """இதழ் பெயர் ஒப்பீட்டுக்கு: Unicode NFC, கண்ணுக்குத் தெரியாத எழுத்துகள் / கூடுதல் இடைவெளி நீக்கம்."""
+    import unicodedata
+    v = unicodedata.normalize("NFC", v or "")
+    v = v.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "").replace("\xa0", " ")
+    return " ".join(v.split()).casefold()
+
+
+def _code_key(v):
+    """Vendor Code வடிவ வேறுபாடுகளை (இடைவெளி, '-', '_', எழுத்து அளவு) நீக்கி ஒப்பிட."""
+    return re.sub(r"[\s\-_./]+", "", (v or "")).upper()
+
+
+def _audit_compute(code, group_names, magazines, payments):
+    """தூய கணக்கீடு (DB இல்லாமல் சோதிக்கலாம்).
+    magazines: [{name, tnpfts_code, vendor_name, payee_name}] — Master முழுவதும்
+    payments : [{id, magazine, quarter, invoice_no, invoice_date, requested_amt, paid_amt,
+                 payment_date, transaction_no}] — Master-ல் உள்ள அனைத்துப் பதிவுகள்
+    """
+    import difflib
+    issues = []
+
+    def add(level, kind, msg, **extra):
+        issues.append({"level": level, "kind": kind, "message": msg, **extra})
+
+    master_names = {m["name"] for m in magazines}
+    master_keys = {_name_key(n): n for n in master_names}
+    group_keys = {_name_key(n): n for n in group_names}
+    group_set = set(group_names)
+
+    # 1) payments-ல் உள்ள இதழ் பெயர் Master பெயருடன் பொருந்தவில்லை (எழுத்துப்பிழை / இடைவெளி)
+    for pr in payments:
+        nm = pr["magazine"]
+        if nm in master_names:
+            continue
+        k = _name_key(nm)
+        hint = master_keys.get(k)
+        if not hint:
+            best = difflib.get_close_matches(k, list(master_keys), n=1, cutoff=0.75)
+            hint = master_keys[best[0]] if best else None
+        add("error", "payment_name_not_in_master",
+            "Payments-ல் உள்ள இதழ் பெயர் '%s' (%s) Master-ல் இல்லை%s — இதனால் இந்தத் தொகை அறிக்கையில் வராது." % (
+                nm, pr["quarter"], (" → Master பெயர்: '%s'" % hint) if hint else ""),
+            magazine=nm, quarter=pr["quarter"], suggestion=hint)
+
+    # 2) Master-ல் உள்ள மற்ற இதழ்கள் — பெயர் ஒத்திருக்கிறது ஆனால் Vendor Code வேறு / ஒரே Vendor Name
+    vendor_names = {_name_key(m["vendor_name"]) for m in magazines
+                    if m["name"] in group_set and (m["vendor_name"] or "").strip()}
+    gcode = _code_key(code)
+    for m in magazines:
+        if m["name"] in group_set:
+            continue
+        mcode = _code_key(m["tnpfts_code"])
+        same_vendor = bool(vendor_names) and _name_key(m["vendor_name"]) in vendor_names
+        sim = max([difflib.SequenceMatcher(None, _name_key(m["name"]), gk).ratio() for gk in group_keys] or [0])
+        starts = any(_name_key(m["name"]).startswith(gk) or gk.startswith(_name_key(m["name"]))
+                     for gk in group_keys)
+        if gcode and mcode == gcode:
+            add("error", "code_format_differs",
+                "'%s' இதழின் Vendor Code '%s' — இது '%s'-உடன் எழுத்து வடிவில் மட்டும் வேறுபடுகிறது (இடைவெளி / '-' / எழுத்து அளவு). "
+                "இதனால் குழுவில் சேராது." % (m["name"], m["tnpfts_code"], code), magazine=m["name"])
+        elif same_vendor:
+            add("warn", "same_vendor_other_code",
+                "'%s' இதழுக்கு Vendor Name அதே, ஆனால் Vendor Code '%s' (குழுவின் Code '%s')." % (
+                    m["name"], m["tnpfts_code"] or "—", code), magazine=m["name"])
+        elif sim >= 0.8 or starts:
+            add("warn", "similar_name_other_code",
+                "'%s' இதழ் பெயர் குழுவில் உள்ள இதழ்களை ஒத்திருக்கிறது, ஆனால் Vendor Code '%s'." % (
+                    m["name"], m["tnpfts_code"] or "—"), magazine=m["name"])
+
+    # 3) குழு இதழ்களின் பதிவுகள்
+    gp = [pr for pr in payments if pr["magazine"] in group_set]
+    quarters = sorted({pr["quarter"] for pr in gp if pr["quarter"]})
+    coverage = {}
+    for n in sorted(group_set):
+        paid_q = sorted({pr["quarter"] for pr in gp if pr["magazine"] == n and float(pr["paid_amt"] or 0) > 0})
+        any_q = sorted({pr["quarter"] for pr in gp if pr["magazine"] == n})
+        coverage[n] = {"paidQuarters": paid_q, "recordQuarters": any_q}
+        gaps = [q for q in quarters if q not in paid_q]
+        if gaps:
+            add("info", "quarter_gap",
+                "'%s' — இந்த Quarter-களில் Paid பதிவு இல்லை: %s" % (n, ", ".join(gaps)),
+                magazine=n, quarters=gaps)
+
+    # 4) பதிவு உள்ளது ஆனால் Paid Amount 0 — அறிக்கை paid_amt > 0 மட்டுமே காட்டும்
+    for pr in gp:
+        if float(pr["paid_amt"] or 0) <= 0 and (pr["transaction_no"] or pr["payment_date"]):
+            add("error", "zero_paid_but_txn",
+                "'%s' %s — Bank Transaction No / Paid Date உள்ளது, ஆனால் Paid Amount 0. அறிக்கையில் வராது." % (
+                    pr["magazine"], pr["quarter"]), magazine=pr["magazine"], quarter=pr["quarter"])
+
+    # 5) Transaction No-வில் 'TOTAL AMOUNT -xxxx' எழுதியிருந்தால் குழு மொத்தத்துடன் ஒப்பிடுதல்
+    by_txn = {}
+    for pr in gp:
+        t = (pr["transaction_no"] or "").strip()
+        if t and float(pr["paid_amt"] or 0) > 0:
+            by_txn.setdefault((pr["quarter"], t.upper()), []).append(pr)
+    for (q, t), rows in by_txn.items():
+        mt = re.search(r"TOTAL\s*AMOUNT\s*[-:=]?\s*([\d,]+(?:\.\d+)?)", t)
+        if mt:
+            stated = float(mt.group(1).replace(",", ""))
+            actual = sum(float(r["paid_amt"] or 0) for r in rows)
+            if abs(stated - actual) > 0.5:
+                add("error", "txn_total_mismatch",
+                    "%s — Bank Transaction No-வில் TOTAL AMOUNT %s, ஆனால் பதிவுகளின் கூட்டுத்தொகை %s (வேறுபாடு %s). "
+                    "இந்த வேறுபாட்டுக்குரிய இதழ் / தொகை பதிவாகாமல் இருக்கலாம்." % (
+                        q, indian_grouping(stated), indian_grouping(actual), indian_grouping(abs(stated - actual))),
+                    quarter=q, stated=stated, actual=actual, diff=round(stated - actual, 2))
+
+    # 6) தேதி முரண்பாடு (தட்டச்சுப் பிழை — எ.கா. 2025 / 2026)
+    for pr in gp:
+        idt, pdt = pr["invoice_date"], pr["payment_date"]
+        if idt and pdt and float(pr["paid_amt"] or 0) > 0:
+            gap = (pdt - idt).days
+            if gap < 0:
+                add("warn", "invoice_after_paid",
+                    "'%s' %s — Invoice Date (%s) Paid Date-க்குப் (%s) பிந்தியது." % (
+                        pr["magazine"], pr["quarter"], fmt_date(idt), fmt_date(pdt)),
+                    magazine=pr["magazine"], quarter=pr["quarter"])
+            elif gap > 270:
+                add("warn", "invoice_date_far",
+                    "'%s' %s — Invoice Date (%s) Paid Date-க்கு (%s) %d நாட்களுக்கு முன்; ஆண்டு தவறாக இருக்கலாம்." % (
+                        pr["magazine"], pr["quarter"], fmt_date(idt), fmt_date(pdt), gap),
+                    magazine=pr["magazine"], quarter=pr["quarter"])
+
+    # 7) ஒரே தொகை வழங்கலில் (Quarter + Txn) Invoice No வடிவ வேறுபாடு
+    for (q, t), rows in by_txn.items():
+        invs = {re.sub(r"\s+", "", (r["invoice_no"] or "")).upper() for r in rows
+                if (r["invoice_no"] or "").strip().upper() not in ("", "NIL", "---", "-")}
+        if len(invs) > 1:
+            add("info", "invoice_no_differs",
+                "%s — ஒரே தொகை வழங்கலில் Invoice Number வெவ்வேறாக உள்ளன: %s" % (q, ", ".join(sorted(invs))),
+                quarter=q)
+
+    order = {"error": 0, "warn": 1, "info": 2}
+    issues.sort(key=lambda x: order.get(x["level"], 9))
+    return {"quarters": quarters, "coverage": coverage, "issues": issues}
+
+
+def build_paid_audit(cur, magazine):
+    cur.execute("SELECT name, tnpfts_code, vendor_name, payee_name FROM magazines")
+    mags = [dict(r) for r in cur.fetchall()]
+    me = next((m for m in mags if m["name"] == magazine), None)
+    if not me:
+        return None
+    code = norm_code(me["tnpfts_code"])
+    names = sorted({m["name"] for m in mags if code and norm_code(m["tnpfts_code"]) == code} | {magazine})
+    cur.execute("SELECT id, magazine, quarter, invoice_no, invoice_date, requested_amt, paid_amt, "
+                "payment_date, transaction_no FROM payments")
+    pays = [dict(r) for r in cur.fetchall()]
+    res = _audit_compute(code, names, mags, pays)
+    res.update({"magazine": magazine, "vendorCode": (me["tnpfts_code"] or "").strip(), "groupMagazines": names})
+    return res
+
+
+@app.route("/api/payments/paid-report/audit")
+def api_paid_report_audit():
+    magazine = (request.args.get("magazine") or "").strip()
+    if not magazine:
+        return jsonify({"success": False, "message": "இதழைத் தேர்ந்தெடுக்கவும்."}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            res = build_paid_audit(cur, magazine)
+    finally:
+        conn.close()
+    if res is None:
+        return jsonify({"success": False, "message": "இதழ் Master-ல் இல்லை."}), 404
+    return jsonify({"success": True, **res})
 
 
 @app.route("/api/payments/paid-report")
