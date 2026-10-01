@@ -86,6 +86,7 @@ def ensure_auth_tables():
         conn.commit()
     finally:
         conn.close()
+    ensure_invoice_schema()
     _auth_ready = True
 
 
@@ -293,6 +294,32 @@ def healthz():
 # --------------------------------------------------------------------------- #
 def get_conn():
     return psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+
+
+_invoice_schema_ready = False
+
+def ensure_invoice_schema():
+    """Invoice-க்கு ஒரே quarter-ல் பல பதிவுகள், partial months, grouped quarters ஆதரவு.
+    ஏற்கனவே உள்ள production DB-ஐ migration இல்லாமல் உடைக்காமல் idempotent-ஆக மாற்றும்."""
+    global _invoice_schema_ready
+    if _invoice_schema_ready:
+        return
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS covered_months TEXT NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS covered_quarters TEXT NOT NULL DEFAULT ''")
+            cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS full_quarter BOOLEAN NOT NULL DEFAULT TRUE")
+            cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS invoice_group_key TEXT")
+            cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS non_supply_applied BOOLEAN NOT NULL DEFAULT FALSE")
+            # பழைய one-quarter unique constraint-ஐ நீக்கி, ஒரு quarter-ல் பல invoice rows அனுமதி.
+            cur.execute("ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_magazine_quarter_key")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_mag_quarter ON payments (magazine, quarter)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_payments_invoice_group ON payments (invoice_group_key)")
+        conn.commit()
+        _invoice_schema_ready = True
+    finally:
+        conn.close()
 
 
 def q_num(v, default=0):
@@ -894,21 +921,27 @@ def api_check_duplicate():
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT * FROM payments WHERE magazine=%s AND quarter=%s",
-                (magazine, quarter),
+                "SELECT id, invoice_no, invoice_date, requested_amt, covered_months, covered_quarters, full_quarter, invoice_group_key, paid_amt "
+                "FROM payments WHERE magazine=%s AND (quarter=%s OR %s = ANY(string_to_array(covered_quarters, ','))) "
+                "ORDER BY id",
+                (magazine, quarter, quarter),
             )
-            row = cur.fetchone()
-        if not row:
-            return jsonify({"exists": False})
-        return jsonify(
-            {
-                "exists": True,
+            rows = cur.fetchall()
+        invoices = []
+        for row in rows:
+            invoices.append({
+                "id": row["id"],
                 "invoiceNo": row["invoice_no"] or "",
                 "invoiceDate": row["invoice_date"].strftime("%d/%m/%Y") if row["invoice_date"] else "",
                 "invoiceDateISO": row["invoice_date"].isoformat() if row["invoice_date"] else "",
                 "requestedAmt": float(row["requested_amt"] or 0),
-            }
-        )
+                "coveredMonths": [x for x in (row["covered_months"] or "").split(",") if x],
+                "coveredQuarters": [x for x in (row["covered_quarters"] or "").split(",") if x],
+                "fullQuarter": bool(row["full_quarter"]),
+                "groupKey": row["invoice_group_key"] or "",
+                "paid": float(row["paid_amt"] or 0) > 0,
+            })
+        return jsonify({"exists": bool(invoices), "invoices": invoices})
     finally:
         conn.close()
 
@@ -918,73 +951,82 @@ def api_check_duplicate():
 # --------------------------------------------------------------------------- #
 @app.route("/api/payments", methods=["POST"])
 def api_add_payment():
-    payload = request.get_json(force=True)
-    is_update = bool(request.args.get("update", "false").lower() == "true")
-
-    magazine = payload.get("magazine")
-    quarter = payload.get("quarter")
+    payload = request.get_json(force=True) or {}
+    is_update = request.args.get("update", "false").lower() == "true"
+    payment_id = q_int(payload.get("paymentId"))
+    magazine = (payload.get("magazine") or "").strip()
+    quarter = (payload.get("quarter") or "").strip()
     issue_price = q_num(payload.get("issuePrice"))
     libraries = q_int(payload.get("noOfLibraries"))
     qtr_issues = q_int(payload.get("qtrIssues"))
     non_supply = q_int(payload.get("nonSupply"))
+    covered_months = [str(x).strip() for x in (payload.get("coveredMonths") or []) if str(x).strip()]
+    covered_quarters = [str(x).strip() for x in (payload.get("coveredQuarters") or [quarter]) if str(x).strip()]
+    full_quarter = bool(payload.get("fullQuarter"))
+    group_key = (payload.get("groupKey") or "").strip() or None
+    if not magazine or not quarter:
+        return jsonify({"success": False, "message": "Magazine மற்றும் Quarter அவசியம்."}), 400
+    if not covered_quarters:
+        covered_quarters = [quarter]
 
     total_issues = libraries * qtr_issues
     actual_cost = issue_price * total_issues
-    deduction = issue_price * non_supply
-    net_payable = actual_cost - deduction
-
     invoice_date = payload.get("invoiceDate") or None
     requested_amt = q_num(payload.get("requestedAmt"))
-    invoice_no = payload.get("invoiceNo")
+    invoice_no = (payload.get("invoiceNo") or "").strip()
 
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            if is_update:
+            # Partial / split invoices: quarter-ன் non-supply deduction ஒரே முதல் invoice-ல் மட்டும்.
+            if not is_update and non_supply <= 0:
                 cur.execute(
-                    """
-                    UPDATE payments SET
+                    "SELECT COALESCE(SUM(CASE WHEN non_supply_applied THEN 1 ELSE 0 END),0) AS n FROM payments WHERE magazine=%s AND quarter=%s",
+                    (magazine, quarter),
+                )
+                already = int(cur.fetchone()["n"] or 0)
+                if already == 0:
+                    cur.execute("SELECT non_supply FROM despatch_nonsupply WHERE quarter=%s AND magazine=%s", (quarter, magazine))
+                    ds = cur.fetchone()
+                    non_supply = q_int(ds["non_supply"] if ds else 0)
+
+            deduction = issue_price * non_supply
+            net_payable = actual_cost - deduction
+
+            if is_update and payment_id:
+                cur.execute(
+                    """UPDATE payments SET
                         issue_price=%s, subscriptions=%s, qtr_issues=%s, total_issues=%s,
                         actual_cost=%s, non_supply=%s, deduction=%s, net_payable=%s,
-                        invoice_no=%s, invoice_date=%s, requested_amt=%s, updated_at=now()
-                    WHERE magazine=%s AND quarter=%s
-                    RETURNING id
-                    """,
-                    (
-                        issue_price, libraries, qtr_issues, total_issues,
-                        actual_cost, non_supply, deduction, net_payable,
-                        invoice_no, invoice_date, requested_amt,
-                        magazine, quarter,
-                    ),
+                        invoice_no=%s, invoice_date=%s, requested_amt=%s,
+                        covered_months=%s, covered_quarters=%s, full_quarter=%s, invoice_group_key=%s,
+                        non_supply_applied=%s, updated_at=now() WHERE id=%s RETURNING id, sno""",
+                    (issue_price, libraries, qtr_issues, total_issues, actual_cost, non_supply, deduction, net_payable,
+                     invoice_no, invoice_date, requested_amt, ",".join(covered_months), ",".join(covered_quarters),
+                     full_quarter, group_key, bool(non_supply), payment_id),
                 )
                 row = cur.fetchone()
                 if not row:
                     conn.rollback()
                     return jsonify({"success": False, "message": "Update செய்ய record கிடைக்கவில்லை."}), 404
-                conn.commit()
-                return jsonify({"success": True, "message": "Updated"})
             else:
                 cur.execute("SELECT COALESCE(MAX(sno), 0) + 1 AS next_sno FROM payments")
                 next_sno = cur.fetchone()["next_sno"]
                 cur.execute(
-                    """
-                    INSERT INTO payments
-                        (sno, magazine, issue_price, subscriptions, qtr_issues, total_issues,
-                         actual_cost, non_supply, deduction, net_payable,
-                         invoice_no, invoice_date, requested_amt, quarter)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    RETURNING id
-                    """,
-                    (
-                        next_sno, magazine, issue_price, libraries, qtr_issues, total_issues,
-                        actual_cost, non_supply, deduction, net_payable,
-                        invoice_no, invoice_date, requested_amt, quarter,
-                    ),
+                    """INSERT INTO payments
+                        (sno, magazine, issue_price, subscriptions, qtr_issues, total_issues, actual_cost,
+                         non_supply, deduction, net_payable, invoice_no, invoice_date, requested_amt, quarter,
+                         covered_months, covered_quarters, full_quarter, invoice_group_key, non_supply_applied)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING id, sno""",
+                    (next_sno, magazine, issue_price, libraries, qtr_issues, total_issues, actual_cost,
+                     non_supply, deduction, net_payable, invoice_no, invoice_date, requested_amt, quarter,
+                     ",".join(covered_months), ",".join(covered_quarters), full_quarter, group_key, bool(non_supply)),
                 )
-                new_id = cur.fetchone()["id"]
-                conn.commit()
-                return jsonify({"success": True, "row": new_id, "message": "Appended"})
-    except Exception as e:  # noqa: BLE001
+                row = cur.fetchone()
+            conn.commit()
+            return jsonify({"success": True, "message": "Updated" if is_update else "Created", "row": row["sno"], "id": row["id"]})
+    except Exception as e:
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
     finally:
@@ -1001,22 +1043,27 @@ def api_by_quarter():
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT magazine, payment_date FROM payments WHERE quarter=%s ORDER BY magazine",
-                (quarter,),
+                """SELECT id, magazine, invoice_no, invoice_date, requested_amt, paid_amt, payment_date,
+                          covered_months, covered_quarters, full_quarter, invoice_group_key
+                   FROM payments
+                   WHERE quarter=%s OR %s = ANY(string_to_array(covered_quarters, ','))
+                   ORDER BY magazine, id""",
+                (quarter, quarter),
             )
             rows = cur.fetchall()
-
         unpaid, paid = [], []
-        seen_paid = set()
         for r in rows:
-            if r["payment_date"]:
-                if r["magazine"] not in seen_paid:
-                    paid.append({"name": r["magazine"], "paymentDate": r["payment_date"].strftime("%d/%m/%Y")})
-                    seen_paid.add(r["magazine"])
-            else:
-                unpaid.append(r["magazine"])
-
-        return jsonify({"unpaid": sorted(set(unpaid)), "paid": paid})
+            item = {
+                "id": r["id"], "name": r["magazine"], "invoiceNo": r["invoice_no"] or "",
+                "invoiceDate": fmt_date(r["invoice_date"]),
+                "requestedAmt": float(r["requested_amt"] or 0),
+                "coveredMonths": [x for x in (r["covered_months"] or "").split(",") if x],
+                "coveredQuarters": [x for x in (r["covered_quarters"] or "").split(",") if x],
+                "fullQuarter": bool(r["full_quarter"]), "groupKey": r["invoice_group_key"] or "",
+                "paymentDate": fmt_date(r["payment_date"]),
+            }
+            (paid if r["payment_date"] else unpaid).append(item)
+        return jsonify({"unpaid": unpaid, "paid": paid, "invoices": unpaid + paid})
     finally:
         conn.close()
 
@@ -1096,55 +1143,45 @@ def api_fy_summary():
 def api_payment_details():
     quarter = request.args.get("quarter", "").strip()
     magazine = request.args.get("magazine", "").strip()
+    payment_id = q_int(request.args.get("paymentId"))
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT * FROM payments WHERE magazine=%s AND quarter=%s",
-                (magazine, quarter),
-            )
+            if payment_id:
+                cur.execute("SELECT * FROM payments WHERE id=%s", (payment_id,))
+            else:
+                cur.execute("SELECT * FROM payments WHERE magazine=%s AND quarter=%s ORDER BY id LIMIT 1", (magazine, quarter))
             row = cur.fetchone()
-            cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (magazine,))
+            cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (magazine or (row["magazine"] if row else ""),))
             m = cur.fetchone()
-            vendor_code = (m["tnpfts_code"] or "").strip() if m else ""
-            # இந்த Quarter-க்கான Master விலை விவரங்கள் (விலை / கழிவு / நிகர விலை)
+            actual_magazine = row["magazine"] if row else magazine
             cur.execute(
-                """SELECT q.price, q.discount, q.issue_price
-                   FROM magazine_quarters q
-                   JOIN magazines mg ON mg.id = q.magazine_id
-                   WHERE mg.name=%s AND q.quarter=%s""",
-                (magazine, quarter),
+                """SELECT q.price, q.discount, q.issue_price FROM magazine_quarters q
+                   JOIN magazines mg ON mg.id=q.magazine_id WHERE mg.name=%s AND q.quarter=%s""",
+                (actual_magazine, row["quarter"] if row else quarter),
             )
             mq = cur.fetchone()
+        vendor_code = (m["tnpfts_code"] or "").strip() if m else ""
         master_price = float(mq["price"] or 0) if mq else 0.0
         master_discount = float(mq["discount"] or 0) if mq else 0.0
         master_net = float(mq["issue_price"] or 0) if mq else 0.0
         if not row:
-            return jsonify(
-                {
-                    "masterPrice": master_price, "masterDiscount": master_discount, "masterNetPrice": master_net,
-                    "issuePrice": 0, "totalIssues": 0, "requestedAmt": 0, "paymentDate": None, "billSetNo": "",
-                    "vendorCode": vendor_code, "vendorType": classify_vendor_code(vendor_code),
-                    "voucherNo": "", "transactionNo": "", "mailSent": False,
-                }
-            )
-        return jsonify(
-            {
-                "masterPrice": master_price,
-                "masterDiscount": master_discount,
-                "masterNetPrice": master_net or float(row["issue_price"] or 0),
-                "issuePrice": float(row["issue_price"] or 0),
-                "totalIssues": int(row["total_issues"] or 0),
-                "requestedAmt": float(row["requested_amt"] or 0),
-                "paymentDate": row["payment_date"].strftime("%d/%m/%Y") if row["payment_date"] else None,
-                "billSetNo": row["bill_set_no"] or "",
-                "vendorCode": vendor_code,
-                "vendorType": classify_vendor_code(vendor_code),
-                "voucherNo": row["voucher_no"] or "",
-                "transactionNo": row["transaction_no"] or "",
-                "mailSent": bool(row["mail_sent"]),
-            }
-        )
+            return jsonify({"masterPrice":master_price,"masterDiscount":master_discount,"masterNetPrice":master_net,
+                            "issuePrice":0,"totalIssues":0,"requestedAmt":0,"paymentDate":None,"billSetNo":"",
+                            "vendorCode":vendor_code,"vendorType":classify_vendor_code(vendor_code),"voucherNo":"","transactionNo":"","mailSent":False})
+        return jsonify({
+            "id": row["id"], "magazine": actual_magazine, "quarter": row["quarter"],
+            "masterPrice":master_price,"masterDiscount":master_discount,"masterNetPrice":master_net or float(row["issue_price"] or 0),
+            "issuePrice":float(row["issue_price"] or 0),"totalIssues":int(row["total_issues"] or 0),
+            "invoiceNo":row["invoice_no"] or "","invoiceDate":fmt_date(row["invoice_date"]),"requestedAmt":float(row["requested_amt"] or 0),"nonSupply":int(row["non_supply"] or 0),
+            "deduction":float(row["deduction"] or 0),"netPayable":float(row["net_payable"] or 0),
+            "paymentDate":fmt_date(row["payment_date"]),"billSetNo":row["bill_set_no"] or "",
+            "vendorCode":vendor_code,"vendorType":classify_vendor_code(vendor_code),"voucherNo":row["voucher_no"] or "",
+            "transactionNo":row["transaction_no"] or "","mailSent":bool(row["mail_sent"]),
+            "coveredMonths":[x for x in (row["covered_months"] or "").split(",") if x],
+            "coveredQuarters":[x for x in (row["covered_quarters"] or "").split(",") if x],
+            "fullQuarter":bool(row["full_quarter"]),"groupKey":row["invoice_group_key"] or "",
+        })
     finally:
         conn.close()
 
@@ -1154,96 +1191,58 @@ def api_payment_details():
 # --------------------------------------------------------------------------- #
 @app.route("/api/payments/process", methods=["POST"])
 def api_save_payment_processing():
-    data = request.get_json(force=True)
-    magazine = data.get("magazine")
-    quarter = data.get("quarter")
+    data = request.get_json(force=True) or {}
+    payment_id = q_int(data.get("paymentId"))
+    magazine = (data.get("magazine") or "").strip()
+    quarter = (data.get("quarter") or "").strip()
     non_supply = q_int(data.get("nonSupply"))
-    net_payable = q_num(data.get("netPayable"))
-    amount_now_paid = round(q_num(data.get("amountNowPaid")))  # Rupees மட்டும் — Paisa இல்லை
+    amount_now_paid = round(q_num(data.get("amountNowPaid")))
     payment_date = data.get("paymentDate") or None
     remarks = data.get("remarks")
     bill_set_no = data.get("billSetNo")
-
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT issue_price FROM payments WHERE magazine=%s AND quarter=%s", (magazine, quarter))
+            cur.execute("SELECT * FROM payments WHERE id=%s" if payment_id else "SELECT * FROM payments WHERE magazine=%s AND quarter=%s ORDER BY id LIMIT 1",
+                        (payment_id,) if payment_id else (magazine, quarter))
             row = cur.fetchone()
             if not row:
-                return jsonify({"success": False, "message": "Record not found in PAYMENTS"}), 404
+                return jsonify({"success":False,"message":"Invoice record not found"}),404
+            magazine, quarter = row["magazine"], row["quarter"]
             issue_price = float(row["issue_price"] or 0)
+            # Invoice-ல் ஏற்கனவே கணக்கிடப்பட்ட Non-supply-ஐ default-ஆகப் பயன்படுத்தவும்.
+            if non_supply <= 0:
+                non_supply = int(row["non_supply"] or 0)
+            total_issues = int(row["total_issues"] or 0)
             deduction = issue_price * non_supply
+            net_payable = (issue_price * total_issues) - deduction
 
-            # Vendor Code கட்டாயம் இருக்க வேண்டும் — இல்லையெனில் தொகை வழங்கல் பதிவு தடுக்கப்படும்
             cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (magazine,))
-            m = cur.fetchone()
-            vendor_code = (m["tnpfts_code"] or "").strip() if m else ""
+            m = cur.fetchone(); vendor_code = (m["tnpfts_code"] or "").strip() if m else ""
             if not vendor_code:
-                return jsonify(
-                    {"success": False, "message": f"'{magazine}' இதழுக்கு Vendor Code இல்லை. முதலில் Master Data → Vendors-ல் Vendor Code சேர்க்கவும்."}
-                ), 400
+                return jsonify({"success":False,"message":f"'{magazine}' இதழுக்கு Vendor Code இல்லை."}),400
             vendor_type = classify_vendor_code(vendor_code)
-
-            # ஒரே Quarter-க்குள் ஒரே Bill Set-ல் BENEFICIARY மற்றும் BUSINESS VENDOR கலக்கக்கூடாது
             if bill_set_no:
-                cur.execute(
-                    """
-                    SELECT p.magazine, m.tnpfts_code
-                    FROM payments p
-                    LEFT JOIN magazines m ON m.name = p.magazine
-                    WHERE p.quarter=%s AND p.bill_set_no=%s AND p.magazine != %s
-                    """,
-                    (quarter, bill_set_no, magazine),
-                )
-                others = cur.fetchall()
-                for o in others:
-                    other_type = classify_vendor_code(o["tnpfts_code"])
+                cur.execute("""SELECT p.magazine,m.tnpfts_code FROM payments p LEFT JOIN magazines m ON m.name=p.magazine
+                               WHERE p.quarter=%s AND p.bill_set_no=%s AND p.id<>%s""", (quarter,bill_set_no,row["id"]))
+                for o in cur.fetchall():
+                    other_type=classify_vendor_code(o["tnpfts_code"])
                     if other_type and vendor_type and other_type != vendor_type:
-                        return jsonify(
-                            {
-                                "success": False,
-                                "message": (
-                                    f"Bill Set {bill_set_no} ({quarter})-ல் ஏற்கனவே '{o['magazine']}' "
-                                    f"({other_type}) உள்ளது. '{magazine}' ({vendor_type}) — BENEFICIARY மற்றும் "
-                                    f"BUSINESS VENDOR ஒரே Set-ல் கலக்க முடியாது. வேறு Bill Set தேர்வு செய்யவும்."
-                                ),
-                            }
-                        ), 400
+                        return jsonify({"success":False,"message":f"Bill Set {bill_set_no} ({quarter})-ல் BENEFICIARY மற்றும் BUSINESS VENDOR கலக்க முடியாது."}),400
 
-            cur.execute(
-                """
-                UPDATE payments SET
-                    non_supply=%s, deduction=%s, net_payable=%s,
-                    paid_amt=%s, payment_date=%s, remarks=%s, bill_set_no=%s, updated_at=now()
-                WHERE magazine=%s AND quarter=%s
-                RETURNING sno, invoice_no, invoice_date, requested_amt
-                """,
-                (non_supply, deduction, net_payable, amount_now_paid, payment_date, remarks, bill_set_no,
-                 magazine, quarter),
-            )
-            fresh = cur.fetchone()
-
-            cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (magazine,))
-            m = cur.fetchone()
-            tnpfts_code = m["tnpfts_code"] if m else ""
-
-            cur.execute(
-                """
-                INSERT INTO vouchers
-                    (payment_sno, magazine, tnpfts_code, invoice_no, invoice_date,
-                     requested_amt, deduction, amount_paid, quarter)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                """,
-                (
-                    fresh["sno"], magazine, tnpfts_code, fresh["invoice_no"], fresh["invoice_date"],
-                    fresh["requested_amt"], deduction, amount_now_paid, quarter,
-                ),
-            )
+            cur.execute("""UPDATE payments SET non_supply=%s,deduction=%s,net_payable=%s,paid_amt=%s,
+                           payment_date=%s,remarks=%s,bill_set_no=%s,updated_at=now() WHERE id=%s
+                           RETURNING sno,invoice_no,invoice_date,requested_amt,covered_quarters""",
+                        (non_supply,deduction,net_payable,amount_now_paid,payment_date,remarks,bill_set_no,row["id"]))
+            fresh=cur.fetchone()
+            cur.execute("""INSERT INTO vouchers(payment_sno,magazine,tnpfts_code,invoice_no,invoice_date,requested_amt,deduction,amount_paid,quarter)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (fresh["sno"],magazine,vendor_code,fresh["invoice_no"],fresh["invoice_date"],fresh["requested_amt"],deduction,amount_now_paid,quarter))
             conn.commit()
-        return jsonify({"success": True, "message": "Payment Processed & Voucher Generated Successfully!"})
-    except Exception as e:  # noqa: BLE001
-        conn.rollback()
-        return jsonify({"success": False, "message": str(e)}), 500
+        return jsonify({"success":True,"message":"Payment Processed & Voucher Generated Successfully!","paymentId":row["id"],
+                        "coveredQuarters":[x for x in (fresh["covered_quarters"] or "").split(",") if x]})
+    except Exception as e:
+        conn.rollback(); return jsonify({"success":False,"message":str(e)}),500
     finally:
         conn.close()
 
@@ -2317,7 +2316,7 @@ def api_report_quarter_summary():
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT quarter, COUNT(*) AS magazines,
+                SELECT quarter, COUNT(DISTINCT magazine) AS magazines,
                        COALESCE(SUM(requested_amt),0) AS requested,
                        COALESCE(SUM(deduction),0) AS deduction,
                        COALESCE(SUM(paid_amt),0) AS paid
@@ -2368,9 +2367,13 @@ def api_report_magazine_wise():
                     (quarter,),
                 )
                 rows = cur.fetchall()
-                invoiced_by_magazine = {
-                    r["magazine"]: r for r in rows if (r["invoice_no"] or "").strip()
-                }
+                invoiced_by_magazine = {}
+                for r in rows:
+                    if not (r["invoice_no"] or "").strip():
+                        continue
+                    # ஒரே quarter-ல் பல partial invoices இருக்கலாம்; அவற்றை ஒன்றாகச் சுருக்காமல்
+                    # report-ல் சமீபத்திய invoice-ஐ primary ஆகக் காட்டுகிறோம்.
+                    invoiced_by_magazine[r["magazine"]] = r
 
                 received, not_received = [], []
                 for name in sorted(expected_magazines):
@@ -2797,7 +2800,7 @@ def get_payment_advice_data(cur, set_no, quarter):
     cur.execute(
         """
         SELECT p.magazine, p.voucher_no, p.invoice_no, p.invoice_date,
-               p.requested_amt, p.paid_amt, p.quarter, m.tnpfts_code
+               p.requested_amt, p.paid_amt, p.quarter, p.covered_months, p.covered_quarters, m.tnpfts_code
         FROM payments p
         LEFT JOIN magazines m ON m.name = p.magazine
         WHERE p.bill_set_no = %s AND p.quarter = %s
@@ -2823,10 +2826,17 @@ def get_payment_advice_data(cur, set_no, quarter):
     for r in prows:
         requested_amt = float(r["requested_amt"] or 0)
         paid_amt = float(r["paid_amt"] or 0)
+        covered_q = [x for x in (r["covered_quarters"] or "").split(",") if x]
+        covered_m = [x for x in (r["covered_months"] or "").split(",") if x]
+        period_note = ", ".join(covered_q) if len(covered_q) > 1 else (", ".join(covered_m) if covered_m and len(covered_m) < 3 else "")
+        display_magazine = r["magazine"] + (f" [{period_note}]" if period_note else "")
         rows.append(
             {
                 "voucherNo": (r["voucher_no"] or "").strip(),
-                "magazine": r["magazine"],
+                "magazine": display_magazine,
+                "originalMagazine": r["magazine"],
+                "coveredQuarters": covered_q,
+                "coveredMonths": covered_m,
                 "tnpftsCode": r["tnpfts_code"] or "",
                 "invoiceNo": r["invoice_no"] or "",
                 "invoiceDate": fmt_date(r["invoice_date"]),

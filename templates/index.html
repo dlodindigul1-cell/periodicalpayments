@@ -704,8 +704,38 @@
             <option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>
           </select>
         </div>
+        <div class="field" style="margin-top:8px;">
+          <label>3. இந்த Invoice எந்த காலத்திற்கு? <span class="req">*</span></label>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
+            <label style="display:flex;align-items:center;gap:7px;background:#eef7ee;border:1.5px solid #b9d9bd;border-radius:9px;padding:10px 14px;cursor:pointer;">
+              <input type="radio" name="coverageMode" value="full" checked onchange="onCoverageModeChange()">
+              <span>ஆம் — Quarter முழுமைக்கும்</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:7px;background:#fff8e8;border:1.5px solid #e8c96a;border-radius:9px;padding:10px 14px;cursor:pointer;">
+              <input type="radio" name="coverageMode" value="partial" onchange="onCoverageModeChange()">
+              <span>இல்லை — சில மாதங்களுக்கு மட்டும்</span>
+            </label>
+          </div>
+        </div>
+        <div id="partialMonthsCard" style="display:none;background:#fffdf4;border:1.5px solid #e8c96a;border-radius:10px;padding:14px 16px;margin:-6px 0 18px;">
+          <div style="font-weight:700;color:#7a5c00;margin-bottom:9px;">📅 எந்த மாதங்களுக்கு Invoice வந்துள்ளது?</div>
+          <div id="partialMonths" style="display:flex;gap:9px;flex-wrap:wrap;"></div>
+          <div style="font-size:12px;color:#7a5c00;margin-top:9px;">தேர்வு செய்த மாதங்களுக்கு மட்டுமே QTR Issues / தொகை கணக்கிடப்படும்.</div>
+        </div>
         <div class="field">
-          <label>3. QTR Issues <span class="req">*</span></label>
+          <label>4. இது பல Quarter-களுக்கான Grouped Invoice-ஆ?</label>
+          <label style="display:flex;align-items:center;gap:8px;background:#eef2ff;border:1.5px solid #c5d0f0;border-radius:9px;padding:10px 14px;cursor:pointer;">
+            <input type="checkbox" id="groupedInvoice" onchange="onGroupedInvoiceChange()">
+            <span>ஆம் — Q1/Q2/Q3/Q4 போன்ற முடிவுற்ற Quarter-களையும் இந்த ஒரே Invoice-ல் சேர்க்கவும்</span>
+          </label>
+        </div>
+        <div id="groupedQuartersCard" style="display:none;background:#f5f8ff;border:1.5px solid #c5d0f0;border-radius:10px;padding:14px 16px;margin-bottom:18px;">
+          <div style="font-weight:700;color:var(--blue);margin-bottom:9px;">🗂️ Grouped Quarter பட்டியல்</div>
+          <div id="groupedQuarters" style="display:flex;gap:9px;flex-wrap:wrap;"></div>
+          <div style="font-size:12px;color:var(--muted);margin-top:9px;">இதில் தேர்வு செய்த Quarter-கள் ஒரே invoice/payment group-ஆக கருதப்படும்.</div>
+        </div>
+        <div class="field">
+          <label>5. QTR Issues <span class="req">*</span></label>
           <input type="number" id="qtrIssues" placeholder="கிளிக் செய்து உள்ளிடவும்" readonly onclick="reopenQtrIssuesCard()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();reopenQtrIssuesCard();}" disabled>
           <div style="font-size:12px; color:var(--muted); margin-top:4px;">
             QTR Issues-ஐ Card வழியாக மட்டுமே பதிவு செய்ய முடியும். இதழைத் தேர்ந்தெடுத்ததும் Card தானாகத் திறக்கும்; மாற்ற இந்தப் பெட்டியைக் கிளிக் செய்யவும்.
@@ -742,7 +772,7 @@
               <th>A S.No</th><th>B Magazine</th><th>C Issue Price</th><th>D Libraries</th>
               <th>E Qtr Issues</th><th>F Total Issues</th><th>G Actual Cost</th>
               <th>H NonSupply</th><th>I Deduction</th><th>J Net Payable</th>
-              <th>K Invoice No</th><th>L Date</th><th>M Req.Amt</th><th>U Quarter</th>
+              <th>K Invoice No</th><th>L Date</th><th>M Req.Amt</th><th>U Quarter / Group</th>
             </tr></thead>
             <tbody><tr id="previewRow">
               <td id="pA">Auto</td><td id="pB">—</td><td id="pC">—</td><td id="pD">—</td>
@@ -836,6 +866,10 @@
 
       <div id="paymentDetailsCard" class="card" style="display:none;">
         <div class="card-title">Non Supply &amp; தொகை கணக்கீடு</div>
+        <div id="paymentCoverageBanner" style="display:none;margin-bottom:14px;padding:11px 14px;border-radius:9px;border:2px solid #e74c3c;background:#fff1f0;color:#a32020;font-weight:700;cursor:pointer;" onclick="togglePaymentCoverageDetails()">
+          🔴 குறை மாத / Grouped Invoice — <span id="paymentCoverageText"></span> <span style="font-size:12px;">(கிளிக் செய்து விவரம் பார்க்கவும்)</span>
+        </div>
+        <div id="paymentCoverageDetails" style="display:none;margin-bottom:14px;padding:11px 14px;border-radius:9px;background:#fff8f8;border:1px solid #f0b4b0;color:#7f1d1d;font-size:13px;"></div>
 
         <!-- ✅ ஏற்கனவே தொகை வழங்கப்பட்டது — Warning Banner -->
         <div id="alreadyPaidBanner" style="display:none; margin-bottom:18px;">
@@ -1550,7 +1584,7 @@
     addPayment: (p, isUpdate) => soft('/api/payments' + (isUpdate ? '?update=true' : ''), postOpt(p)),
     getMagazinesByQuarter: q => get('/api/payments/by-quarter?' + Q({ quarter: q })),
     getNonSupplyFromDespatch: (q, m) => get('/api/despatch/non-supply?' + Q({ quarter: q, magazine: m })),
-    getPaymentDetails: (q, m) => get('/api/payments/details?' + Q({ quarter: q, magazine: m })),
+    getPaymentDetails: (q, m, id) => get('/api/payments/details?' + Q({ quarter: q, magazine: m || '', paymentId: id || '' })),
     savePaymentProcessing: p => strict('/api/payments/process', postOpt(p)),
 
     getPaymentsWithTransactionDate: q => get('/api/payments/transactions?' + Q({ quarter: q || '' })),
@@ -1841,29 +1875,102 @@
       magSel.disabled = true;
       document.getElementById('qtrIssues').value = '';
       document.getElementById('qtrIssues').disabled = true;
+      document.querySelector('input[name=coverageMode][value=full]').checked = true;
+      document.getElementById('groupedInvoice').checked = false;
+      document.getElementById('partialMonthsCard').style.display = 'none';
+      document.getElementById('groupedQuartersCard').style.display = 'none';
+      document.getElementById('partialMonths').innerHTML = '';
+      document.getElementById('groupedQuarters').innerHTML = '';
       lockInvoiceFields();
       clearStatus('status');
     }
 
     // 🔥 Quarter மாறும்போது — அந்த quarter-க்கான இதழ் பட்டியலை மட்டும் ஏற்று
+    function _selectedCoverageMode() {
+      return document.querySelector('input[name=coverageMode]:checked')?.value || 'full';
+    }
+    function _quarterMonths(q) {
+      const n = Number((q || '').split('-Q')[1]);
+      return {1:['Apr','May','Jun'],2:['Jul','Aug','Sep'],3:['Oct','Nov','Dec'],4:['Jan','Feb','Mar']}[n] || [];
+    }
+    function _quarterNumber(q) { return Number((q || '').split('-Q')[1]) || 0; }
+    function _fy(q) { return (q || '').split('-Q')[0] || ''; }
+    function _quarterSeries(q) {
+      const m = /^(\d{4})-(\d{4})-Q([1-4])$/.exec(q || '');
+      if (!m) return [q].filter(Boolean);
+      const y1=Number(m[1]), y2=Number(m[2]), n=Number(m[3]);
+      return [1,2,3,4].filter(x=>x<=n).map(x=>`${y1}-${y2}-Q${x}`);
+    }
+    function _renderPartialMonths() {
+      const q = document.getElementById('quarter').value;
+      const box = document.getElementById('partialMonths');
+      if (!q) { box.innerHTML=''; return; }
+      const months = _quarterMonths(q);
+      box.innerHTML = months.map((m,i)=>`<label style="display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #d9c47a;border-radius:8px;padding:8px 11px;cursor:pointer;"><input type="checkbox" class="coverage-month" value="${m}" checked onchange="refreshCoverageIssues()">${({'Apr':'ஏப்ரல்','May':'மே','Jun':'ஜூன்','Jul':'ஜூலை','Aug':'ஆகஸ்ட்','Sep':'செப்டம்பர்','Oct':'அக்டோபர்','Nov':'நவம்பர்','Dec':'டிசம்பர்','Jan':'ஜனவரி','Feb':'பிப்ரவரி','Mar':'மார்ச்'}[m]||m)}</label>`).join('');
+    }
+    function _renderGroupedQuarters() {
+      const q = document.getElementById('quarter').value;
+      const box = document.getElementById('groupedQuarters');
+      if (!q) { box.innerHTML=''; return; }
+      const qs = _quarterSeries(q);
+      box.innerHTML = qs.map((x,i)=>`<label style="display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #b8c7e8;border-radius:8px;padding:8px 11px;cursor:pointer;"><input type="checkbox" class="group-quarter" value="${x}" ${i===qs.length-1?'checked':''} onchange="refreshCoverageIssues()">${x.replace('-Q',' Q')}</label>`).join('');
+    }
+    function onCoverageModeChange() {
+      const partial = _selectedCoverageMode() === 'partial';
+      document.getElementById('partialMonthsCard').style.display = partial ? 'block' : 'none';
+      if (partial) _renderPartialMonths();
+      refreshCoverageIssues();
+    }
+    function onGroupedInvoiceChange() {
+      const grouped = document.getElementById('groupedInvoice').checked;
+      document.getElementById('groupedQuartersCard').style.display = grouped ? 'block' : 'none';
+      if (grouped) {
+        // Grouped Q1-Q4 invoices are full-quarter by definition; avoid ambiguous month allocation.
+        document.querySelector('input[name=coverageMode][value=full]').checked = true;
+        document.getElementById('partialMonthsCard').style.display = 'none';
+        _renderGroupedQuarters();
+      }
+      refreshCoverageIssues();
+    }
+    function _coverageMonths() {
+      if (_selectedCoverageMode() === 'full') return _quarterMonths(document.getElementById('quarter').value);
+      return [...document.querySelectorAll('.coverage-month:checked')].map(x=>x.value);
+    }
+    function _coverageQuarters() {
+      if (!document.getElementById('groupedInvoice').checked) return [document.getElementById('quarter').value].filter(Boolean);
+      return [...document.querySelectorAll('.group-quarter:checked')].map(x=>x.value);
+    }
+    function _coverageIssueCount(m) {
+      const base = _qtrDefaultFor(m);
+      const qCount = Math.max(1, _coverageQuarters().length);
+      if (_selectedCoverageMode() === 'full') return base * qCount;
+      const monthCount = _coverageMonths().length;
+      return Math.max(0, Math.round((base / 3) * monthCount));
+    }
+    function refreshCoverageIssues() {
+      const magName = document.getElementById('magazine').value;
+      if (!magName) return;
+      const m = masterData[magName] || {};
+      const n = _coverageIssueCount(m);
+      document.getElementById('qtrIssues').value = n || '';
+      document.getElementById('pE').textContent = n || '—';
+      document.getElementById('pF').textContent = ((parseInt(m.noOfLibraries)||0) * (n||0));
+      document.getElementById('pU').textContent = _coverageQuarters().join(', ') || document.getElementById('quarter').value || '—';
+      if (n > 0) loadMagazineDetails();
+    }
+
     function onQuarterChangeInvoiceForm() {
       const quarter = document.getElementById('quarter').value;
       const magSel = document.getElementById('magazine');
-
-      // முந்தைய தேர்வுகளை reset செய்
       magSel.value = '';
       document.getElementById('existingInvoiceCard').style.display = 'none';
       document.getElementById('appendBtn').style.display = 'none';
       isDuplicateExists = false;
       resetQtrIssuesAndLock();
-
-      if (!quarter) {
-        magSel.innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
-        magSel.disabled = true;
-        return;
-      }
-
-      magSel.disabled = false;
+      _renderPartialMonths();
+      _renderGroupedQuarters();
+      if (!quarter) { magSel.innerHTML='<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>'; magSel.disabled=true; return; }
+      magSel.disabled=false;
       loadAllData(quarter);
     }
 
@@ -1871,127 +1978,65 @@
       resetQtrIssuesAndLock();
       const magName = document.getElementById('magazine').value;
       const qtrInput = document.getElementById('qtrIssues');
-      if (!magName) { qtrInput.disabled = true; return; }
-      qtrInput.disabled = false;
+      if (!magName) { qtrInput.disabled=true; return; }
+      qtrInput.disabled=false;
+      onCoverageModeChange();
+      refreshCoverageIssues();
       loadMagazineDetails();
       checkDuplicateOnSelect();
-      // Card தானாகத் திறக்கும் — periodicity அடிப்படையிலான மதிப்பு முன்பே நிரப்பப்பட்டிருக்கும்
       openQtrIssuesCard();
     }
 
     function resetQtrIssuesAndLock() {
-      document.getElementById('qtrIssues').value = '';
-      document.getElementById('qtrIssues').disabled = true;
-      document.getElementById('pE').textContent = '—';
+      document.getElementById('qtrIssues').value='';
+      document.getElementById('qtrIssues').disabled=true;
+      document.getElementById('pE').textContent='—';
       lockInvoiceFields();
     }
 
     function lockInvoiceFields() {
-      ['invoiceNo', 'invoiceDate', 'requestedAmt'].forEach(id => { document.getElementById(id).disabled = true; });
-      document.getElementById('invoiceDetailsLockedNote').style.display = 'block';
+      ['invoiceNo','invoiceDate','requestedAmt'].forEach(id=>{document.getElementById(id).disabled=true;});
+      document.getElementById('invoiceDetailsLockedNote').style.display='block';
     }
-
     function unlockInvoiceFields() {
-      ['invoiceNo', 'invoiceDate', 'requestedAmt'].forEach(id => { document.getElementById(id).disabled = false; });
-      document.getElementById('invoiceDetailsLockedNote').style.display = 'none';
+      ['invoiceNo','invoiceDate','requestedAmt'].forEach(id=>{document.getElementById(id).disabled=false;});
+      document.getElementById('invoiceDetailsLockedNote').style.display='none';
     }
 
-    // periodicity அடிப்படையிலான இயல்புநிலை QTR Issues
     function _qtrDefaultFor(m) {
-      const map = { Monthly:3, Fortnightly:6, Weekly:12, Bimonthly:5, Yearly:1, Quarterly:1, Semiannually:1, Triweekly:28 };
-      return map[(m.periodicity || '').trim()] || 0;
+      const map={Monthly:3,Fortnightly:6,Weekly:12,Bimonthly:5,Yearly:1,Quarterly:1,Semiannually:1,Triweekly:28};
+      return map[(m.periodicity||'').trim()]||0;
     }
 
-    function reopenQtrIssuesCard() {
-      const q = document.getElementById('qtrIssues');
-      if (!q || q.disabled) return;
-      openQtrIssuesCard();
-    }
-
-    let _qtrCardOpen = false;
+    function reopenQtrIssuesCard() { const q=document.getElementById('qtrIssues'); if(!q||q.disabled)return; openQtrIssuesCard(); }
+    let _qtrCardOpen=false;
     async function openQtrIssuesCard() {
       if (_qtrCardOpen) return;
-      const magName = document.getElementById('magazine').value;
-      if (!magName) return;
-      const qtrInput = document.getElementById('qtrIssues');
-      const m = masterData[magName] || {};
-      const issuePrice = parseFloat(m.issuePrice)  || 0;
-      const libraries  = parseInt(m.noOfLibraries) || 0;
-
-      const current = parseInt(qtrInput.value) || 0;           // ஏற்கனவே பதிவானது
-      const dflt    = _qtrDefaultFor(m);                       // periodicity இயல்பு
-      const start   = current > 0 ? current : (dflt > 0 ? dflt : '');
-      const note    = current > 0
-        ? 'தற்போது பதிவாகியுள்ள மதிப்பு — தேவைப்பட்டால் திருத்தலாம்.'
-        : (dflt > 0 ? 'இதழ் காலம் (' + _ccEsc((m.periodicity || '').trim()) + ') அடிப்படையில் தானாக நிரப்பப்பட்டது — தேவைப்பட்டால் திருத்தலாம்.' : '');
-
-      _qtrCardOpen = true;
+      const magName=document.getElementById('magazine').value; if(!magName)return;
+      const qtrInput=document.getElementById('qtrIssues'); const m=masterData[magName]||{};
+      const issuePrice=parseFloat(m.issuePrice)||0, libraries=parseInt(m.noOfLibraries)||0;
+      const suggested=_coverageIssueCount(m) || _qtrDefaultFor(m);
+      _qtrCardOpen=true;
       let res;
       try {
-        res = await showConfirmCard({
-          icon: '🧾',
-          title: 'QTR Issues & தொகை சரிபார்ப்பு',
-          subtitle: 'எண்ணை உள்ளிடவும் — தொகை உடனே கணக்கிடப்படும்',
-          html:
-            '<div class="cc-name"><small>இதழ்</small>' + _ccEsc(magName) + '</div>' +
-            '<div class="cc-chips">' +
-              '<div class="cc-chip"><span>Issue Price</span><b>₹' + issuePrice.toFixed(2) + '</b></div>' +
-              '<div class="cc-times">×</div>' +
-              '<div class="cc-chip"><span>Libraries</span><b>' + libraries + '</b></div>' +
-            '</div>' +
-            '<div class="cc-field-label">QTR Issues <span style="color:#c0392b">*</span></div>' +
-            '<div class="cc-stepper">' +
-              '<button type="button" class="cc-step" id="ccMinus" aria-label="குறை">−</button>' +
-              '<input type="number" id="ccQtrInput" class="cc-qty" min="1" max="99" step="1" inputmode="numeric" value="' + start + '" placeholder="0">' +
-              '<button type="button" class="cc-step" id="ccPlus" aria-label="கூட்டு">+</button>' +
-            '</div>' +
-            (note ? '<div class="cc-note">' + note + '</div>' : '') +
-            '<div class="cc-total"><span>மொத்த தொகை</span><b id="ccTotal">—</b></div>' +
+        res=await showConfirmCard({
+          icon:'🧾', title:'QTR Issues & தொகை சரிபார்ப்பு',
+          subtitle:'தேர்வு செய்த மாதங்கள் / Quarter அடிப்படையில் எண்ணை சரிபார்க்கவும்',
+          html:'<div class="cc-name"><small>இதழ்</small>'+_ccEsc(magName)+'</div>'+
+            '<div class="cc-chips"><div class="cc-chip"><span>Issue Price</span><b>₹'+issuePrice.toFixed(2)+'</b></div><div class="cc-times">×</div><div class="cc-chip"><span>Libraries</span><b>'+libraries+'</b></div></div>'+
+            '<div class="cc-field-label">QTR Issues <span style="color:#c0392b">*</span></div>'+
+            '<div class="cc-stepper"><button type="button" class="cc-step" id="ccMinus">−</button><input type="number" id="ccQtrInput" class="cc-qty" min="1" max="999" value="'+suggested+'"><button type="button" class="cc-step" id="ccPlus">+</button></div>'+
+            '<div class="cc-note">Coverage: '+_ccEsc(_coverageQuarters().join(', '))+' · '+_ccEsc(_coverageMonths().join(', '))+'</div>'+
+            '<div class="cc-total"><span>மொத்த தொகை</span><b id="ccTotal">—</b></div>'+
             '<div class="cc-ask">இந்த தொகை உங்களிடம் உள்ள Invoice-ல் உள்ளதா?</div>',
-          buttons: [
-            { label: 'ரத்து', value: false, style: 'ghost' },
-            { label: '✅ சரி, பதிவு செய்', value: true, style: 'primary' }
-          ],
-          focusSelector: '#ccQtrInput',
-          onMount: function (ov) {
-            const inp = ov.querySelector('#ccQtrInput');
-            const tot = ov.querySelector('#ccTotal');
-            const ok  = ov.querySelector('.cc-btn.primary');
-            const valid = () => { const n = Number(inp.value); return inp.value !== '' && Number.isInteger(n) && n >= 1 && n <= 99; };
-            const refresh = () => {
-              tot.textContent = valid() ? '₹' + (issuePrice * libraries * Number(inp.value)).toFixed(2) : '—';
-              ok.disabled = !valid();
-            };
-            inp.addEventListener('input', refresh);
-            inp.addEventListener('wheel', () => inp.blur(), { passive: true });
-            inp.addEventListener('keydown', e => {
-              if (e.key === 'Enter') { e.preventDefault(); if (!ok.disabled) ok.click(); }
-            });
-            ov.querySelector('#ccMinus').onclick = () => { inp.value = Math.max(1, (parseInt(inp.value) || 2) - 1); refresh(); inp.focus(); };
-            ov.querySelector('#ccPlus').onclick  = () => { inp.value = Math.min(99, (parseInt(inp.value) || 0) + 1); refresh(); inp.focus(); };
-            refresh();
-          },
-          resolveWith: function (val, ov) {
-            if (val !== true) return null;
-            const inp = ov.querySelector('#ccQtrInput');
-            const n = Number(inp.value);
-            return (inp.value !== '' && Number.isInteger(n) && n >= 1 && n <= 99) ? n : null;
-          }
+          buttons:[{label:'ரத்து',value:false,style:'ghost'},{label:'✅ சரி, பதிவு செய்',value:true,style:'primary'}],
+          focusSelector:'#ccQtrInput',
+          onMount:function(ov){const inp=ov.querySelector('#ccQtrInput'),tot=ov.querySelector('#ccTotal'),ok=ov.querySelector('.cc-btn.primary');const valid=()=>Number.isInteger(Number(inp.value))&&Number(inp.value)>=1;const refresh=()=>{tot.textContent=valid()?'₹'+(issuePrice*libraries*Number(inp.value)).toFixed(2):'—';ok.disabled=!valid();};inp.addEventListener('input',refresh);ov.querySelector('#ccMinus').onclick=()=>{inp.value=Math.max(1,(parseInt(inp.value)||2)-1);refresh();};ov.querySelector('#ccPlus').onclick=()=>{inp.value=Math.min(999,(parseInt(inp.value)||0)+1);refresh();};refresh();},
+          resolveWith:function(val,ov){if(val!==true)return null;const n=Number(ov.querySelector('#ccQtrInput').value);return Number.isInteger(n)&&n>=1?n:null;}
         });
-      } finally { _qtrCardOpen = false; }
-
-      if (res) {
-        // சரி → QTR Issues உரிய இடத்தில் பதிவு; Invoice விவரங்கள் திறக்கும்
-        qtrInput.value = res;
-        loadMagazineDetails();
-        unlockInvoiceFields();
-        setStatus('status', 'success', '✅ QTR Issues ' + res + ' பதிவானது — மொத்த தொகை ₹' + (issuePrice * libraries * res).toFixed(2) + '. இப்போது Invoice விவரங்களை நிரப்பலாம்.');
-      } else if (!(parseInt(qtrInput.value) > 0)) {
-        // ஏற்கனவே பதிவு இல்லாமல் ரத்து செய்தால்
-        lockInvoiceFields();
-        document.getElementById('pE').textContent = '—';
-        setStatus('status', 'error', '⚠️ QTR Issues பதிவு செய்யப்படவில்லை. QTR Issues பெட்டியைக் கிளிக் செய்து உள்ளிடவும்.');
-      }
+      } finally {_qtrCardOpen=false;}
+      if(res){ qtrInput.value=res; loadMagazineDetails(); unlockInvoiceFields(); setStatus('status','success','✅ QTR Issues '+res+' — '+_coverageQuarters().join(', ')+' / '+_coverageMonths().join(', ')+' பதிவு செய்யப்பட்டது.'); }
+      else if(!(parseInt(qtrInput.value)>0)){ lockInvoiceFields(); document.getElementById('pE').textContent='—'; setStatus('status','error','⚠️ QTR Issues பதிவு செய்யப்படவில்லை.'); }
     }
 
     function showPaymentForm() {
@@ -2112,49 +2157,20 @@
     let isDuplicateExists = false;
 
     async function checkDuplicateOnSelect() {
-      const magName  = document.getElementById('magazine').value;
-      const quarter  = document.getElementById('quarter').value;
-      const card     = document.getElementById('existingInvoiceCard');
-      const appendBtn= document.getElementById('appendBtn');
-
-      if (!magName || !quarter) {
-        card.style.display = 'none';
-        appendBtn.style.display = 'none';
-        isDuplicateExists = false;
-        return;
-      }
-      try {
-        const check = await new Promise((res, rej) => {
-          google.script.run.withSuccessHandler(res).withFailureHandler(rej).checkDuplicate(magName, quarter);
-        });
-        if (check.exists) {
-          document.getElementById('existInvNo').textContent   = check.invoiceNo   || '—';
-          document.getElementById('existInvDate').textContent = check.invoiceDate || '—';
-          document.getElementById('existInvAmt').textContent  = '₹ ' + (Number(check.requestedAmt)||0).toFixed(2);
-          card.style.display = 'block';
-          appendBtn.style.display = 'inline-flex';
-          isDuplicateExists = true;
-          document.getElementById('invoiceBtn').innerHTML = '♻️ Update செய்';
-
-          // ── ஏற்கனவே பதிவான மதிப்புகளை படிவத்திலேயே தானாக நிரப்பு ──
-          // தேவையான புலத்தை மட்டும் திருத்திவிட்டு Update அழுத்தலாம்
-          // ⚠️ இந்த check server-ல் இருந்து பதில் வர சிறிது நேரம் ஆகும் — அதற்குள் நீங்கள்
-          // ஏற்கனவே ஏதேனும் புலத்தில் தட்டச்சு செய்திருந்தால், அதை இது மேலெழுதாது (காலியாக இருந்தால் மட்டும் நிரப்பும்)
-          const invoiceNoEl    = document.getElementById('invoiceNo');
-          const invoiceDateEl  = document.getElementById('invoiceDate');
-          const requestedAmtEl = document.getElementById('requestedAmt');
-          if (!invoiceNoEl.value.trim())    invoiceNoEl.value    = check.invoiceNo || '';
-          if (!invoiceDateEl.value)         invoiceDateEl.value  = check.invoiceDateISO || '';
-          if (!requestedAmtEl.value.trim()) requestedAmtEl.value = check.requestedAmt || '';
-        } else {
-          card.style.display = 'none';
-          appendBtn.style.display = 'none';
-          isDuplicateExists = false;
-          document.getElementById('invoiceBtn').innerHTML = '✅ இன்வாய்ஸ் பதிவு செய்';
-        }
-      } catch(e) {
-        // silent fail — submit-ல் மீண்டும் check ஆகும்
-      }
+      const magName=document.getElementById('magazine').value, quarter=document.getElementById('quarter').value, card=document.getElementById('existingInvoiceCard');
+      if(!magName||!quarter){card.style.display='none';return;}
+      try{
+        const check=await new Promise((res,rej)=>{google.script.run.withSuccessHandler(res).withFailureHandler(rej).checkDuplicate(magName,quarter);});
+        const list=check.invoices||[];
+        if(list.length){
+          card.style.display='block'; document.getElementById('appendBtn').style.display='inline-flex';
+          document.getElementById('existInvNo').textContent=list.map(x=>x.invoiceNo||'—').join(', ');
+          document.getElementById('existInvDate').textContent=list.map(x=>x.invoiceDate||'—').join(', ');
+          document.getElementById('existInvAmt').textContent='₹ '+list.reduce((a,x)=>a+Number(x.requestedAmt||0),0).toLocaleString('en-IN',{minimumFractionDigits:2});
+          isDuplicateExists=true;
+          document.getElementById('invoiceBtn').innerHTML='➕ புதிய Invoice பதிவு செய்';
+        } else { card.style.display='none'; document.getElementById('appendBtn').style.display='none'; isDuplicateExists=false; document.getElementById('invoiceBtn').innerHTML='✅ இன்வாய்ஸ் பதிவு செய்'; }
+      }catch(e){ console.warn(e); }
     }
 
     function forceAppend() {
@@ -2171,217 +2187,75 @@
     }
 
     function buildPayload() {
-      const magName     = document.getElementById('magazine').value;
-      const invoiceNo   = document.getElementById('invoiceNo').value.trim();
-      const invoiceDate = document.getElementById('invoiceDate').value;
-      const requestedAmt= parseFloat(document.getElementById('requestedAmt').value) || 0;
-      const quarter     = document.getElementById('quarter').value;
-      const qtrIssues   = parseInt(document.getElementById('qtrIssues').value) || 0;
-      if (!magName || !quarter) return;
-      const master   = masterData[magName] || {};
-      const despatch = despatchData[magName] || {};
-      currentPayload = {
-        magazine: magName, invoiceNo, invoiceDate, requestedAmt, quarter,
-        issuePrice:    parseFloat(master.issuePrice)    || 0,
-        noOfLibraries: parseInt(master.noOfLibraries)   || 0,
-        nonSupply:     parseInt(despatch.nonSupply)      || 0,
-        qtrIssues
-      };
+      const magName=document.getElementById('magazine').value, invoiceNo=document.getElementById('invoiceNo').value.trim(), invoiceDate=document.getElementById('invoiceDate').value;
+      const requestedAmt=parseFloat(document.getElementById('requestedAmt').value)||0, quarter=document.getElementById('quarter').value, qtrIssues=parseInt(document.getElementById('qtrIssues').value)||0;
+      if(!magName||!quarter)return;
+      const master=masterData[magName]||{}, fullQuarter=_selectedCoverageMode()==='full', coveredMonths=_coverageMonths(), coveredQuarters=_coverageQuarters();
+      currentPayload={magazine:magName,invoiceNo,invoiceDate,requestedAmt,quarter,issuePrice:parseFloat(master.issuePrice)||0,noOfLibraries:parseInt(master.noOfLibraries)||0,nonSupply:0,qtrIssues,fullQuarter,coveredMonths,coveredQuarters,groupKey:coveredQuarters.length>1?(magName+'|'+coveredQuarters.join(',')):''};
+      return currentPayload;
     }
 
-    // ─── Submit Invoice ───
     async function submitPayment() {
-      const btn = document.getElementById('invoiceBtn');
-      if (document.getElementById('invoiceNo').disabled) {
-        setStatus('status', 'error', '❌ முதலில் QTR Issues-ஐ உள்ளிட்டு தொகையை சரிபார்த்து உறுதி செய்யவும்.');
-        return;
-      }
-      showLoading(btn, 'Saving...');
-      const magName      = document.getElementById('magazine').value;
-      const invoiceNo    = document.getElementById('invoiceNo').value.trim();
-      const invoiceDate  = document.getElementById('invoiceDate').value;
-      const requestedAmt = parseFloat(document.getElementById('requestedAmt').value) || 0;
-      const quarter      = document.getElementById('quarter').value;
-      const qtrIssues    = parseInt(document.getElementById('qtrIssues').value) || 0;
-      if (!magName || !invoiceNo || !invoiceDate || !quarter || !qtrIssues) {
-        setStatus('status', 'error', '❌ அனைத்து கட்டாய புலங்களையும் நிரப்பவும்!');
-        hideLoading(btn); return;
-      }
-      const master   = masterData[magName] || {};
-      const despatch = despatchData[magName] || {};
-      currentPayload = {
-        magazine: magName, invoiceNo, invoiceDate, requestedAmt, quarter,
-        issuePrice:    parseFloat(master.issuePrice)    || 0,
-        noOfLibraries: parseInt(master.noOfLibraries)   || 0,
-        nonSupply:     parseInt(despatch.nonSupply)      || 0,
-        qtrIssues
-      };
-      // isDuplicateExists கொண்டு நேரடியாக proceed — மீண்டும் server call தேவையில்லை
-      hideLoading(btn);
-      proceedToAdd(currentPayload, isDuplicateExists);
+      const btn=document.getElementById('invoiceBtn');
+      if(document.getElementById('invoiceNo').disabled){setStatus('status','error','❌ முதலில் coverage / QTR Issues-ஐ உறுதி செய்யவும்.');return;}
+      showLoading(btn,'Saving...');
+      buildPayload();
+      const p=currentPayload;
+      if (_selectedCoverageMode()==='partial' && _coverageMonths().length===0) { setStatus('status','error','❌ குறை மாத Invoice என்றால் குறைந்தது ஒரு மாதத்தைத் தேர்ந்தெடுக்கவும்.'); hideLoading(btn); return; }
+      if(!p||!p.magazine||!p.invoiceNo||!p.invoiceDate||!p.quarter||!p.qtrIssues){setStatus('status','error','❌ அனைத்து கட்டாய புலங்களையும் நிரப்பவும்!');hideLoading(btn);return;}
+      hideLoading(btn); proceedToAdd(p,false);
     }
-
-    function handleDuplicateChoice(choice) {
-      closeDialog();
-      proceedToAdd(currentPayload, choice === 'update');
-    }
-    function closeDialog() {
-      document.getElementById('duplicateOverlay').classList.remove('show');
-    }
-
-    async function proceedToAdd(payload, isUpdate) {
-      setStatus('status', 'loading', '<span class="spinner dark"></span> ' + (isUpdate ? 'Update செய்யப்படுகிறது...' : 'சேர்க்கப்படுகிறது...'));
-      try {
-        const result = await new Promise((res, rej) => {
-          google.script.run.withSuccessHandler(res).withFailureHandler(rej).addPayment(payload, isUpdate);
-        });
-        if (result.success) {
-          setStatus('status', 'success', isUpdate
-            ? '✅ Update வெற்றி! Row ' + result.row + ' புதுப்பிக்கப்பட்டது.'
-            : '✅ வெற்றி! Row ' + result.row + ' இல் பதிவு — ' + payload.magazine + ' / ' + payload.quarter);
-          ['invoiceNo','invoiceDate','requestedAmt','qtrIssues'].forEach(id => document.getElementById(id).value = '');
-          document.getElementById('quarter').value = '';
-          document.getElementById('magazine').innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
-          document.getElementById('magazine').disabled = true;
-          document.getElementById('qtrIssues').disabled = true;
-          lockInvoiceFields();
-          document.getElementById('existingInvoiceCard').style.display = 'none';
-          document.getElementById('appendBtn').style.display = 'none';
-          document.getElementById('invoiceBtn').innerHTML = '✅ இன்வாய்ஸ் பதிவு செய்';
-          isDuplicateExists = false;
-        } else throw new Error(result.message);
-      } catch(e) {
-        setStatus('status', 'error', '❌ பிழை: ' + e.message);
-      }
+    function handleDuplicateChoice(choice){closeDialog();proceedToAdd(currentPayload,false);}
+    function closeDialog(){document.getElementById('duplicateOverlay').classList.remove('show');}
+    async function proceedToAdd(payload,isUpdate) {
+      setStatus('status','loading','<span class="spinner dark"></span> '+(isUpdate?'Update செய்யப்படுகிறது...':'சேர்க்கப்படுகிறது...'));
+      try{
+        const result=await new Promise((res,rej)=>{google.script.run.withSuccessHandler(res).withFailureHandler(rej).addPayment(payload,false);});
+        if(result.success){
+          setStatus('status','success','✅ Invoice பதிவு வெற்றி! '+payload.magazine+' / '+payload.coveredQuarters.join(', ')+' — Row '+result.row);
+          ['invoiceNo','invoiceDate','requestedAmt','qtrIssues'].forEach(id=>document.getElementById(id).value='');
+          document.getElementById('quarter').value=''; document.getElementById('magazine').innerHTML='<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>'; document.getElementById('magazine').disabled=true;
+          document.getElementById('qtrIssues').disabled=true; document.querySelector('input[name=coverageMode][value=full]').checked=true; document.getElementById('groupedInvoice').checked=false;
+          document.getElementById('partialMonthsCard').style.display='none'; document.getElementById('groupedQuartersCard').style.display='none'; lockInvoiceFields();
+          document.getElementById('existingInvoiceCard').style.display='none'; document.getElementById('appendBtn').style.display='none'; document.getElementById('invoiceBtn').innerHTML='✅ இன்வாய்ஸ் பதிவு செய்'; isDuplicateExists=false;
+        } else throw new Error(result.message||'பதிவு தோல்வி');
+      }catch(e){setStatus('status','error','❌ பிழை: '+e.message);}
     }
 
     // ─── Payment Form ───
     async function loadMagazinesForQuarter() {
-      const quarter = document.getElementById('quarterSelect').value;
-      if (!quarter) return;
-      currentQuarter = quarter;
-
-      // Warning banner மறைக்கவும்
-      document.getElementById('alreadyPaidBanner').style.display = 'none';
-      document.getElementById('paymentDetailsCard').style.display = 'none';
-      document.getElementById('paymentExtraCard').style.display = 'none';
-      document.getElementById('paymentBtn').style.display = 'none';
-
-      setStatus('paymentStatus', 'loading', '<span class="spinner dark"></span> இதழ்கள் ஏற்றப்படுகின்றன...');
-      try {
-        const result = await new Promise((res, rej) => {
-          google.script.run.withSuccessHandler(res).withFailureHandler(rej).getMagazinesByQuarter(quarter);
-        });
-
-        // புதிய format: { unpaid: [...], paid: [{name, paymentDate}, ...] }
-        const unpaid = result.unpaid || [];
-        const paid   = result.paid   || [];
-
-        const sel = document.getElementById('magazineSelect');
-        sel.innerHTML = '<option value="">-- இதழைத் தேர்ந்தெடுக்கவும் --</option>';
-
-        // Group 1: தொகை வழங்கப்படாதவை
-        if (unpaid.length > 0) {
-          const grp1 = document.createElement('optgroup');
-          grp1.label = '⏳ தொகை வழங்கப்படாதவை (' + unpaid.length + ')';
-          unpaid.forEach(m => {
-            const o = document.createElement('option');
-            o.value = m;
-            o.textContent = m;
-            grp1.appendChild(o);
-          });
-          sel.appendChild(grp1);
-        }
-
-        // Group 2: ஏற்கனவே தொகை வழங்கப்பட்டவை
-        if (paid.length > 0) {
-          const grp2 = document.createElement('optgroup');
-          grp2.label = '✅ ஏற்கனவே தொகை வழங்கப்பட்டவை (' + paid.length + ')';
-          paid.forEach(p => {
-            const o = document.createElement('option');
-            o.value = p.name;
-            o.textContent = p.name + '  ✓ ' + p.paymentDate;
-            o.dataset.paid = 'true';
-            o.dataset.paymentDate = p.paymentDate;
-            grp2.appendChild(o);
-          });
-          sel.appendChild(grp2);
-        }
-
-        document.getElementById('magazineSection').style.display = 'block';
-        const total = unpaid.length + paid.length;
-        setStatus('paymentStatus', 'success',
-          '✅ ' + total + ' இதழ்கள் — ' + unpaid.length + ' நிலுவை, ' + paid.length + ' வழங்கப்பட்டவை');
-      } catch(e) {
-        setStatus('paymentStatus', 'error', '❌ பிழை: ' + e.message);
-      }
+      const quarter=document.getElementById('quarterSelect').value; if(!quarter)return; currentQuarter=quarter;
+      document.getElementById('alreadyPaidBanner').style.display='none'; document.getElementById('paymentDetailsCard').style.display='none'; document.getElementById('paymentExtraCard').style.display='none'; document.getElementById('paymentBtn').style.display='none';
+      setStatus('paymentStatus','loading','<span class="spinner dark"></span> Invoice பட்டியல் ஏற்றப்படுகிறது...');
+      try{
+        const result=await new Promise((res,rej)=>{google.script.run.withSuccessHandler(res).withFailureHandler(rej).getMagazinesByQuarter(quarter);});
+        const unpaid=result.unpaid||[], paid=result.paid||[], sel=document.getElementById('magazineSelect'); sel.innerHTML='<option value="">-- Invoice / இதழைத் தேர்ந்தெடுக்கவும் --</option>';
+        const add=(list,label,paidFlag)=>{if(!list.length)return;const g=document.createElement('optgroup');g.label=label+' ('+list.length+')';list.forEach(x=>{const o=document.createElement('option');o.value=String(x.id);o.textContent=x.name+' — '+(x.invoiceNo||'Invoice இல்லை')+' · '+(x.fullQuarter?'முழு Quarter':(x.coveredMonths||[]).join(', '));o.dataset.magazine=x.name;o.dataset.paid=paidFlag?'true':'false';o.dataset.paymentDate=x.paymentDate||'';o.dataset.coveredMonths=(x.coveredMonths||[]).join(', ');o.dataset.coveredQuarters=(x.coveredQuarters||[]).join(', ');g.appendChild(o);});sel.appendChild(g);};
+        add(unpaid,'⏳ தொகை வழங்கப்படாத Invoice',false); add(paid,'✅ ஏற்கனவே தொகை வழங்கப்பட்ட Invoice',true);
+        document.getElementById('magazineSection').style.display='block'; setStatus('paymentStatus','success','✅ '+(unpaid.length+paid.length)+' Invoice பதிவுகள் — '+unpaid.length+' நிலுவை, '+paid.length+' வழங்கப்பட்டவை');
+      }catch(e){setStatus('paymentStatus','error','❌ பிழை: '+e.message);}
     }
 
     async function loadNonSupplyData() {
-      const magazine = document.getElementById('magazineSelect').value;
-      if (!magazine) return;
-
-      // Selected option-ல் paid data உள்ளதா என பார்க்கவும்
-      const selEl = document.getElementById('magazineSelect');
-      const selOpt = selEl.options[selEl.selectedIndex];
-      const isPaid = selOpt && selOpt.dataset.paid === 'true';
-      const paidDate = selOpt ? selOpt.dataset.paymentDate : '';
-
-      setStatus('paymentStatus', 'loading', '<span class="spinner dark"></span> தரவு ஏற்றப்படுகிறது...');
-      try {
-        const result = await new Promise((res, rej) => {
-          google.script.run.withSuccessHandler(res).withFailureHandler(rej).getNonSupplyFromDespatch(currentQuarter, magazine);
-        });
-        const paymentData = await new Promise((res, rej) => {
-          google.script.run.withSuccessHandler(res).withFailureHandler(rej).getPaymentDetails(currentQuarter, magazine);
-        });
-        currentMagazineData = paymentData;
-
-        document.getElementById('nonSupplyInput').value = result.nonSupply || 0;
-        document.getElementById('paymentDetailsCard').style.display = 'block';
-        document.getElementById('paymentExtraCard').style.display = 'block';
-
-        // ── Already Paid Banner ──
-        const banner   = document.getElementById('alreadyPaidBanner');
-        const dateSpan = document.getElementById('alreadyPaidDate');
-        const btn      = document.getElementById('paymentBtn');
-
-        // ── ஏற்கனவே பதிவு செய்த பில் செட் நம்பரை dropdown-ல் காட்டு (மாற்ற வசதி) ──
-        const billSetSel = document.getElementById('billSetNo');
-        billSetSel.value = paymentData.billSetNo || '';
-
-        if (isPaid || paymentData.paymentDate) {
-          const displayDate = paymentData.paymentDate || paidDate || '—';
-          dateSpan.textContent = displayDate;
-          banner.style.display = 'block';
-          btn.innerHTML = '🔄 மீண்டும் செயலாக்கு (Re-process)';
-          btn.style.background = 'linear-gradient(135deg,#7a5c00,#a07800)';
-
-          const setNoRow = document.getElementById('alreadyPaidSetNoRow');
-          if (paymentData.billSetNo) {
-            document.getElementById('alreadyPaidSetNo').textContent = paymentData.billSetNo;
-            setNoRow.style.display = 'inline';
-          } else {
-            setNoRow.style.display = 'none';
-          }
-        } else {
-          banner.style.display = 'none';
-          btn.innerHTML = '✅ தொகை வழங்கல் &amp;சேமிக்க';
-          btn.style.background = '';
-        }
-        btn.style.display = 'inline-flex';
-
-        setStatus('paymentStatus', 'success', '✅ தரவு ஏற்றப்பட்டது!');
-        calculateNetPayable();
-
-        // ஒரே Vendor/Beneficiary Code உள்ள மற்ற இதழ்கள் — கட்டாய popup
-        // (சேமித்தபின் பட்டியலிலிருந்து வந்தால் மீண்டும் காட்டத் தேவையில்லை)
-        if (_skipGroupPopupOnce) { _skipGroupPopupOnce = false; }
-        else { await showGroupMandatoryPopup(magazine, currentQuarter); }
-      } catch(e) {
-        setStatus('paymentStatus', 'error', '❌ பிழை: ' + e.message);
-      }
+      const selEl=document.getElementById('magazineSelect'), opt=selEl.options[selEl.selectedIndex]; const paymentId=Number(selEl.value)||0; const magazine=opt?.dataset.magazine||''; if(!paymentId)return;
+      const isPaid=opt?.dataset.paid==='true', paidDate=opt?.dataset.paymentDate||'';
+      setStatus('paymentStatus','loading','<span class="spinner dark"></span> Invoice தரவு ஏற்றப்படுகிறது...');
+      try{
+        const paymentData=await new Promise((res,rej)=>{google.script.run.withSuccessHandler(res).withFailureHandler(rej).getPaymentDetails(currentQuarter,magazine,paymentId);});
+        currentMagazineData=paymentData;
+        document.getElementById('nonSupplyInput').value=paymentData.nonSupply||0;
+        document.getElementById('paymentDetailsCard').style.display='block'; document.getElementById('paymentExtraCard').style.display='block';
+        const banner=document.getElementById('alreadyPaidBanner'),dateSpan=document.getElementById('alreadyPaidDate'),btn=document.getElementById('paymentBtn');
+        const billSetSel=document.getElementById('billSetNo'); billSetSel.value=paymentData.billSetNo||'';
+        const coverageBanner=document.getElementById('paymentCoverageBanner'), coverageDetails=document.getElementById('paymentCoverageDetails');
+        const months=paymentData.coveredMonths||[], quarters=paymentData.coveredQuarters||[];
+        if(months.length<3 || quarters.length>1){coverageBanner.style.display='block';document.getElementById('paymentCoverageText').textContent=(quarters.length>1?'Grouped: '+quarters.join(', '):'மாதங்கள்: '+months.join(', '));coverageDetails.innerHTML='<b>Invoice No:</b> '+_ccEsc(paymentData.invoiceNo||'—')+'<br><b>Covered Quarter:</b> '+_ccEsc(quarters.join(', ')||currentQuarter)+'<br><b>Covered Months:</b> '+_ccEsc(months.join(', ')||'முழு Quarter');}else{coverageBanner.style.display='none';coverageDetails.style.display='none';}
+        if(isPaid||paymentData.paymentDate){dateSpan.textContent=paymentData.paymentDate||paidDate||'—';banner.style.display='block';btn.innerHTML='🔄 மீண்டும் செயலாக்கு (Re-process)';const r=document.getElementById('alreadyPaidSetNoRow');if(paymentData.billSetNo){document.getElementById('alreadyPaidSetNo').textContent=paymentData.billSetNo;r.style.display='inline';}else r.style.display='none';}else{banner.style.display='none';btn.innerHTML='✅ தொகை வழங்கல் & சேமிக்க';}
+        btn.style.display='inline-flex'; setStatus('paymentStatus','success','✅ Invoice தரவு ஏற்றப்பட்டது!'); calculateNetPayable();
+        if(_skipGroupPopupOnce){_skipGroupPopupOnce=false;} else {await showGroupMandatoryPopup(magazine,currentQuarter);}
+      }catch(e){setStatus('paymentStatus','error','❌ பிழை: '+e.message);}
     }
+    function togglePaymentCoverageDetails(){const e=document.getElementById('paymentCoverageDetails');e.style.display=e.style.display==='none'?'block':'none';}
 
     function calculateNetPayable() {
       const nonSupply  = parseFloat(document.getElementById('nonSupplyInput').value) || 0;
@@ -2498,8 +2372,9 @@
       const totalIssues = currentMagazineData.totalIssues || 0;
       const netPayable = (issuePrice * totalIssues) - (issuePrice * nonSupply);
 
+      const paymentId = Number(document.getElementById('magazineSelect').value) || 0;
       const payload = {
-        magazine, quarter, nonSupply,
+        paymentId, magazine, quarter, nonSupply,
         netPayable: netPayable,
         amountNowPaid: Math.round(parseFloat(document.getElementById('amountNowPaid').value) || 0),
         paymentDate: document.getElementById('paymentDate').value,
@@ -2607,7 +2482,9 @@
       try {
         document.getElementById('quarterSelect').value = quarter;
         await loadMagazinesForQuarter();
-        document.getElementById('magazineSelect').value = chosen;
+        const ms = document.getElementById('magazineSelect');
+        const opt = [...ms.options].find(o => o.dataset && o.dataset.magazine === chosen);
+        if (opt) ms.value = opt.value;
         await loadNonSupplyData();
       } finally { _skipGroupPopupOnce = false; }
     }

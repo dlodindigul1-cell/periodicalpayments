@@ -51,9 +51,14 @@ CREATE TABLE IF NOT EXISTS payments (
     pdf_url         TEXT,                    -- T
     quarter         TEXT NOT NULL,           -- U
     voucher_no      TEXT,                    -- V
+    covered_months  TEXT NOT NULL DEFAULT '', -- partial invoice: Jul,Aug,Sep etc.
+    covered_quarters TEXT NOT NULL DEFAULT '', -- grouped invoice: Q1,Q2,Q3,Q4
+    full_quarter    BOOLEAN NOT NULL DEFAULT TRUE,
+    invoice_group_key TEXT,
+    non_supply_applied BOOLEAN NOT NULL DEFAULT FALSE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (magazine, quarter)
+    -- ஒரே magazine + quarter-க்கு பல invoice rows அனுமதிக்கப்படுகிறது.
 );
 
 -- 4) Vouchers table (பழைய "VOUCHERS" sheet)
@@ -73,6 +78,8 @@ CREATE TABLE IF NOT EXISTS vouchers (
 
 CREATE INDEX IF NOT EXISTS idx_payments_quarter  ON payments (quarter);
 CREATE INDEX IF NOT EXISTS idx_payments_magazine ON payments (magazine);
+CREATE INDEX IF NOT EXISTS idx_payments_mag_quarter ON payments (magazine, quarter);
+CREATE INDEX IF NOT EXISTS idx_payments_invoice_group ON payments (invoice_group_key);
 CREATE INDEX IF NOT EXISTS idx_despatch_quarter  ON despatch_nonsupply (quarter);
 
 -- =====================================================================
@@ -103,3 +110,14 @@ CREATE TABLE IF NOT EXISTS app_users (
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE UNIQUE INDEX IF NOT EXISTS ux_app_users_username ON app_users (LOWER(username));
+
+
+-- Existing installations migration (safe to run repeatedly)
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS covered_months TEXT NOT NULL DEFAULT '';
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS covered_quarters TEXT NOT NULL DEFAULT '';
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS full_quarter BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS invoice_group_key TEXT;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS non_supply_applied BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE payments DROP CONSTRAINT IF EXISTS payments_magazine_quarter_key;
+CREATE INDEX IF NOT EXISTS idx_payments_mag_quarter ON payments (magazine, quarter);
+CREATE INDEX IF NOT EXISTS idx_payments_invoice_group ON payments (invoice_group_key);
