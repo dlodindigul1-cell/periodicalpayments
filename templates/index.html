@@ -3582,7 +3582,7 @@
       }
       d.groups.forEach(g => {
         let lbl = 'QUARTER: ' + g.quarterLabel;
-        if (g.setNo) lbl += ' &nbsp;|&nbsp; BILL SET: ' + _pe(g.setNo);
+        if (g.ordinalLabel) lbl += ' &nbsp;|&nbsp; ' + _pe(g.ordinalLabel.toUpperCase());
         if (g.multi) lbl += ' &nbsp;|&nbsp; GROUPED PAYMENT (' + g.magazines.length + ' magazines)';
         h += '<tr class="grp-head"><td colspan="8">' + lbl + '</td></tr>';
         g.rows.forEach(r => {

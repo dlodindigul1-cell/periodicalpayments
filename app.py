@@ -3961,6 +3961,14 @@ PAID_REPORT_HEADERS = ["S.NO", "MAGAZINE", "INVOICE NUMBER", "INVOICE DATE",
                        "REQUESTED AMOUNT", "PAID AMOUNT", "PAID DATE", "BANK TRANSACTION NUMBER"]
 
 
+def _ordinal(n):
+    if 10 <= n % 100 <= 20:
+        suf = "th"
+    else:
+        suf = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return "%d%s" % (n, suf)
+
+
 def build_paid_report(cur, magazine, quarters):
     cur.execute(
         "SELECT name, tnpfts_code, vendor_name, payee_name FROM magazines WHERE name=%s", (magazine,)
@@ -3991,23 +3999,35 @@ def build_paid_report(cur, magazine, quarters):
     rows = cur.fetchall()
 
     vendor = vendor_display_name(m["vendor_name"], m["payee_name"], magazine)
+    # குழு விதி: ஒரே Quarter + Vendor Code + ஒரே Bank Transaction No = ஒரே தொகை வழங்கல்.
+    # (Transaction No மாறினால் அதே Quarter-லும் தனி வழங்கல் → 2nd payment.)
+    # Transaction No இல்லாத பதிவு: Code + Bill Set இருந்தால் அதன்படி; இல்லையெனில் தனியாக.
     groups = {}
     for r in rows:
+        txn = (r["transaction_no"] or "").strip()
         s_no = (r["bill_set_no"] or "").strip()
-        key = (r["quarter"], code, s_no) if (code and s_no) else (r["quarter"], "#%d" % r["id"], "")
+        if code and txn:
+            key = (r["quarter"], code, "T:" + txn.upper())
+        elif code and s_no:
+            key = (r["quarter"], code, "S:" + s_no)
+        else:
+            key = (r["quarter"], "#%d" % r["id"], "")
         g = groups.get(key)
         if g is None:
             g = groups[key] = {
                 "quarter": r["quarter"] or "", "quarterLabel": quarter_label(r["quarter"]),
-                "setNo": s_no if (code and s_no) else "", "rows": [],
+                "transactionNo": txn, "rows": [], "_dates": [],
                 "totalRequested": 0.0, "totalPaid": 0.0,
             }
         g["rows"].append({
             "magazine": r["magazine"], "voucherNo": r["voucher_no"] or "",
             "invoiceNo": r["invoice_no"] or "", "invoiceDate": fmt_date(r["invoice_date"]),
+            "invoiceDateRaw": r["invoice_date"],
             "requestedAmt": float(r["requested_amt"] or 0), "paidAmt": float(r["paid_amt"] or 0),
             "paidDate": fmt_date(r["payment_date"]), "transactionNo": r["transaction_no"] or "",
         })
+        if r["payment_date"]:
+            g["_dates"].append(r["payment_date"])
         g["totalRequested"] += float(r["requested_amt"] or 0)
         g["totalPaid"] += float(r["paid_amt"] or 0)
 
@@ -4015,14 +4035,29 @@ def build_paid_report(cur, magazine, quarters):
     for g in groups.values():
         g["rows"].sort(key=lambda x: (voucher_sort_key(x["voucherNo"]), x["magazine"]))
         g["magazines"] = sorted({x["magazine"] for x in g["rows"]})
+        dts = sorted(set(g.pop("_dates")))
+        g["firstDate"] = dts[0] if dts else None
+        g["paidDates"] = [fmt_date(d) for d in dts]
+        g["multi"] = len(g["rows"]) > 1
         out.append(g)
-    out.sort(key=lambda g: (g["quarter"], voucher_sort_key(g["rows"][0]["voucherNo"]), g["rows"][0]["magazine"]))
+    out.sort(key=lambda g: (g["quarter"], g["firstDate"] is None, g["firstDate"] or date.max,
+                            voucher_sort_key(g["rows"][0]["voucherNo"]), g["rows"][0]["magazine"]))
+    # Quarter-க்குள் வரிசை எண் — ஒன்றுக்கு மேல் இருந்தால் மட்டும் "1st/2nd Payment" என்று காட்டும்
+    per_q = {}
+    for g in out:
+        per_q[g["quarter"]] = per_q.get(g["quarter"], 0) + 1
+    seen = {}
     n = 0
     for g in out:
-        g["multi"] = len(g["rows"]) > 1
+        seen[g["quarter"]] = seen.get(g["quarter"], 0) + 1
+        g["ordinal"] = seen[g["quarter"]]
+        g["paymentCount"] = per_q[g["quarter"]]
+        g["ordinalLabel"] = (_ordinal(g["ordinal"]) + " Payment") if per_q[g["quarter"]] > 1 else ""
+        g["displayLabel"] = g["quarterLabel"] + ((" — " + g["ordinalLabel"]) if g["ordinalLabel"] else "")
         for x in g["rows"]:
             n += 1
             x["sno"] = n
+            x.pop("invoiceDateRaw", None)
     return {
         "magazine": magazine, "vendorCode": (m["tnpfts_code"] or "").strip(), "vendorName": vendor,
         "vendorMagazines": names, "quarters": ql, "groups": out, "count": n,
@@ -4042,7 +4077,7 @@ def paid_report_csv(rep):
     w = csv.writer(buf)
     w.writerow(["S.NO", "QUARTER"] + PAID_REPORT_HEADERS[1:])
     for g, x in _paid_report_flat(rep):
-        w.writerow([x["sno"], g["quarterLabel"], x["magazine"], x["invoiceNo"], x["invoiceDate"],
+        w.writerow([x["sno"], g["displayLabel"], x["magazine"], x["invoiceNo"], x["invoiceDate"],
                     "%.2f" % x["requestedAmt"], "%.2f" % x["paidAmt"], x["paidDate"], x["transactionNo"]])
     w.writerow(["", "", "", "TOTAL", "", "%.2f" % rep["totalRequested"], "%.2f" % rep["totalPaid"], "", ""])
     return ("\ufeff" + buf.getvalue()).encode("utf-8")
@@ -4064,7 +4099,7 @@ def paid_report_xlsx(rep):
     tot_l = wb.add_format({"bold": True, "border": 1, "bg_color": "#EEF2F8", "align": "right"})
     tot_n = wb.add_format({"bold": True, "border": 1, "bg_color": "#EEF2F8", "num_format": "#,##0.00"})
     tot_b = wb.add_format({"bold": True, "border": 1, "bg_color": "#EEF2F8"})
-    for i, wd in enumerate([7, 14, 36, 20, 14, 18, 16, 14, 30]):
+    for i, wd in enumerate([7, 24, 36, 20, 14, 18, 16, 14, 30]):
         ws.set_column(i, i, wd)
     qtxt = ", ".join(quarter_label(q) for q in rep["quarters"]) or "All Quarters"
     ws.write(0, 0, "District Library Office, Dindigul", title)
@@ -4078,7 +4113,7 @@ def paid_report_xlsx(rep):
     for i, (g, x) in enumerate(_paid_report_flat(rep)):
         r = r0 + i
         ws.write_number(r, 0, x["sno"], ctr)
-        ws.write_string(r, 1, g["quarterLabel"], ctr)
+        ws.write_string(r, 1, g["displayLabel"], ctr)
         ws.write_string(r, 2, x["magazine"], txt)
         ws.write_string(r, 3, x["invoiceNo"], ctr)
         ws.write_string(r, 4, x["invoiceDate"], ctr)
@@ -4103,81 +4138,129 @@ def paid_report_xlsx(rep):
 
 
 def paid_report_pdf(rep):
-    """Publisher-க்குச் செல்லும் Payment Cleared Intimation PDF-ன் தோற்றம் (District Library Office, Dindigul
-    தலைப்பு + நீல header அட்டவணை), ஆங்கிலத்தில். A4 landscape; fpdf2 (இதழ் பெயர் தமிழாக இருந்தாலும் சரியாக வரும்)."""
+    """ஒவ்வொரு தொகை வழங்கலுக்கும் (Quarter + Bank Transaction No) ஒரு Payment Cleared Intimation கடிதம்,
+    publisher-க்குச் செல்லும் mail PDF போலவே (A4 portrait, ஆங்கிலம்). Vendor Code / Bill Set காட்டப்படாது.
+    • ஒரு இதழ்  → ஒரே A4 பக்கம்; இதழ் பெயர் பெரிய எழுத்தில்
+    • பல இதழ்கள் → அட்டவணை; ஒரே A4-ல் அடங்கும், இடம் போதாவிட்டால் அடுத்த பக்கத்துக்குத் தொடரும்"""
     from fpdf import FPDF
     from fpdf.fonts import FontFace
 
-    pdf = FPDF(orientation="L", unit="mm", format="A4")
-    pdf.set_margins(12, 12, 12)
-    pdf.set_auto_page_break(auto=True, margin=14)
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(15, 16, 15)
+    pdf.set_auto_page_break(auto=True, margin=16)
     pdf.add_font("Tamil", "", TAMIL_FONT_PATH)
     pdf.add_font("Tamil", "B", TAMIL_BOLD_FONT_PATH)
     pdf.set_text_shaping(True)
-    pdf.add_page()
 
-    pdf.set_font("Tamil", size=10)
-    pdf.cell(0, 6, "Date: " + datetime.now().strftime("%d/%m/%Y"), align="R", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Tamil", "B", 21)
-    pdf.cell(0, 11, "District Library Office, Dindigul", align="C", new_x="LMARGIN", new_y="NEXT")
-    y = pdf.get_y()
-    pdf.set_line_width(0.9)
-    pdf.line(12, y + 0.5, 285, y + 0.5)
-    pdf.ln(3)
-    pdf.set_font("Tamil", "B", 13)
-    pdf.cell(0, 8, "PAYMENT DETAILS OF MAGAZINES", align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.set_font("Tamil", size=10.5)
-    qtxt = ", ".join(quarter_label(q) for q in rep["quarters"]) or "All Quarters"
-    pdf.multi_cell(0, 6, "Vendor: " + rep["vendorName"] + (("   |   Vendor Code: " + rep["vendorCode"]) if rep["vendorCode"] else "")
-                   + "   |   Quarter: " + qtxt, align="C", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(2)
+    def para(parts, h=6.2):
+        """parts = [(text, bold, size), ...] — ஒரே பத்தியில் கலந்த எழுத்து நடை."""
+        for text, bold, size in parts:
+            pdf.set_font("Tamil", "B" if bold else "", size)
+            pdf.write(h, text)
+        pdf.set_font("Tamil", "", 11)
+        pdf.ln(h + 2.5)
 
-    widths = (12, 62, 38, 28, 33, 33, 28, 39)
-    aligns = ("CENTER", "LEFT", "CENTER", "CENTER", "RIGHT", "RIGHT", "CENTER", "LEFT")
-    pdf.set_font("Tamil", size=9.5)
-    head_style = FontFace(color=(255, 255, 255), fill_color=(30, 77, 140), emphasis="BOLD")
-    grp_style = FontFace(fill_color=(232, 238, 251), emphasis="BOLD")
-    sub_style = FontFace(fill_color=(238, 242, 248), emphasis="BOLD")
-    with pdf.table(col_widths=widths, text_align=aligns, headings_style=head_style,
-                   line_height=6, padding=1.2, borders_layout="ALL") as table:
-        h = table.row()
-        for t in PAID_REPORT_HEADERS:
-            h.cell(t, align="C")
-        for g in rep["groups"]:
-            gl = "QUARTER: " + g["quarterLabel"]
-            if g["setNo"]:
-                gl += "   |   BILL SET: " + g["setNo"]
-            if g["multi"]:
-                gl += "   |   GROUPED PAYMENT (" + str(len(g["magazines"])) + " magazines)"
-            gr = table.row()
-            gr.cell(gl, colspan=8, align="L", style=grp_style)
-            for x in g["rows"]:
+    if not rep["groups"]:
+        pdf.add_page()
+        pdf.set_font("Tamil", "B", 21)
+        pdf.cell(0, 11, "District Library Office, Dindigul", align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(6)
+        pdf.set_font("Tamil", "", 12)
+        pdf.cell(0, 8, "No paid records found for the selected quarter(s).", align="C", new_x="LMARGIN", new_y="NEXT")
+        return bytes(pdf.output())
+
+    for g in rep["groups"]:
+        rows = g["rows"]
+        multi = g["multi"]
+        pdf.add_page()
+
+        dates = g["paidDates"] or [datetime.now().strftime("%d/%m/%Y")]
+        pdf.set_font("Tamil", "", 10.5)
+        pdf.cell(0, 6, "Date: " + ", ".join(dates), align="R", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_font("Tamil", "B", 21)
+        pdf.cell(0, 11, "District Library Office, Dindigul", align="C", new_x="LMARGIN", new_y="NEXT")
+        y = pdf.get_y()
+        pdf.set_line_width(0.9)
+        pdf.line(15, y + 0.5, 195, y + 0.5)
+        pdf.ln(3)
+        title = "PAYMENT CLEARED INTIMATION FOR " + g["quarter"]
+        if g["ordinalLabel"]:
+            title += " (" + g["ordinalLabel"].upper() + ")"
+        pdf.set_font("Tamil", "B", 12.5)
+        pdf.multi_cell(0, 7, title, align="C", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(4)
+
+        pdf.set_font("Tamil", "", 11)
+        pdf.cell(0, 6.5, "Sir,", new_x="LMARGIN", new_y="NEXT")
+        if multi:
+            para([("Ref: Your Invoices listed in the table below, for the supply of the magazines ", False, 11),
+                  (", ".join(g["magazines"]), True, 11)])
+            para([("Sir,", False, 11)], h=6.2)
+            pdf.set_y(pdf.get_y() - 2.5)
+            para([("Kindly see below the details of the ", False, 11),
+                  ("single consolidated payment of Rs." + indian_grouping(g["totalPaid"]), True, 11),
+                  (" transferred to your Bank Account from ", False, 11),
+                  ("The District Library Officer, Dindigul", True, 11),
+                  (", for the supply of the above magazines, with the break-up shown against each magazine. "
+                   "We kindly request you to acknowledge receipt of the same.", False, 11)])
+        else:
+            x0 = rows[0]
+            BIG = 15
+            para([("Ref: Your Invoice Number ", False, 11), (x0["invoiceNo"] or "---", True, 11),
+                  (" dated ", False, 11), (x0["invoiceDate"] or "---", True, 11),
+                  (" for the supply of Magazine ", False, 11), (x0["magazine"], True, BIG)], h=7.5)
+            para([("Sir,", False, 11)], h=6.2)
+            pdf.set_y(pdf.get_y() - 2.5)
+            para([("Kindly see below the details of the payment transferred to your Bank Account from ", False, 11),
+                  ("The District Library Officer, Dindigul", True, 11),
+                  (", for the supply of the magazine ", False, 11), (x0["magazine"], True, BIG),
+                  (", as per the invoice under reference cited. "
+                   "We kindly request you to acknowledge receipt of the same.", False, 11)], h=7.5)
+        pdf.ln(3)
+
+        head_style = FontFace(color=(255, 255, 255), fill_color=(30, 77, 140), emphasis="BOLD")
+        tot_style = FontFace(fill_color=(238, 242, 248), emphasis="BOLD")
+        pdf.set_font("Tamil", "", 8.5)
+        if multi:
+            widths = (11, 35, 21, 22, 21, 20, 22, 28)
+            aligns = ("CENTER", "LEFT", "CENTER", "CENTER", "RIGHT", "RIGHT", "CENTER", "LEFT")
+            heads = ["S.NO", "MAGAZINE", "INVOICE NUMBER", "INVOICE DATE", "REQUESTED AMOUNT",
+                     "PAID AMOUNT", "PAID DATE", "BANK TRANSACTION NUMBER"]
+        else:
+            aligns = ("CENTER", "CENTER", "CENTER", "RIGHT", "RIGHT", "CENTER", "LEFT")
+            heads = ["S.NO", "INVOICE NUMBER", "INVOICE DATE", "REQUESTED AMOUNT", "PAID AMOUNT",
+                     "PAID DATE", "BANK TRANSACTION NUMBER"]
+            widths = (12, 30, 26, 30, 28, 26, 28)
+        with pdf.table(col_widths=widths, text_align=aligns, headings_style=head_style,
+                       line_height=5.4, padding=1.2, borders_layout="ALL") as table:
+            h = table.row()
+            for t in heads:
+                h.cell(t, align="C")
+            for i, x in enumerate(rows, 1):
                 r = table.row()
-                r.cell(str(x["sno"]))
-                r.cell(x["magazine"])
+                r.cell(str(i))
+                if multi:
+                    r.cell(x["magazine"])
                 r.cell(x["invoiceNo"] or "-")
                 r.cell(x["invoiceDate"] or "-")
                 r.cell(indian_grouping(x["requestedAmt"]))
                 r.cell(indian_grouping(x["paidAmt"]))
                 r.cell(x["paidDate"] or "-")
                 r.cell(x["transactionNo"] or "-")
-            if g["multi"]:
-                sr = table.row()
-                sr.cell("GROUP TOTAL", colspan=4, align="R", style=sub_style)
-                sr.cell(indian_grouping(g["totalRequested"]), align="R", style=sub_style)
-                sr.cell(indian_grouping(g["totalPaid"]), align="R", style=sub_style)
-                sr.cell("", colspan=2, style=sub_style)
-        tr = table.row()
-        tr.cell("GRAND TOTAL", colspan=4, align="R", style=FontFace(fill_color=(255, 243, 196), emphasis="BOLD"))
-        tr.cell(indian_grouping(rep["totalRequested"]), align="R", style=FontFace(fill_color=(255, 243, 196), emphasis="BOLD"))
-        tr.cell(indian_grouping(rep["totalPaid"]), align="R", style=FontFace(fill_color=(255, 243, 196), emphasis="BOLD"))
-        tr.cell("", colspan=2, style=FontFace(fill_color=(255, 243, 196)))
-    pdf.ln(10)
-    if pdf.get_y() > 175:
-        pdf.add_page()
-    pdf.set_font("Tamil", size=11)
-    pdf.cell(0, 6, "District Library Officer", align="R", new_x="LMARGIN", new_y="NEXT")
-    pdf.cell(0, 6, "Dindigul", align="R", new_x="LMARGIN", new_y="NEXT")
+            if multi:
+                tr = table.row()
+                tr.cell("TOTAL", colspan=4, align="R", style=tot_style)
+                tr.cell(indian_grouping(g["totalRequested"]), align="R", style=tot_style)
+                tr.cell(indian_grouping(g["totalPaid"]), align="R", style=tot_style)
+                tr.cell("", colspan=2, style=tot_style)
+
+        pdf.ln(12)
+        if pdf.get_y() > 255:
+            pdf.add_page()
+        pdf.set_font("Tamil", "", 11)
+        pdf.cell(0, 6, "Thanking and Regards,", align="R", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, "District Library Officer", align="R", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, "Dindigul", align="R", new_x="LMARGIN", new_y="NEXT")
     return bytes(pdf.output())
 
 
