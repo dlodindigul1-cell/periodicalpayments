@@ -105,13 +105,23 @@ CREATE TABLE IF NOT EXISTS app_users (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_app_users_username ON app_users (LOWER(username));
 
 -- =====================================================================
--- பல Invoice / ஒரு Quarter (படி 1 — 2026-10-01)
--- app தொடங்கியதும் ensure_invoice_schema() இவற்றை தானாகவே செய்யும்; கையால் இயக்கத் தேவையில்லை.
---   • payments.covered_months : "Jul" / "Aug,Sep" — Invoice உள்ளடக்கும் மாதங்கள்
---                               (NULL/காலி = முழு Quarter; பழைய பதிவுகள்)
---   • UNIQUE (magazine, quarter) நீக்கம் → ஒரே இதழுக்கு ஒரு Quarter-ல் பல Invoice
--- Quarter -> மாதங்கள்: Q1 Apr-Jun, Q2 Jul-Sep, Q3 Oct-Dec, Q4 Jan-Mar
+-- Part (ஒரே Quarter-க்கு பல இன்வாய்ஸ்) — படி 1
+-- app தொடங்கும்போது ensure_part_schema() இதைத் தானாகச் செய்யும் (மீண்டும் இயக்கினாலும் பாதுகாப்பு).
+--   part   : 1,2,3…  (பழைய பதிவுகள் எல்லாம் 1)
+--   months : NULL = Quarter முழுமை; '1,2' = Quarter-ன் 1-வது, 2-வது மாதம்
+--   UNIQUE (magazine, quarter)  ->  UNIQUE (magazine, quarter, part)
 -- =====================================================================
-ALTER TABLE payments ADD COLUMN IF NOT EXISTS covered_months TEXT;
--- (புதிய தரவுத்தளத்தில் இதை இயக்கினால், மேலே payments table-ல் உள்ள UNIQUE (magazine, quarter) வரியை நீக்கவும்)
-CREATE INDEX IF NOT EXISTS idx_payments_mag_qtr ON payments (magazine, quarter);
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS part   INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS months TEXT;
+-- (பழைய constraint பெயர் DB-க்கு DB மாறலாம்; app அதை தானாகக் கண்டறிந்து நீக்கும்)
+-- ALTER TABLE payments DROP CONSTRAINT payments_magazine_quarter_key;
+CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_mag_qtr_part ON payments (magazine, quarter, part);
+
+-- =====================================================================
+-- படி 2–4: vouchers.part (எந்த Part-க்கான Voucher வரிசை என்பதை அறிய)
+-- app தொடங்கும்போது ensure_part_schema() இதையும் தானாகச் செய்யும்; பழையவை எல்லாம் Part 1.
+-- Voucher Register / நீக்கும் திரைகள் இனி (இதழ் + Quarter + Part) வாரியாகவே இயங்கும்.
+-- Google Sheet CSV: A:V மாறவில்லை; W = PART, X = MONTHS சேர்ந்துள்ளன.
+--   ஒத்திசைவு key = NAME OF THE MAGAZINE (B) + Quarter details (U) + PART (W)
+-- =====================================================================
+ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS part INTEGER NOT NULL DEFAULT 1;
