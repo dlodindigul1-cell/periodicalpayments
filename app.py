@@ -376,6 +376,52 @@ def _qlist(quarter):
     return sorted(out)
 
 
+def _quarter_months(quarter):
+    """Fiscal-year quarter -> month codes used by invoice coverage."""
+    try:
+        n = int((quarter or "").rsplit("-Q", 1)[1])
+    except (ValueError, IndexError):
+        return []
+    return {1: ["Apr", "May", "Jun"], 2: ["Jul", "Aug", "Sep"],
+            3: ["Oct", "Nov", "Dec"], 4: ["Jan", "Feb", "Mar"]}.get(n, [])
+
+def _row_covered_months(row):
+    months = [x.strip() for x in (row.get("covered_months") or "").split(",") if x.strip()]
+    # Legacy rows pre-dating partial-invoice support are full-quarter rows.
+    if not months and bool(row.get("full_quarter", True)):
+        months = _quarter_months(row.get("quarter"))
+    return months
+
+def _row_covered_quarters(row):
+    qs = [x.strip() for x in (row.get("covered_quarters") or "").split(",") if x.strip()]
+    return qs or ([row.get("quarter")] if row.get("quarter") else [])
+
+def _invoice_coverage_conflict(existing_rows, new_quarters, new_months_by_quarter, full_quarter, ignore_id=None):
+    """Return a human-readable overlap message, or None when coverage is available."""
+    new_qset = set(new_quarters)
+    for row in existing_rows:
+        if ignore_id and int(row["id"]) == int(ignore_id):
+            continue
+        covered_qs = set(_row_covered_quarters(row))
+        overlap_qs = new_qset & covered_qs
+        if not overlap_qs:
+            continue
+        existing_full = bool(row.get("full_quarter", True))
+        existing_months = set(_row_covered_months(row))
+        for q in sorted(overlap_qs):
+            requested_months = set(_quarter_months(q)) if full_quarter else set(new_months_by_quarter.get(q, []))
+            if not requested_months:
+                requested_months = set(_quarter_months(q))
+            if existing_full:
+                return (f"{q} ஏற்கனவே முழு Quarter invoice-ஆக பதிவு செய்யப்பட்டுள்ளது "
+                        f"(Invoice: {row.get('invoice_no') or '—'}). புதிய invoice-ல் அதே Quarter-ஐ மீண்டும் பதிவு செய்ய முடியாது.")
+            overlap_months = requested_months & existing_months
+            if overlap_months:
+                return (f"{q} — {', '.join(sorted(overlap_months))} மாதங்கள் ஏற்கனவே "
+                        f"Invoice {row.get('invoice_no') or '—'}-ல் பதிவு செய்யப்பட்டுள்ளன. "
+                        "அதே மாதத்தை இரண்டாவது முறையாக பதிவு செய்ய முடியாது.")
+    return None
+
 def get_quarters_arg():
     """?quarter=Q1&quarter=Q2 அல்லது ?quarter=Q1,Q2 (அல்லது ?quarters=...) -> ["Q1","Q2"].  காலி = அனைத்தும்."""
     vals = request.args.getlist("quarter") + request.args.getlist("quarters")
@@ -921,27 +967,41 @@ def api_check_duplicate():
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, invoice_no, invoice_date, requested_amt, covered_months, covered_quarters, full_quarter, invoice_group_key, paid_amt "
-                "FROM payments WHERE magazine=%s AND (quarter=%s OR %s = ANY(string_to_array(covered_quarters, ','))) "
-                "ORDER BY id",
-                (magazine, quarter, quarter),
+                "SELECT id, quarter, invoice_no, invoice_date, requested_amt, covered_months, covered_quarters, full_quarter, invoice_group_key, paid_amt "
+                "FROM payments WHERE magazine=%s ORDER BY id",
+                (magazine,),
             )
             rows = cur.fetchall()
         invoices = []
+        relevant = []
         for row in rows:
+            qs = _row_covered_quarters(row)
+            if quarter and quarter not in qs and row["quarter"] != quarter:
+                continue
+            relevant.append(row)
             invoices.append({
                 "id": row["id"],
                 "invoiceNo": row["invoice_no"] or "",
                 "invoiceDate": row["invoice_date"].strftime("%d/%m/%Y") if row["invoice_date"] else "",
                 "invoiceDateISO": row["invoice_date"].isoformat() if row["invoice_date"] else "",
                 "requestedAmt": float(row["requested_amt"] or 0),
-                "coveredMonths": [x for x in (row["covered_months"] or "").split(",") if x],
-                "coveredQuarters": [x for x in (row["covered_quarters"] or "").split(",") if x],
+                "coveredMonths": _row_covered_months(row),
+                "coveredQuarters": qs,
                 "fullQuarter": bool(row["full_quarter"]),
                 "groupKey": row["invoice_group_key"] or "",
                 "paid": float(row["paid_amt"] or 0) > 0,
             })
-        return jsonify({"exists": bool(invoices), "invoices": invoices})
+        used_months = set()
+        full_existing = False
+        for row in relevant:
+            if quarter in _row_covered_quarters(row):
+                if bool(row["full_quarter"]):
+                    full_existing = True
+                used_months.update(_row_covered_months(row))
+        available_months = [m for m in _quarter_months(quarter) if m not in used_months]
+        return jsonify({"exists": bool(invoices), "invoices": invoices,
+                        "fullQuarterExists": full_existing, "usedMonths": sorted(used_months),
+                        "availableMonths": available_months})
     finally:
         conn.close()
 
@@ -968,6 +1028,28 @@ def api_add_payment():
         return jsonify({"success": False, "message": "Magazine மற்றும் Quarter அவசியம்."}), 400
     if not covered_quarters:
         covered_quarters = [quarter]
+
+    # Server-side coverage validation: DB unique constraint was intentionally removed,
+    # so overlapping months/quarters must be blocked here instead.
+    if full_quarter:
+        months_by_quarter = {q: _quarter_months(q) for q in covered_quarters}
+    else:
+        months_by_quarter = {quarter: covered_months}
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, quarter, invoice_no, covered_months, covered_quarters, full_quarter "
+                "FROM payments WHERE magazine=%s ORDER BY id", (magazine,)
+            )
+            existing_rows = cur.fetchall()
+            conflict = _invoice_coverage_conflict(
+                existing_rows, covered_quarters, months_by_quarter, full_quarter, payment_id if is_update else None
+            )
+            if conflict:
+                return jsonify({"success": False, "message": conflict, "coverageConflict": True}), 409
+    finally:
+        conn.close()
 
     total_issues = libraries * qtr_issues
     actual_cost = issue_price * total_issues

@@ -788,7 +788,7 @@
       <div id="existingInvoiceCard" style="display:none; margin-bottom:20px;">
         <div class="card" style="border:2px solid #c8a84b; background:linear-gradient(135deg,#fffdf4,#fff8e6);">
           <div class="card-title" style="color:#7a5c00;">
-            ⚠️ ஏற்கனவே பதிவு உள்ளது — Invoice விவரங்கள்
+            📋 ஏற்கனவே உள்ள Invoice பதிவுகள்
           </div>
           <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:18px;">
             <div style="background:#fff;border:1.5px solid #e8c96a;border-radius:10px;padding:14px 16px;">
@@ -805,14 +805,14 @@
             </div>
           </div>
           <div style="background:#fff3cd;border:1.5px solid #e8c96a;border-radius:9px;padding:12px 16px;font-size:14px;color:#7a5c00;font-weight:600;">
-            🔄 Submit கிளிக் செய்தால் இந்த பதிவு <b>Update</b> ஆகும். புதுவரியாக சேர்க்க விரும்பினால் கீழே உள்ள "புதுவரி சேர்" பட்டனை பயன்படுத்தவும்.
+            ℹ️ இந்த இதழ் / Quarter-க்கு ஏற்கனவே Invoice உள்ளது. புதிய Invoice-ல் ஏற்கனவே பதிவு செய்யப்பட்ட மாதங்களை மீண்டும் தேர்வு செய்ய முடியாது; மீதமுள்ள மாதங்களுக்கு தனி Invoice பதிவு செய்யலாம்.
           </div>
         </div>
       </div>
 
       <div class="btn-row">
         <button class="btn-secondary" onclick="backToWelcome()">← முகப்பிற்கு</button>
-        <button id="appendBtn" class="btn-secondary" onclick="forceAppend()" style="display:none;">➕ புதுவரி சேர்</button>
+        <button id="appendBtn" class="btn-secondary" onclick="forceAppend()" style="display:none;">➕ புதிய Invoice சேர்</button>
         <button id="invoiceBtn" class="btn-primary" onclick="submitPayment()">✅ இன்வாய்ஸ் பதிவு செய்</button>
       </div>
       <div id="status" class="status"></div>
@@ -1867,6 +1867,7 @@
       document.getElementById('appendBtn').style.display = 'none';
       document.getElementById('invoiceBtn').innerHTML = '✅ இன்வாய்ஸ் பதிவு செய்';
       isDuplicateExists = false;
+      duplicateInfo = { invoices: [], usedMonths: [], availableMonths: [], fullQuarterExists: false };
 
       // 🔥 Quarter-first flow — Quarter தேர்ந்தெடுக்கும் வரை இதழ் dropdown disabled
       document.getElementById('quarter').value = '';
@@ -1906,7 +1907,12 @@
       const box = document.getElementById('partialMonths');
       if (!q) { box.innerHTML=''; return; }
       const months = _quarterMonths(q);
-      box.innerHTML = months.map((m,i)=>`<label style="display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #d9c47a;border-radius:8px;padding:8px 11px;cursor:pointer;"><input type="checkbox" class="coverage-month" value="${m}" checked onchange="refreshCoverageIssues()">${({'Apr':'ஏப்ரல்','May':'மே','Jun':'ஜூன்','Jul':'ஜூலை','Aug':'ஆகஸ்ட்','Sep':'செப்டம்பர்','Oct':'அக்டோபர்','Nov':'நவம்பர்','Dec':'டிசம்பர்','Jan':'ஜனவரி','Feb':'பிப்ரவரி','Mar':'மார்ச்'}[m]||m)}</label>`).join('');
+      const used = new Set(duplicateInfo.usedMonths || []);
+      box.innerHTML = months.map((m,i)=>{
+        const blocked = used.has(m) || duplicateInfo.fullQuarterExists;
+        const label = ({'Apr':'ஏப்ரல்','May':'மே','Jun':'ஜூன்','Jul':'ஜூலை','Aug':'ஆகஸ்ட்','Sep':'செப்டம்பர்','Oct':'அக்டோபர்','Nov':'நவம்பர்','Dec':'டிசம்பர்','Jan':'ஜனவரி','Feb':'பிப்ரவரி','Mar':'மார்ச்'}[m]||m);
+        return `<label style="display:flex;align-items:center;gap:6px;background:${blocked?'#f4f4f4':'#fff'};border:1px solid ${blocked?'#c8c8c8':'#d9c47a'};border-radius:8px;padding:8px 11px;cursor:${blocked?'not-allowed':'pointer'};opacity:${blocked?'0.65':'1'};"><input type="checkbox" class="coverage-month" value="${m}" ${blocked?'disabled':'checked'} onchange="refreshCoverageIssues()">${label}${blocked?' — ஏற்கனவே பதிவு':''}</label>`;
+      }).join('');
     }
     function _renderGroupedQuarters() {
       const q = document.getElementById('quarter').value;
@@ -1966,6 +1972,7 @@
       document.getElementById('existingInvoiceCard').style.display = 'none';
       document.getElementById('appendBtn').style.display = 'none';
       isDuplicateExists = false;
+      duplicateInfo = { invoices: [], usedMonths: [], availableMonths: [], fullQuarterExists: false };
       resetQtrIssuesAndLock();
       _renderPartialMonths();
       _renderGroupedQuarters();
@@ -2153,23 +2160,35 @@
       document.getElementById('pE').textContent = q;
     }
 
-    // ─── Duplicate Check on dropdown select ───
+    // ─── Existing invoice / coverage check ───
     let isDuplicateExists = false;
+    let duplicateInfo = { invoices: [], usedMonths: [], availableMonths: [], fullQuarterExists: false };
 
     async function checkDuplicateOnSelect() {
       const magName=document.getElementById('magazine').value, quarter=document.getElementById('quarter').value, card=document.getElementById('existingInvoiceCard');
       if(!magName||!quarter){card.style.display='none';return;}
       try{
         const check=await new Promise((res,rej)=>{google.script.run.withSuccessHandler(res).withFailureHandler(rej).checkDuplicate(magName,quarter);});
-        const list=check.invoices||[];
+        duplicateInfo = check || { invoices: [], usedMonths: [], availableMonths: [], fullQuarterExists: false };
+        const list=duplicateInfo.invoices||[];
         if(list.length){
           card.style.display='block'; document.getElementById('appendBtn').style.display='inline-flex';
           document.getElementById('existInvNo').textContent=list.map(x=>x.invoiceNo||'—').join(', ');
           document.getElementById('existInvDate').textContent=list.map(x=>x.invoiceDate||'—').join(', ');
           document.getElementById('existInvAmt').textContent='₹ '+list.reduce((a,x)=>a+Number(x.requestedAmt||0),0).toLocaleString('en-IN',{minimumFractionDigits:2});
           isDuplicateExists=true;
+          if (_selectedCoverageMode()==='partial') _renderPartialMonths();
+          const used=(duplicateInfo.usedMonths||[]).join(', ');
+          if (duplicateInfo.fullQuarterExists) {
+            setStatus('status','error','⚠️ இந்த Quarter முழுவதும் ஏற்கனவே Invoice பதிவு செய்யப்பட்டுள்ளது.');
+          } else if (used) {
+            setStatus('status','success','ℹ️ ஏற்கனவே பதிவு செய்யப்பட்ட மாதங்கள்: '+used+' — மீதமுள்ள மாதங்களுக்கு புதிய Invoice பதிவு செய்யலாம்.');
+          }
           document.getElementById('invoiceBtn').innerHTML='➕ புதிய Invoice பதிவு செய்';
-        } else { card.style.display='none'; document.getElementById('appendBtn').style.display='none'; isDuplicateExists=false; document.getElementById('invoiceBtn').innerHTML='✅ இன்வாய்ஸ் பதிவு செய்'; }
+        } else {
+          duplicateInfo = { invoices: [], usedMonths: [], availableMonths: _quarterMonths(quarter), fullQuarterExists: false };
+          card.style.display='none'; document.getElementById('appendBtn').style.display='none'; isDuplicateExists=false; document.getElementById('invoiceBtn').innerHTML='✅ இன்வாய்ஸ் பதிவு செய்';
+        }
       }catch(e){ console.warn(e); }
     }
 

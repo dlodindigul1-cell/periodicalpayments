@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS payments (
     invoice_group_key TEXT,
     non_supply_applied BOOLEAN NOT NULL DEFAULT FALSE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
     -- ஒரே magazine + quarter-க்கு பல invoice rows அனுமதிக்கப்படுகிறது.
 );
 
