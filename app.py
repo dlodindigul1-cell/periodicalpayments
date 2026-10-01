@@ -4365,6 +4365,317 @@ def paid_report_pdf(rep):
 
 
 # =============================================================================
+# பதிவுத் திருத்தம் (Master → Admin) — ஏற்கனவே பதிவான Payments தரவைச் சரிசெய்ய
+#   • இதழ் பெயர் Master-உடன் பொருந்தாதவற்றைக் கண்டுபிடித்து சரிசெய்தல் (தனி / தானாக)
+#   • ஒரு Payment பதிவின் Invoice No / Date, Requested / Paid Amount, Paid Date, Bank Txn No,
+#     இதழ் பெயர், Quarter ஆகியவற்றைத் திருத்துதல்
+#   ஒவ்வொரு மாற்றமும் data_fix_log table-ல் (பழைய → புதிய மதிப்பு) பதிவாகும்.
+# =============================================================================
+def _fx_log(cur, action, detail):
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS data_fix_log ("
+        " id SERIAL PRIMARY KEY, at TIMESTAMPTZ NOT NULL DEFAULT now(),"
+        " username TEXT, action TEXT, detail TEXT)"
+    )
+    u = (current_user() or {}).get("username", "")
+    cur.execute(
+        "INSERT INTO data_fix_log (username, action, detail) VALUES (%s,%s,%s)",
+        (u, action, json.dumps(detail, ensure_ascii=False, default=str)),
+    )
+
+
+def _name_issues(sv):
+    """ஒரு பெயரில் கண்ணுக்குத் தெரியாத / இடைவெளிக் குறைபாடுகளின் பட்டியல்."""
+    import unicodedata
+    out = []
+    if sv != sv.strip():
+        out.append("முன் / பின் இடைவெளி")
+    if "\xa0" in sv:
+        out.append("Non-breaking space")
+    if any(c in sv for c in "\u200b\u200c\u200d\ufeff"):
+        out.append("கண்ணுக்குத் தெரியாத (zero-width) எழுத்து")
+    if "  " in sv.strip():
+        out.append("இரட்டை இடைவெளி")
+    if unicodedata.normalize("NFC", sv) != sv:
+        out.append("Unicode வடிவ (NFC/NFD) வேறுபாடு")
+    return out
+
+
+def _name_diff_reason(pay_name, master_name):
+    a = _name_issues(pay_name)
+    b = _name_issues(master_name or "")
+    parts = []
+    if a:
+        parts.append("Payments பெயரில்: " + ", ".join(a))
+    if b:
+        parts.append("Master பெயரில்: " + ", ".join(b))
+    if parts:
+        return " | ".join(parts)
+    if master_name and _name_key(pay_name) == _name_key(master_name):
+        return "எழுத்து அளவு / இடைவெளி வேறுபாடு"
+    if re.search(r"\s*[-–]\s*\d+\s*$", pay_name or ""):
+        return "பெயர் முடிவில் '-எண்' உள்ளது"
+    return "எழுத்துகள் வேறுபடுகின்றன" if master_name else "Master-ல் ஒத்த பெயர் இல்லை"
+
+
+def _fx_scan(cur):
+    import difflib
+    cur.execute("SELECT name FROM magazines")
+    master = sorted({r["name"] for r in cur.fetchall()})
+    mset = set(master)
+    mkeys = {}
+    for n in master:
+        mkeys.setdefault(_name_key(n), n)
+    cur.execute("SELECT id, magazine, quarter, paid_amt FROM payments ORDER BY magazine, quarter")
+    pays = cur.fetchall()
+    existing = {(r["magazine"], r["quarter"]) for r in pays}
+    items = []
+    for r in pays:
+        nm = r["magazine"]
+        if nm in mset:
+            continue
+        k = _name_key(nm)
+        target = mkeys.get(k)
+        exact = bool(target)
+        if not target:
+            k2 = _name_key(re.sub(r"\s*[-–]\s*\d+\s*$", "", nm or ""))
+            target = mkeys.get(k2)
+        if not target:
+            best = difflib.get_close_matches(k, list(mkeys), n=1, cutoff=0.75)
+            target = mkeys[best[0]] if best else None
+        conflict = bool(target) and (target, r["quarter"]) in existing
+        items.append({
+            "id": r["id"], "magazine": nm, "quarter": r["quarter"],
+            "paidAmt": float(r["paid_amt"] or 0),
+            "suggestion": target or "", "exact": exact, "conflict": conflict,
+            "auto": bool(exact and not conflict),
+            "reason": _name_diff_reason(nm, target),
+            "codepoints": len(nm or ""),
+        })
+    names = sorted(mset | {r["magazine"] for r in pays})
+    return {
+        "items": items,
+        "masterNames": master,
+        "allNames": [{"name": n, "inMaster": n in mset} for n in names],
+    }
+
+
+def _fx_move_related(cur, old_mag, old_q, new_mag, new_q):
+    """payments பதிவு இதழ்/Quarter மாறும்போது vouchers, despatch_nonsupply பதிவுகளையும் மாற்றும்."""
+    if (old_mag, old_q) == (new_mag, new_q):
+        return
+    cur.execute("UPDATE vouchers SET magazine=%s, quarter=%s WHERE magazine=%s AND quarter=%s",
+                (new_mag, new_q, old_mag, old_q))
+    cur.execute("SELECT 1 FROM despatch_nonsupply WHERE magazine=%s AND quarter=%s", (new_mag, new_q))
+    if not cur.fetchone():
+        cur.execute("UPDATE despatch_nonsupply SET magazine=%s, quarter=%s WHERE magazine=%s AND quarter=%s",
+                    (new_mag, new_q, old_mag, old_q))
+
+
+def _fx_rename_one(cur, pid, new_name):
+    """-> (ok, message)"""
+    cur.execute("SELECT id, magazine, quarter FROM payments WHERE id=%s", (pid,))
+    row = cur.fetchone()
+    if not row:
+        return False, "பதிவு கிடைக்கவில்லை"
+    old, q = row["magazine"], row["quarter"]
+    cur.execute("SELECT 1 FROM magazines WHERE name=%s", (new_name,))
+    if not cur.fetchone():
+        return False, "'%s' Master-ல் இல்லை" % new_name
+    if old == new_name:
+        return True, "மாற்றம் தேவையில்லை"
+    cur.execute("SELECT 1 FROM payments WHERE magazine=%s AND quarter=%s AND id<>%s", (new_name, q, pid))
+    if cur.fetchone():
+        return False, "'%s' (%s) பதிவு ஏற்கனவே உள்ளது — இணைக்க முடியாது" % (new_name, q)
+    cur.execute("UPDATE payments SET magazine=%s, updated_at=now() WHERE id=%s", (new_name, pid))
+    _fx_move_related(cur, old, q, new_name, q)
+    _fx_log(cur, "rename_magazine", {"id": pid, "quarter": q, "from": old, "to": new_name})
+    return True, "சரிசெய்யப்பட்டது"
+
+
+@app.route("/api/admin/data-fix/scan")
+def api_fx_scan():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            res = _fx_scan(cur)
+        return jsonify({"success": True, **res})
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/data-fix/rename", methods=["POST"])
+def api_fx_rename():
+    """body: {items:[{id, to}]}  — ஒவ்வொரு பதிவின் இதழ் பெயரை Master பெயருக்கு மாற்றும்."""
+    data = request.get_json(force=True)
+    items = data.get("items") or []
+    conn = get_conn()
+    try:
+        fixed, skipped = 0, []
+        with conn.cursor() as cur:
+            for it in items:
+                ok, msg = _fx_rename_one(cur, int(it.get("id") or 0), (it.get("to") or "").strip())
+                if ok:
+                    fixed += 1
+                else:
+                    skipped.append({"id": it.get("id"), "message": msg})
+        conn.commit()
+        return jsonify({"success": True, "fixed": fixed, "skipped": skipped})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/data-fix/auto-rename", methods=["POST"])
+def api_fx_auto_rename():
+    """பெயர் Master பெயருடன் இடைவெளி / Unicode / எழுத்து அளவில் மட்டும் வேறுபடும் பதிவுகளை மட்டும் தானாகச் சரிசெய்யும்.
+    ('-1' போன்ற விகுதி, எழுத்துப்பிழை உள்ளவை தொடப்படாது — அவற்றை நீங்களே தேர்ந்து சரிசெய்ய வேண்டும்.)"""
+    conn = get_conn()
+    try:
+        fixed, skipped = 0, []
+        with conn.cursor() as cur:
+            scan = _fx_scan(cur)
+            for it in scan["items"]:
+                if not it["exact"]:
+                    continue
+                ok, msg = _fx_rename_one(cur, it["id"], it["suggestion"])
+                if ok:
+                    fixed += 1
+                else:
+                    skipped.append({"id": it["id"], "magazine": it["magazine"], "quarter": it["quarter"], "message": msg})
+        conn.commit()
+        return jsonify({"success": True, "fixed": fixed, "skipped": skipped})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/data-fix/payments")
+def api_fx_payments():
+    magazine = request.args.get("magazine", "")
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, magazine, quarter, invoice_no, invoice_date, requested_amt, paid_amt, "
+                "       payment_date, transaction_no, voucher_no FROM payments "
+                "WHERE magazine=%s ORDER BY quarter", (magazine,))
+            rows = [{
+                "id": r["id"], "magazine": r["magazine"], "quarter": r["quarter"],
+                "invoiceNo": r["invoice_no"] or "",
+                "invoiceDate": r["invoice_date"].isoformat() if r["invoice_date"] else "",
+                "requestedAmt": float(r["requested_amt"] or 0), "paidAmt": float(r["paid_amt"] or 0),
+                "paymentDate": r["payment_date"].isoformat() if r["payment_date"] else "",
+                "transactionNo": r["transaction_no"] or "", "voucherNo": r["voucher_no"] or "",
+            } for r in cur.fetchall()]
+        return jsonify({"success": True, "rows": rows})
+    finally:
+        conn.close()
+
+
+def _fx_date(v):
+    v = (v or "").strip()
+    if not v:
+        return None
+    for f in ("%Y-%m-%d", "%d/%m/%Y"):
+        try:
+            return datetime.strptime(v, f).date()
+        except ValueError:
+            pass
+    raise ValueError("தேதி வடிவம் தவறு: " + v)
+
+
+def _fx_amt(v, label):
+    t = str(v if v is not None else "").replace(",", "").strip()
+    if not t:
+        return 0.0
+    try:
+        n = round(float(t), 2)
+    except ValueError:
+        raise ValueError(label + " எண்ணாக இருக்க வேண்டும்")
+    if n < 0:
+        raise ValueError(label + " குறைவாக இருக்கக் கூடாது")
+    return n
+
+
+@app.route("/api/admin/data-fix/update-payment", methods=["POST"])
+def api_fx_update_payment():
+    data = request.get_json(force=True)
+    try:
+        pid = int(data.get("id") or 0)
+    except (TypeError, ValueError):
+        pid = 0
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM payments WHERE id=%s", (pid,))
+            old = cur.fetchone()
+            if not old:
+                return jsonify({"success": False, "message": "பதிவு கிடைக்கவில்லை."}), 404
+            try:
+                invoice_date = _fx_date(data.get("invoiceDate"))
+                payment_date = _fx_date(data.get("paymentDate"))
+                requested = _fx_amt(data.get("requestedAmt"), "Requested Amount")
+                paid = _fx_amt(data.get("paidAmt"), "Paid Amount")
+            except ValueError as ve:
+                return jsonify({"success": False, "message": str(ve)}), 400
+            invoice_no = (data.get("invoiceNo") or "").strip() or None
+            txn = (data.get("transactionNo") or "").strip() or None
+            new_mag = (data.get("magazine") or old["magazine"]).strip()
+            new_q = (data.get("quarter") or old["quarter"]).strip()
+
+            if new_mag != old["magazine"]:
+                cur.execute("SELECT 1 FROM magazines WHERE name=%s", (new_mag,))
+                if not cur.fetchone():
+                    return jsonify({"success": False, "message": "'%s' Master-ல் இல்லை." % new_mag}), 400
+            if new_q != old["quarter"] and not re.match(r"^\d{4}-\d{4}-Q[1-4]$", new_q):
+                return jsonify({"success": False, "message": "Quarter வடிவம் தவறு (எ.கா. 2025-2026-Q1)."}), 400
+            if (new_mag, new_q) != (old["magazine"], old["quarter"]):
+                cur.execute("SELECT 1 FROM payments WHERE magazine=%s AND quarter=%s AND id<>%s", (new_mag, new_q, pid))
+                if cur.fetchone():
+                    return jsonify({"success": False,
+                                    "message": "'%s' (%s) பதிவு ஏற்கனவே உள்ளது." % (new_mag, new_q)}), 409
+
+            cur.execute(
+                "UPDATE payments SET magazine=%s, quarter=%s, invoice_no=%s, invoice_date=%s, requested_amt=%s, "
+                "paid_amt=%s, payment_date=%s, transaction_no=%s, updated_at=now() WHERE id=%s",
+                (new_mag, new_q, invoice_no, invoice_date, requested, paid, payment_date, txn, pid))
+
+            # vouchers நகல்களையும் ஒத்திசைவாக வைக்க
+            _fx_move_related(cur, old["magazine"], old["quarter"], new_mag, new_q)
+            cur.execute("UPDATE vouchers SET invoice_no=%s, invoice_date=%s, requested_amt=%s "
+                        "WHERE magazine=%s AND quarter=%s", (invoice_no, invoice_date, requested, new_mag, new_q))
+            cur.execute("SELECT COUNT(*) AS n FROM vouchers WHERE magazine=%s AND quarter=%s", (new_mag, new_q))
+            if cur.fetchone()["n"] == 1:
+                cur.execute("UPDATE vouchers SET amount_paid=%s WHERE magazine=%s AND quarter=%s",
+                            (paid, new_mag, new_q))
+
+            _fx_log(cur, "update_payment", {
+                "id": pid,
+                "old": {"magazine": old["magazine"], "quarter": old["quarter"], "invoice_no": old["invoice_no"],
+                        "invoice_date": old["invoice_date"], "requested_amt": old["requested_amt"],
+                        "paid_amt": old["paid_amt"], "payment_date": old["payment_date"],
+                        "transaction_no": old["transaction_no"]},
+                "new": {"magazine": new_mag, "quarter": new_q, "invoice_no": invoice_no,
+                        "invoice_date": invoice_date, "requested_amt": requested, "paid_amt": paid,
+                        "payment_date": payment_date, "transaction_no": txn},
+            })
+        conn.commit()
+        return jsonify({"success": True, "message": "பதிவு புதுப்பிக்கப்பட்டது."})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+# =============================================================================
 # தரவு சரிபார்ப்பு — Paid Details அறிக்கையில் இதழ் / Vendor Code தவறுகளைக் கண்டுபிடிக்க
 #   (/api/payments/paid-report/audit?magazine=...)
 # =============================================================================
@@ -4500,7 +4811,7 @@ def _audit_compute(code, group_names, magazines, payments):
         if len(invs) > 1:
             add("info", "invoice_no_differs",
                 "%s — ஒரே தொகை வழங்கலில் Invoice Number வெவ்வேறாக உள்ளன: %s" % (q, ", ".join(sorted(invs))),
-                quarter=q)
+                quarter=q, magazines=sorted({r["magazine"] for r in rows}))
 
     order = {"error": 0, "warn": 1, "info": 2}
     issues.sort(key=lambda x: order.get(x["level"], 9))

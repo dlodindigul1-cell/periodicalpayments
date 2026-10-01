@@ -447,7 +447,7 @@
     }
     .cc-title { font-size: 17px; font-weight: 700; line-height: 1.3; }
     .cc-sub   { font-size: 12.5px; opacity: .8; margin-top: 2px; }
-    .cc-body  { padding: 20px 22px 6px; color: var(--text); }
+    .cc-body  { padding: 20px 22px 6px; color: var(--text); max-height: 65vh; overflow-y: auto; }
     .cc-name  {
       font-size: 18px; font-weight: 700; color: var(--navy);
       margin-bottom: 14px; word-break: break-word;
@@ -3627,12 +3627,140 @@
       if (!d.issues.length) {
         h += '<div style="padding:8px 10px; background:#e8f6ec; border-radius:6px;">✅ எந்தத் தவறும் கண்டறியப்படவில்லை.</div>';
       } else {
+        const isAdmin = window.ME && window.ME.role === 'admin';
         d.issues.forEach(i => {
+          const target = i.magazine || (i.magazines && i.magazines[0]) || '';
+          const fixBtn = (isAdmin && (i.level !== 'info' || i.kind === 'invoice_no_differs'))
+            ? ' <a href="#" style="font-weight:600; white-space:nowrap;" onclick="openDataFix(' + _pe(JSON.stringify(target)) + '); return false;">🛠️ திருத்து</a>' : '';
           h += '<div style="padding:7px 10px; margin:4px 0; border-radius:6px; background:' + (bg[i.level] || '#eee') + ';">' +
-               (icon[i.level] || '') + ' ' + _pe(i.message) + '</div>';
+               (icon[i.level] || '') + ' ' + _pe(i.message) + fixBtn + '</div>';
         });
       }
       box.innerHTML = h;
+    }
+
+
+    // ─── பதிவுத் திருத்தம் (Master → Admin) ───
+    let _fxMaster = [];
+    async function _fxApi(url, body) {
+      const opt = body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {};
+      const res = await fetch(url, opt);
+      if (res.status === 401) { location.href = '/login'; throw new Error('login'); }
+      return res.json();
+    }
+    function showMastersFix(preMag) {
+      hideMasterPanels();
+      document.getElementById('mastersFixPanel').style.display = 'block';
+      fxScan().then(() => {
+        if (preMag) {
+          document.getElementById('fxMagSelect').value = preMag;
+          fxLoadRows();
+        }
+      });
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    // Paid Details திரையில் இருந்து நேரடியாக வர
+    function openDataFix(mag) {
+      showMastersDashboard();
+      if (window.ME && window.ME.role === 'admin') showMastersFix(mag);
+    }
+    async function fxScan() {
+      setStatus('fxScanStatus', 'loading', '<span class="spinner dark"></span> ஸ்கேன் செய்யப்படுகிறது...');
+      let d;
+      try { d = await _fxApi('/api/admin/data-fix/scan'); }
+      catch (e) { setStatus('fxScanStatus', 'error', '❌ பிழை: ' + _pe(e.message)); return; }
+      if (!d.success) { setStatus('fxScanStatus', 'error', '❌ ' + _pe(d.message)); return; }
+      _fxMaster = d.masterNames;
+      const sel = document.getElementById('fxMagSelect');
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">-- இதழைத் தேர்ந்தெடுக்கவும் --</option>' +
+        d.allNames.map(n => '<option value="' + _pe(n.name) + '">' + _pe(n.name) + (n.inMaster ? '' : '  ⚠️ (Master-ல் இல்லை)') + '</option>').join('');
+      if (cur) sel.value = cur;
+
+      const opts = n => '<option value="">-- தேர்ந்தெடு --</option>' +
+        _fxMaster.map(m => '<option value="' + _pe(m) + '"' + (m === n ? ' selected' : '') + '>' + _pe(m) + '</option>').join('');
+      let h = '';
+      d.items.forEach((it, i) => {
+        h += '<tr><td>' + _pe(it.magazine) + '<div style="color:var(--muted); font-size:11px;">' + it.codepoints + ' எழுத்துகள் · ' + _pm(it.paidAmt) + '</div></td>' +
+             '<td>' + _pe(it.quarter) + '</td><td>' + _pe(it.reason) +
+             (it.conflict ? '<div style="color:#a12b20;">⚠️ இந்த Quarter-ல் Master பெயரில் பதிவு ஏற்கனவே உள்ளது</div>' : '') + '</td>' +
+             '<td><select id="fxTo' + i + '" style="min-width:160px;">' + opts(it.suggestion) + '</select></td>' +
+             '<td><button class="btn-secondary" onclick="fxRenameOne(' + it.id + ',' + i + ')">சரிசெய்</button></td></tr>';
+      });
+      document.getElementById('fxScanBody').innerHTML = h ||
+        '<tr><td colspan="5" class="ctr" style="padding:18px; color:var(--muted);">✅ பொருந்தாத இதழ் பெயர் எதுவும் இல்லை.</td></tr>';
+      const autoN = d.items.filter(x => x.auto).length;
+      document.getElementById('fxAutoBtn').disabled = autoN === 0;
+      document.getElementById('fxAutoBtn').textContent = '⚡ தானாகச் சரிசெய் (' + autoN + ')';
+      clearStatus('fxScanStatus');
+      if (d.items.length) setStatus('fxScanStatus', 'error', '⚠️ ' + d.items.length + ' பதிவுகளில் பெயர் பொருந்தவில்லை.');
+    }
+    async function fxAutoFix() {
+      const ok = await showConfirmCard({ icon: '⚡', title: 'தானாகச் சரிசெய்யவா?',
+        subtitle: 'இடைவெளி / Unicode / எழுத்து அளவு வேறுபாடு மட்டும் உள்ள பெயர்கள் Master பெயருக்கு மாற்றப்படும்.',
+        buttons: [{ label: 'இல்லை', value: false, style: 'ghost' }, { label: '✅ சரிசெய்', value: true, style: 'primary' }] });
+      if (!ok) return;
+      setStatus('fxScanStatus', 'loading', '<span class="spinner dark"></span> சரிசெய்யப்படுகிறது...');
+      const d = await _fxApi('/api/admin/data-fix/auto-rename', {});
+      if (!d.success) { setStatus('fxScanStatus', 'error', '❌ ' + _pe(d.message)); return; }
+      await fxScan();
+      setStatus('fxScanStatus', d.skipped.length ? 'error' : 'success',
+        '✅ ' + d.fixed + ' பதிவுகள் சரிசெய்யப்பட்டன.' +
+        d.skipped.map(x => '<br>⚠️ ' + _pe(x.magazine) + ' (' + _pe(x.quarter) + '): ' + _pe(x.message)).join(''));
+    }
+    async function fxRenameOne(id, i) {
+      const to = document.getElementById('fxTo' + i).value;
+      if (!to) { setStatus('fxScanStatus', 'error', '❌ Master பெயரைத் தேர்ந்தெடுக்கவும்.'); return; }
+      const d = await _fxApi('/api/admin/data-fix/rename', { items: [{ id, to }] });
+      if (!d.success) { setStatus('fxScanStatus', 'error', '❌ ' + _pe(d.message)); return; }
+      await fxScan();
+      setStatus('fxScanStatus', d.skipped.length ? 'error' : 'success',
+        d.skipped.length ? '⚠️ ' + _pe(d.skipped[0].message) : '✅ சரிசெய்யப்பட்டது.');
+    }
+    async function fxLoadRows() {
+      const mag = document.getElementById('fxMagSelect').value;
+      const body = document.getElementById('fxRowsBody');
+      if (!mag) { body.innerHTML = ''; return; }
+      const d = await _fxApi('/api/admin/data-fix/payments?magazine=' + encodeURIComponent(mag));
+      if (!d.success) { setStatus('fxRowsStatus', 'error', '❌ ' + _pe(d.message)); return; }
+      clearStatus('fxRowsStatus');
+      window._fxRows = d.rows;
+      const fd = v => v ? v.split('-').reverse().join('/') : '—';
+      body.innerHTML = d.rows.map((r, i) =>
+        '<tr><td>' + _pe(r.quarter) + '</td><td>' + _pe(r.invoiceNo || '—') + '</td><td>' + fd(r.invoiceDate) + '</td>' +
+        '<td class="num">' + _pm(r.requestedAmt) + '</td><td class="num">' + _pm(r.paidAmt) + '</td>' +
+        '<td>' + fd(r.paymentDate) + '</td><td>' + _pe(r.transactionNo || '—') + '</td>' +
+        '<td><button class="btn-secondary" onclick="fxEditRow(' + i + ')">✏️ திருத்து</button></td></tr>').join('') ||
+        '<tr><td colspan="8" class="ctr" style="padding:18px; color:var(--muted);">பதிவுகள் இல்லை.</td></tr>';
+    }
+    async function fxEditRow(i) {
+      const r = window._fxRows[i];
+      const inp = (id, label, val, type) => '<div class="field" style="margin-bottom:10px;"><label>' + label + '</label>' +
+        '<input type="' + (type || 'text') + '" id="' + id + '" value="' + _pe(val) + '"' + (type === 'number' ? ' step="0.01"' : '') + '></div>';
+      const magOpts = _fxMaster.map(m => '<option value="' + _pe(m) + '"' + (m === r.magazine ? ' selected' : '') + '>' + _pe(m) + '</option>').join('');
+      const magSel = _fxMaster.includes(r.magazine) ? '' : '<option value="' + _pe(r.magazine) + '" selected>' + _pe(r.magazine) + ' (Master-ல் இல்லை)</option>';
+      const html =
+        '<div class="field" style="margin-bottom:10px;"><label>இதழ்</label><select id="fxEMag">' + magSel + magOpts + '</select></div>' +
+        inp('fxEQ', 'Quarter', r.quarter) + inp('fxEInv', 'Invoice Number', r.invoiceNo) +
+        inp('fxEInvD', 'Invoice Date', r.invoiceDate, 'date') +
+        inp('fxEReq', 'Requested Amount', r.requestedAmt, 'number') + inp('fxEPaid', 'Paid Amount', r.paidAmt, 'number') +
+        inp('fxEPayD', 'Paid Date', r.paymentDate, 'date') + inp('fxETxn', 'Bank Transaction Number', r.transactionNo);
+      const val = await showConfirmCard({
+        icon: '✏️', title: 'Payment பதிவு திருத்து', subtitle: r.magazine + ' · ' + r.quarter, html, wide: true,
+        buttons: [{ label: 'ரத்து', value: null, style: 'ghost' }, { label: '💾 சேமி', value: 'save', style: 'primary' }],
+        resolveWith: (v, ov) => v !== 'save' ? null : {
+          id: r.id, magazine: ov.querySelector('#fxEMag').value, quarter: ov.querySelector('#fxEQ').value,
+          invoiceNo: ov.querySelector('#fxEInv').value, invoiceDate: ov.querySelector('#fxEInvD').value,
+          requestedAmt: ov.querySelector('#fxEReq').value, paidAmt: ov.querySelector('#fxEPaid').value,
+          paymentDate: ov.querySelector('#fxEPayD').value, transactionNo: ov.querySelector('#fxETxn').value }
+      });
+      if (!val) return;
+      const d = await _fxApi('/api/admin/data-fix/update-payment', val);
+      if (!d.success) { setStatus('fxRowsStatus', 'error', '❌ ' + _pe(d.message)); return; }
+      setStatus('fxRowsStatus', 'success', '✅ ' + _pe(d.message));
+      await fxScan();
+      document.getElementById('fxMagSelect').value = val.magazine;
+      fxLoadRows();
     }
 
     // ════ Payment Voucher Creation Functions ════
@@ -3900,12 +4028,65 @@ function _pdfHelper(fnName, targetId) {
             <div style="font-size:13px; color:var(--muted); margin-top:3px;">எல்லா பதிவுகளும் (A–V) — CSV / Excel / PDF பதிவிறக்கம்</div>
           </div>
         </div>
+        <div class="menu-card" onclick="showMastersFix()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
+          <div style="font-size:36px;">🛠️</div>
+          <div>
+            <div style="font-size:16px; font-weight:700; color:var(--navy);">பதிவுத் திருத்தம்</div>
+            <div style="font-size:13px; color:var(--muted); margin-top:3px;">பழைய Payment தரவு — இதழ் பெயர், Invoice, தொகை, Txn No திருத்து</div>
+          </div>
+        </div>
         <div class="menu-card" onclick="showMastersUsers()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
           <div style="font-size:36px;">🔐</div>
           <div>
             <div style="font-size:16px; font-weight:700; color:var(--navy);">பயனர் கணக்கு</div>
             <div style="font-size:13px; color:var(--muted); margin-top:3px;">Username / Password மாற்று (admin &amp; Section)</div>
           </div>
+        </div>
+      </div>
+
+      <!-- ══════════ DATA FIX PANEL ══════════ -->
+      <div id="mastersFixPanel" class="master-panel" style="display:none;">
+        <div class="card">
+          <div class="card-title">🛠️ 1) இதழ் பெயர் Master-உடன் பொருந்தாத பதிவுகள்</div>
+          <p style="font-size:13px; color:var(--muted); margin-bottom:12px;">
+            Payments-ல் உள்ள பெயர் Master இதழ் பெயருடன் <b>அப்படியே</b> பொருந்தாவிட்டால் அந்தத் தொகை Paid Details அறிக்கையிலும் குழுவிலும் வராது.
+            Master பெயரே சரியானதாக எடுத்துக்கொள்ளப்படும். "தானாகச் சரிசெய்" — இடைவெளி / Unicode / எழுத்து அளவு வேறுபாடு மட்டும் உள்ளவற்றுக்கு.
+            '-1' போன்ற விகுதி, எழுத்துப்பிழை உள்ளவற்றை நீங்களே பெயரைத் தேர்ந்து "சரிசெய்" அழுத்த வேண்டும்.
+          </p>
+          <div class="btn-row" style="margin:0 0 12px; justify-content:flex-start;">
+            <button class="btn-secondary" onclick="fxScan()">🔄 மீண்டும் ஸ்கேன்</button>
+            <button class="btn-primary" id="fxAutoBtn" onclick="fxAutoFix()">⚡ தானாகச் சரிசெய்</button>
+          </div>
+          <div id="fxScanStatus" class="status"></div>
+          <div class="data-table-wrap" style="max-height:420px;">
+            <table class="data-table" style="font-size:12.5px;">
+              <thead><tr><th>Payments பெயர்</th><th>Quarter</th><th>காரணம்</th><th>Master பெயர்</th><th></th></tr></thead>
+              <tbody id="fxScanBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">✏️ 2) ஒரு இதழின் Payment பதிவுகளைத் திருத்து</div>
+          <p style="font-size:13px; color:var(--muted); margin-bottom:12px;">
+            Invoice No / Date, Requested / Paid Amount, Paid Date, Bank Transaction No, இதழ் பெயர், Quarter ஆகியவற்றைத் திருத்தலாம்.
+            ஒவ்வொரு மாற்றமும் (பழைய → புதிய) பதிவு செய்யப்படும்.
+          </p>
+          <div class="field">
+            <label>இதழ் (Master + Payments-ல் உள்ள அனைத்துப் பெயர்கள்)</label>
+            <select id="fxMagSelect" onchange="fxLoadRows()"><option value="">-- இதழைத் தேர்ந்தெடுக்கவும் --</option></select>
+          </div>
+          <div id="fxRowsStatus" class="status"></div>
+          <div class="data-table-wrap" style="max-height:420px;">
+            <table class="data-table" style="font-size:12.5px; white-space:nowrap;">
+              <thead><tr><th>Quarter</th><th>Invoice No</th><th>Invoice Date</th><th style="text-align:right;">Requested</th>
+                <th style="text-align:right;">Paid</th><th>Paid Date</th><th>Bank Txn No</th><th></th></tr></thead>
+              <tbody id="fxRowsBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="btn-row">
+          <button class="btn-secondary" onclick="showMastersDashboard()">← Master Data-க்கு</button>
         </div>
       </div>
 
@@ -4264,6 +4445,7 @@ function _pdfHelper(fnName, targetId) {
       document.getElementById('mastersDeleteTxnPanel').style.display = 'none';
       document.getElementById('mastersPaymentsPanel').style.display = 'none';
       document.getElementById('mastersUsersPanel').style.display = 'none';
+      document.getElementById('mastersFixPanel').style.display = 'none';
     }
 
     // ─── பயனர் கணக்கு (admin மட்டும்) ───
