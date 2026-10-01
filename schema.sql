@@ -88,3 +88,18 @@ ALTER TABLE magazines ADD COLUMN IF NOT EXISTS bank_place           TEXT;
 ALTER TABLE magazines ADD COLUMN IF NOT EXISTS ifsc_code            TEXT;
 ALTER TABLE magazines ADD COLUMN IF NOT EXISTS payee_name           TEXT;
 ALTER TABLE magazines ADD COLUMN IF NOT EXISTS email_id             TEXT;
+
+-- =====================================================================
+-- உள் நுழைவு பயனர்கள் (2026-10-01) — Basic Auth popup-க்குப் பதிலாக Login card.
+-- app தொடங்கும்போது தானாக உருவாகும்; இங்கே குறிப்புக்காக மட்டும்.
+-- role: 'admin' (Master உட்பட முழு அணுகல்) | 'section' (Master தவிர)
+-- Password hash செய்யப்பட்டு சேமிக்கப்படும் (Master → பயனர் கணக்கு-ல் மாற்றலாம்).
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS app_users (
+    id            SERIAL PRIMARY KEY,
+    username      TEXT NOT NULL,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL DEFAULT 'section',
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_app_users_username ON app_users (LOWER(username));

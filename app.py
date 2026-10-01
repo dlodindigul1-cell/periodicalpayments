@@ -8,6 +8,8 @@ Phase 1: Master data + Payment entry + Duplicate check + Quarter view +
 
 import base64
 import csv
+import hashlib
+import time
 import io
 import json
 import os
@@ -15,7 +17,7 @@ import re
 import smtplib
 import urllib.error
 import urllib.request
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -24,7 +26,8 @@ from functools import wraps
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
-from flask import Flask, jsonify, render_template, request, Response, send_file
+from flask import Flask, jsonify, redirect, render_template, render_template_string, request, Response, send_file, session
+from werkzeug.security import check_password_hash, generate_password_hash
 from xhtml2pdf import pisa
 
 load_dotenv()
@@ -33,44 +36,243 @@ app = Flask(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
-ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "Admin")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Dlodgl@789")
-
-
 # --------------------------------------------------------------------------- #
-# Basic Auth — முழு தளமும் Username/Password-க்குப் பின்னால்
+# உள் நுழைவு (Login card + Session) — பழைய Basic Auth popup நீக்கப்பட்டது
+#   • பயனர்கள் DB-யின் app_users table-ல் (hash செய்யப்பட்ட password) சேமிக்கப்படுகிறார்கள்
+#   • முதல் முறை இரு பயனர்கள் தானாக உருவாகும்: admin (role=admin), Section (role=section)
+#   • Render-ல் SECRET_KEY environment variable அமைக்கவும் (இல்லையெனில் DATABASE_URL-ல் இருந்து பெறப்படும்)
+#   • Master Data / /api/admin/* → role=admin மட்டும் (இதழ்/Vendor படிக்கும் vendors-list தவிர)
 # --------------------------------------------------------------------------- #
-def check_auth(username, password):
-    return username == ADMIN_USERNAME and password == ADMIN_PASSWORD
+INITIAL_USERS = (("admin", "admin"), ("Section", "section"))
+INITIAL_PASSWORD = os.environ.get("INITIAL_PASSWORD", "dlodgl@789")
+
+app.secret_key = os.environ.get("SECRET_KEY") or hashlib.sha256(
+    ("periodicalpayments|" + (DATABASE_URL or "dev")).encode("utf-8")
+).hexdigest()
+app.config.update(
+    SESSION_COOKIE_HTTPONLY=True,
+    SESSION_COOKIE_SAMESITE="Lax",
+    SESSION_COOKIE_SECURE=bool(os.environ.get("RENDER")),   # Render = https
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+)
+
+_auth_ready = False
 
 
-def authenticate():
-    return Response(
-        "இந்தத் தளத்தை பயன்படுத்த Username / Password தேவை.",
-        401,
-        {"WWW-Authenticate": 'Basic realm="Login Required"'},
-    )
+def ensure_auth_tables():
+    """app_users table இல்லையெனில் உருவாக்கி, காலியாக இருந்தால் admin & Section பயனர்களை சேர்க்கும்."""
+    global _auth_ready
+    if _auth_ready:
+        return
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS app_users ("
+                " id SERIAL PRIMARY KEY,"
+                " username TEXT NOT NULL,"
+                " password_hash TEXT NOT NULL,"
+                " role TEXT NOT NULL DEFAULT 'section',"
+                " updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            )
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS ux_app_users_username ON app_users (LOWER(username))")
+            cur.execute("SELECT COUNT(*) AS n FROM app_users")
+            if cur.fetchone()["n"] == 0:
+                for uname, role in INITIAL_USERS:
+                    cur.execute(
+                        "INSERT INTO app_users (username, password_hash, role) VALUES (%s,%s,%s) ON CONFLICT DO NOTHING",
+                        (uname, generate_password_hash(INITIAL_PASSWORD), role),
+                    )
+        conn.commit()
+    finally:
+        conn.close()
+    _auth_ready = True
 
 
-def requires_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        auth = request.authorization
-        if not auth or not check_auth(auth.username, auth.password):
-            return authenticate()
-        return f(*args, **kwargs)
+_LOGIN_FAILS = {}   # ip -> [எண்ணிக்கை, கடைசி நேரம்]
 
-    return decorated
+
+def _client_ip():
+    return (request.headers.get("X-Forwarded-For", "").split(",")[0].strip() or request.remote_addr or "")
+
+
+def _login_blocked(ip):
+    rec = _LOGIN_FAILS.get(ip)
+    if not rec:
+        return False
+    if time.time() - rec[1] > 600:
+        _LOGIN_FAILS.pop(ip, None)
+        return False
+    return rec[0] >= 5
+
+
+def _login_failed(ip):
+    rec = _LOGIN_FAILS.get(ip)
+    if not rec or time.time() - rec[1] > 600:
+        rec = [0, 0]
+    rec[0] += 1
+    rec[1] = time.time()
+    _LOGIN_FAILS[ip] = rec
+
+
+def current_user():
+    return session.get("user")
+
+
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="ta"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>உள் நுழைவு — பருவ இதழ்கள் தொகை செலுத்துதல்</title>
+<style>
+  *{box-sizing:border-box} body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+  background:linear-gradient(135deg,#0f2347,#1e4d8c);font-family:"Noto Sans Tamil","Segoe UI",Arial,sans-serif;padding:16px}
+  .card{background:#fff;width:100%;max-width:400px;border-radius:18px;padding:32px 28px;box-shadow:0 20px 50px rgba(0,0,0,.35)}
+  .emb{font-size:44px;text-align:center} h1{font-size:19px;text-align:center;color:#0f2347;margin:8px 0 2px}
+  p.sub{text-align:center;color:#6b7690;font-size:13px;margin:0 0 22px}
+  label{display:block;font-size:13px;font-weight:600;color:#1e4d8c;margin:14px 0 6px}
+  input{width:100%;padding:12px 14px;border:1.5px solid #d5dcec;border-radius:10px;font-size:15px;outline:none}
+  input:focus{border-color:#1e4d8c}
+  button{width:100%;margin-top:22px;padding:13px;border:0;border-radius:10px;background:#1e4d8c;color:#fff;font-size:16px;font-weight:700;cursor:pointer}
+  button:hover{background:#0f2347}
+  .err{background:#fdecea;color:#a12b20;border-radius:10px;padding:10px 12px;font-size:13.5px;margin-top:14px}
+</style></head><body>
+<form class="card" method="post" action="/login" autocomplete="on">
+  <div class="emb">📚</div>
+  <h1>பருவ இதழ்கள் தொகை செலுத்துதல்</h1>
+  <p class="sub">மாவட்ட நூலக அலுவலகம், திண்டுக்கல்</p>
+  <label for="u">Username</label>
+  <input id="u" name="username" type="text" autocomplete="username" required autofocus>
+  <label for="p">Password</label>
+  <input id="p" name="password" type="password" autocomplete="current-password" required>
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+  <button type="submit">🔐 உள் நுழை</button>
+</form></body></html>"""
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = ""
+    if request.method == "POST":
+        ip = _client_ip()
+        if _login_blocked(ip):
+            error = "அதிக முறை தவறான முயற்சி. 10 நிமிடம் கழித்து மீண்டும் முயலவும்."
+        else:
+            uname = (request.form.get("username") or "").strip()
+            pw = request.form.get("password") or ""
+            row = None
+            try:
+                ensure_auth_tables()
+                conn = get_conn()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT * FROM app_users WHERE LOWER(username)=LOWER(%s)", (uname,))
+                        row = cur.fetchone()
+                finally:
+                    conn.close()
+            except Exception as e:  # noqa: BLE001
+                return render_template_string(LOGIN_HTML, error="Database இணைப்பு பிழை: " + str(e)), 503
+            if row and check_password_hash(row["password_hash"], pw):
+                session.clear()
+                session.permanent = True
+                session["user"] = {"id": row["id"], "username": row["username"], "role": row["role"]}
+                _LOGIN_FAILS.pop(ip, None)
+                return redirect("/")
+            _login_failed(ip)
+            error = "Username அல்லது Password தவறானது."
+    elif current_user():
+        return redirect("/")
+    return render_template_string(LOGIN_HTML, error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/login")
+
+
+@app.route("/api/me")
+def api_me():
+    u = current_user() or {}
+    return jsonify({"success": True, "username": u.get("username", ""), "role": u.get("role", "")})
+
+
+_PUBLIC_PATHS = {"/healthz", "/login", "/logout"}
 
 
 @app.before_request
 def global_auth():
-    # Render health checks hit this path without credentials — no login here.
-    if request.path == "/healthz":
+    path = request.path
+    if path in _PUBLIC_PATHS or path.startswith("/static/"):
         return
-    auth = request.authorization
-    if not auth or not check_auth(auth.username, auth.password):
-        return authenticate()
+    try:
+        ensure_auth_tables()
+    except Exception as e:  # noqa: BLE001
+        return Response("Database இணைப்பு பிழை: " + str(e), 503)
+    user = current_user()
+    if not user:
+        if path.startswith("/api/"):
+            return jsonify({"success": False, "needLogin": True,
+                            "message": "மீண்டும் உள் நுழையவும் (Session முடிந்தது)"}), 401
+        return redirect("/login")
+    # Master / Admin API-கள் — admin மட்டும் (வங்கி விவரப் பக்கம் படிக்கும் vendors-list தவிர)
+    if path.startswith("/api/admin/") and user.get("role") != "admin":
+        if not (path == "/api/admin/vendors-list" and request.method == "GET"):
+            return jsonify({"success": False, "message": "இந்த வசதி Admin-க்கு மட்டுமே."}), 403
+
+
+@app.route("/api/admin/users")
+def api_admin_users():
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, username, role FROM app_users ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, id")
+            rows = cur.fetchall()
+        return jsonify({"success": True, "users": [dict(r) for r in rows]})
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/update-user", methods=["POST"])
+def api_admin_update_user():
+    """{id, username, newPassword?} — Username மாற்றம் + (விருப்பம்) புதிய Password. DB-ல் hash ஆகச் சேமிக்கப்படும்."""
+    data = request.get_json(force=True) or {}
+    uid = q_int(data.get("id"), 0)
+    username = (data.get("username") or "").strip()
+    new_pw = data.get("newPassword") or ""
+    if not uid:
+        return jsonify({"success": False, "message": "பயனர் தேர்வு தவறு."}), 400
+    if len(username) < 3 or re.search(r"\s", username):
+        return jsonify({"success": False, "message": "Username குறைந்தது 3 எழுத்து; இடைவெளி கூடாது."}), 400
+    if new_pw and len(new_pw) < 6:
+        return jsonify({"success": False, "message": "Password குறைந்தது 6 எழுத்துகள் இருக்க வேண்டும்."}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, role FROM app_users WHERE id=%s", (uid,))
+            target = cur.fetchone()
+            if not target:
+                return jsonify({"success": False, "message": "பயனர் இல்லை."}), 404
+            cur.execute("SELECT id FROM app_users WHERE LOWER(username)=LOWER(%s) AND id<>%s", (username, uid))
+            if cur.fetchone():
+                return jsonify({"success": False, "message": "இந்த Username ஏற்கனவே உள்ளது."}), 400
+            if new_pw:
+                cur.execute(
+                    "UPDATE app_users SET username=%s, password_hash=%s, updated_at=now() WHERE id=%s",
+                    (username, generate_password_hash(new_pw), uid),
+                )
+            else:
+                cur.execute("UPDATE app_users SET username=%s, updated_at=now() WHERE id=%s", (username, uid))
+        conn.commit()
+        me = current_user()
+        if me and me.get("id") == uid:
+            session["user"] = {**me, "username": username}
+        msg = "✅ Username / Password மாற்றப்பட்டது." if new_pw else "✅ Username மாற்றப்பட்டது."
+        return jsonify({"success": True, "message": msg})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
 
 
 @app.route("/healthz")
@@ -3748,6 +3950,272 @@ def api_export_payments():
         "totals": {k: indian_grouping(v) for k, v in totals.items()},
         "count": len(rows),
     })
+
+
+# =============================================================================
+# தொகை வழங்கப்பட்ட விவரம் — Paid Details Report (English) — JSON / PDF / Excel / CSV
+#   ஒரு இதழைத் தேர்ந்தெடுத்தால், அதன் Vendor Code-க்குரிய அனைத்து இதழ்களும் (தேர்ந்தெடுத்த Quarter-களில்)
+#   Bank Transaction பதிவில் உள்ள அதே விதியில் (Quarter + Vendor Code + Bill Set No) குழுவாகக் காட்டப்படும்.
+# =============================================================================
+PAID_REPORT_HEADERS = ["S.NO", "MAGAZINE", "INVOICE NUMBER", "INVOICE DATE",
+                       "REQUESTED AMOUNT", "PAID AMOUNT", "PAID DATE", "BANK TRANSACTION NUMBER"]
+
+
+def build_paid_report(cur, magazine, quarters):
+    cur.execute(
+        "SELECT name, tnpfts_code, vendor_name, payee_name FROM magazines WHERE name=%s", (magazine,)
+    )
+    m = cur.fetchone()
+    if not m:
+        return None
+    code = norm_code(m["tnpfts_code"])
+    if code:
+        cur.execute(
+            "SELECT name FROM magazines WHERE UPPER(TRIM(COALESCE(tnpfts_code,'')))=%s", (code,)
+        )
+        names = sorted({r["name"] for r in cur.fetchall()} | {magazine})
+    else:
+        names = [magazine]
+
+    sql = (
+        "SELECT p.id, p.magazine, p.quarter, p.bill_set_no, p.voucher_no, p.invoice_no, p.invoice_date, "
+        "       p.requested_amt, p.paid_amt, p.payment_date, p.transaction_no "
+        "FROM payments p WHERE p.magazine = ANY(%s) AND p.paid_amt > 0"
+    )
+    params = [names]
+    ql = _qlist(quarters)
+    if ql:
+        sql += " AND p.quarter = ANY(%s)"
+        params.append(ql)
+    cur.execute(sql, params)
+    rows = cur.fetchall()
+
+    vendor = vendor_display_name(m["vendor_name"], m["payee_name"], magazine)
+    groups = {}
+    for r in rows:
+        s_no = (r["bill_set_no"] or "").strip()
+        key = (r["quarter"], code, s_no) if (code and s_no) else (r["quarter"], "#%d" % r["id"], "")
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = {
+                "quarter": r["quarter"] or "", "quarterLabel": quarter_label(r["quarter"]),
+                "setNo": s_no if (code and s_no) else "", "rows": [],
+                "totalRequested": 0.0, "totalPaid": 0.0,
+            }
+        g["rows"].append({
+            "magazine": r["magazine"], "voucherNo": r["voucher_no"] or "",
+            "invoiceNo": r["invoice_no"] or "", "invoiceDate": fmt_date(r["invoice_date"]),
+            "requestedAmt": float(r["requested_amt"] or 0), "paidAmt": float(r["paid_amt"] or 0),
+            "paidDate": fmt_date(r["payment_date"]), "transactionNo": r["transaction_no"] or "",
+        })
+        g["totalRequested"] += float(r["requested_amt"] or 0)
+        g["totalPaid"] += float(r["paid_amt"] or 0)
+
+    out = []
+    for g in groups.values():
+        g["rows"].sort(key=lambda x: (voucher_sort_key(x["voucherNo"]), x["magazine"]))
+        g["magazines"] = sorted({x["magazine"] for x in g["rows"]})
+        out.append(g)
+    out.sort(key=lambda g: (g["quarter"], voucher_sort_key(g["rows"][0]["voucherNo"]), g["rows"][0]["magazine"]))
+    n = 0
+    for g in out:
+        g["multi"] = len(g["rows"]) > 1
+        for x in g["rows"]:
+            n += 1
+            x["sno"] = n
+    return {
+        "magazine": magazine, "vendorCode": (m["tnpfts_code"] or "").strip(), "vendorName": vendor,
+        "vendorMagazines": names, "quarters": ql, "groups": out, "count": n,
+        "totalRequested": sum(g["totalRequested"] for g in out),
+        "totalPaid": sum(g["totalPaid"] for g in out),
+    }
+
+
+def _paid_report_flat(rep):
+    for g in rep["groups"]:
+        for x in g["rows"]:
+            yield g, x
+
+
+def paid_report_csv(rep):
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["S.NO", "QUARTER"] + PAID_REPORT_HEADERS[1:])
+    for g, x in _paid_report_flat(rep):
+        w.writerow([x["sno"], g["quarterLabel"], x["magazine"], x["invoiceNo"], x["invoiceDate"],
+                    "%.2f" % x["requestedAmt"], "%.2f" % x["paidAmt"], x["paidDate"], x["transactionNo"]])
+    w.writerow(["", "", "", "TOTAL", "", "%.2f" % rep["totalRequested"], "%.2f" % rep["totalPaid"], "", ""])
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")
+
+
+def paid_report_xlsx(rep):
+    import xlsxwriter
+
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"in_memory": True})
+    ws = wb.add_worksheet("Paid Details")
+    title = wb.add_format({"bold": True, "font_size": 15})
+    sub = wb.add_format({"bold": True, "font_size": 11})
+    head = wb.add_format({"bold": True, "font_color": "#FFFFFF", "bg_color": "#1E4D8C", "border": 1,
+                          "text_wrap": True, "align": "center", "valign": "vcenter"})
+    txt = wb.add_format({"border": 1, "valign": "top"})
+    ctr = wb.add_format({"border": 1, "valign": "top", "align": "center"})
+    num = wb.add_format({"border": 1, "valign": "top", "num_format": "#,##0.00"})
+    tot_l = wb.add_format({"bold": True, "border": 1, "bg_color": "#EEF2F8", "align": "right"})
+    tot_n = wb.add_format({"bold": True, "border": 1, "bg_color": "#EEF2F8", "num_format": "#,##0.00"})
+    tot_b = wb.add_format({"bold": True, "border": 1, "bg_color": "#EEF2F8"})
+    for i, wd in enumerate([7, 14, 36, 20, 14, 18, 16, 14, 30]):
+        ws.set_column(i, i, wd)
+    qtxt = ", ".join(quarter_label(q) for q in rep["quarters"]) or "All Quarters"
+    ws.write(0, 0, "District Library Office, Dindigul", title)
+    ws.write(1, 0, "PAYMENT DETAILS — " + rep["vendorName"] + (" (Vendor Code: " + rep["vendorCode"] + ")" if rep["vendorCode"] else ""), sub)
+    ws.write(2, 0, "Quarter: " + qtxt + "    Date: " + datetime.now().strftime("%d/%m/%Y"))
+    hdr = ["S.NO", "QUARTER"] + PAID_REPORT_HEADERS[1:]
+    ws.set_row(4, 32)
+    for c, h in enumerate(hdr):
+        ws.write(4, c, h, head)
+    r0 = 5
+    for i, (g, x) in enumerate(_paid_report_flat(rep)):
+        r = r0 + i
+        ws.write_number(r, 0, x["sno"], ctr)
+        ws.write_string(r, 1, g["quarterLabel"], ctr)
+        ws.write_string(r, 2, x["magazine"], txt)
+        ws.write_string(r, 3, x["invoiceNo"], ctr)
+        ws.write_string(r, 4, x["invoiceDate"], ctr)
+        ws.write_number(r, 5, x["requestedAmt"], num)
+        ws.write_number(r, 6, x["paidAmt"], num)
+        ws.write_string(r, 7, x["paidDate"], ctr)
+        ws.write_string(r, 8, x["transactionNo"], txt)
+    n = rep["count"]
+    tr = r0 + n
+    for c in range(9):
+        ws.write(tr, c, "", tot_b)
+    ws.write(tr, 4, "TOTAL", tot_l)
+    if n:
+        ws.write_formula(tr, 5, "=SUM(F%d:F%d)" % (r0 + 1, r0 + n), tot_n, rep["totalRequested"])
+        ws.write_formula(tr, 6, "=SUM(G%d:G%d)" % (r0 + 1, r0 + n), tot_n, rep["totalPaid"])
+    ws.freeze_panes(5, 0)
+    ws.set_landscape()
+    ws.set_paper(9)
+    ws.fit_to_pages(1, 0)
+    wb.close()
+    return buf.getvalue()
+
+
+def paid_report_pdf(rep):
+    """Publisher-க்குச் செல்லும் Payment Cleared Intimation PDF-ன் தோற்றம் (District Library Office, Dindigul
+    தலைப்பு + நீல header அட்டவணை), ஆங்கிலத்தில். A4 landscape; fpdf2 (இதழ் பெயர் தமிழாக இருந்தாலும் சரியாக வரும்)."""
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_margins(12, 12, 12)
+    pdf.set_auto_page_break(auto=True, margin=14)
+    pdf.add_font("Tamil", "", TAMIL_FONT_PATH)
+    pdf.add_font("Tamil", "B", TAMIL_BOLD_FONT_PATH)
+    pdf.set_text_shaping(True)
+    pdf.add_page()
+
+    pdf.set_font("Tamil", size=10)
+    pdf.cell(0, 6, "Date: " + datetime.now().strftime("%d/%m/%Y"), align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Tamil", "B", 21)
+    pdf.cell(0, 11, "District Library Office, Dindigul", align="C", new_x="LMARGIN", new_y="NEXT")
+    y = pdf.get_y()
+    pdf.set_line_width(0.9)
+    pdf.line(12, y + 0.5, 285, y + 0.5)
+    pdf.ln(3)
+    pdf.set_font("Tamil", "B", 13)
+    pdf.cell(0, 8, "PAYMENT DETAILS OF MAGAZINES", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Tamil", size=10.5)
+    qtxt = ", ".join(quarter_label(q) for q in rep["quarters"]) or "All Quarters"
+    pdf.multi_cell(0, 6, "Vendor: " + rep["vendorName"] + (("   |   Vendor Code: " + rep["vendorCode"]) if rep["vendorCode"] else "")
+                   + "   |   Quarter: " + qtxt, align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+    widths = (12, 62, 38, 28, 33, 33, 28, 39)
+    aligns = ("CENTER", "LEFT", "CENTER", "CENTER", "RIGHT", "RIGHT", "CENTER", "LEFT")
+    pdf.set_font("Tamil", size=9.5)
+    head_style = FontFace(color=(255, 255, 255), fill_color=(30, 77, 140), emphasis="BOLD")
+    grp_style = FontFace(fill_color=(232, 238, 251), emphasis="BOLD")
+    sub_style = FontFace(fill_color=(238, 242, 248), emphasis="BOLD")
+    with pdf.table(col_widths=widths, text_align=aligns, headings_style=head_style,
+                   line_height=6, padding=1.2, borders_layout="ALL") as table:
+        h = table.row()
+        for t in PAID_REPORT_HEADERS:
+            h.cell(t, align="C")
+        for g in rep["groups"]:
+            gl = "QUARTER: " + g["quarterLabel"]
+            if g["setNo"]:
+                gl += "   |   BILL SET: " + g["setNo"]
+            if g["multi"]:
+                gl += "   |   GROUPED PAYMENT (" + str(len(g["magazines"])) + " magazines)"
+            gr = table.row()
+            gr.cell(gl, colspan=8, align="L", style=grp_style)
+            for x in g["rows"]:
+                r = table.row()
+                r.cell(str(x["sno"]))
+                r.cell(x["magazine"])
+                r.cell(x["invoiceNo"] or "-")
+                r.cell(x["invoiceDate"] or "-")
+                r.cell(indian_grouping(x["requestedAmt"]))
+                r.cell(indian_grouping(x["paidAmt"]))
+                r.cell(x["paidDate"] or "-")
+                r.cell(x["transactionNo"] or "-")
+            if g["multi"]:
+                sr = table.row()
+                sr.cell("GROUP TOTAL", colspan=4, align="R", style=sub_style)
+                sr.cell(indian_grouping(g["totalRequested"]), align="R", style=sub_style)
+                sr.cell(indian_grouping(g["totalPaid"]), align="R", style=sub_style)
+                sr.cell("", colspan=2, style=sub_style)
+        tr = table.row()
+        tr.cell("GRAND TOTAL", colspan=4, align="R", style=FontFace(fill_color=(255, 243, 196), emphasis="BOLD"))
+        tr.cell(indian_grouping(rep["totalRequested"]), align="R", style=FontFace(fill_color=(255, 243, 196), emphasis="BOLD"))
+        tr.cell(indian_grouping(rep["totalPaid"]), align="R", style=FontFace(fill_color=(255, 243, 196), emphasis="BOLD"))
+        tr.cell("", colspan=2, style=FontFace(fill_color=(255, 243, 196)))
+    pdf.ln(10)
+    if pdf.get_y() > 175:
+        pdf.add_page()
+    pdf.set_font("Tamil", size=11)
+    pdf.cell(0, 6, "District Library Officer", align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, "Dindigul", align="R", new_x="LMARGIN", new_y="NEXT")
+    return bytes(pdf.output())
+
+
+@app.route("/api/payments/paid-report")
+def api_paid_report():
+    """?magazine=...&quarter=Q1,Q2 (காலி = அனைத்து)&format=json|pdf|xlsx|csv"""
+    magazine = (request.args.get("magazine") or "").strip()
+    fmt = (request.args.get("format") or "json").strip().lower()
+    if not magazine:
+        return jsonify({"success": False, "message": "இதழைத் தேர்ந்தெடுக்கவும்."}), 400
+    quarters = get_quarters_arg()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            rep = build_paid_report(cur, magazine, quarters)
+    finally:
+        conn.close()
+    if rep is None:
+        return jsonify({"success": False, "message": "இதழ் Master-ல் இல்லை."}), 404
+    if fmt == "json":
+        return jsonify({"success": True, **rep})
+    base = rep["vendorCode"] or magazine
+    stem = re.sub(r"[^\w\-]+", "_", "Paid_Details_" + base + "_" + ("+".join(quarters) if quarters else "All")) \
+        + "_" + datetime.now().strftime("%Y%m%d")
+    try:
+        if fmt == "csv":
+            return send_file(io.BytesIO(paid_report_csv(rep)), mimetype="text/csv",
+                             as_attachment=True, download_name=stem + ".csv")
+        if fmt == "xlsx":
+            return send_file(io.BytesIO(paid_report_xlsx(rep)),
+                             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             as_attachment=True, download_name=stem + ".xlsx")
+        if fmt == "pdf":
+            return send_file(io.BytesIO(paid_report_pdf(rep)), mimetype="application/pdf",
+                             as_attachment=True, download_name=stem + ".pdf")
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"success": False, "message": f"{fmt.upper()} உருவாக்கத்தில் பிழை: {e}"}), 500
+    return jsonify({"success": False, "message": "format தவறு"}), 400
 
 
 if __name__ == "__main__":

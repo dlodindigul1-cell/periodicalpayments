@@ -576,6 +576,10 @@
         <p>தமிழ்நாடு அரசு நூலகத்துறை · மாவட்ட நூலக அலுவலகம், திண்டுக்கல்</p>
       </div>
       <div class="header-badge">2026–27</div>
+      <div id="userChip" style="display:none; margin-left:12px; background:rgba(255,255,255,.16); color:#fff; padding:7px 14px; border-radius:30px; font-size:13px; white-space:nowrap;">
+        👤 <span id="userName"></span>
+        <a href="/logout" style="color:#ffd88a; margin-left:10px; font-weight:700; text-decoration:none;">⎋ வெளியேறு</a>
+      </div>
     </div>
   </div>
 
@@ -660,7 +664,7 @@
             <span>Paid Magazine Details</span>
           </div>
         </div>
-        <div class="menu-card" onclick="showMastersDashboard()">
+        <div class="menu-card" id="menuMasterCard" style="display:none;" onclick="showMastersDashboard()">
           <div class="menu-icon">🗂️</div>
           <div class="menu-info">
             <div class="num">10</div>
@@ -1513,6 +1517,7 @@
 
   async function J(url, opts) {
     const r = await fetch(url, opts);
+    if (r.status === 401) { location.href = '/login'; throw new Error('மீண்டும் உள் நுழையவும்'); }
     let d = null;
     try { d = await r.json(); } catch (e) { throw new Error('சர்வர் பிழை (' + r.status + ')'); }
     return { ok: r.ok, d };
@@ -3528,51 +3533,76 @@
       }
     }
 
-    function showPaidMagDetail() {
+    // ─── தொகை வழங்கப்பட்ட அறிக்கை (English) — Vendor Code குழு + Quarter தேர்வு ───
+    const _pe = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    const _pm = n => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    function paidReportQuery(fmt) {
+      return new URLSearchParams({
+        magazine: document.getElementById('paidMagSelect').value,
+        quarter: QSel.csv('paidQuarter'),
+        format: fmt
+      }).toString();
+    }
+
+    function downloadPaidReport(fmt) {
+      if (!document.getElementById('paidMagSelect').value) return;
+      const a = document.createElement('a');
+      a.href = '/api/payments/paid-report?' + paidReportQuery(fmt);
+      a.style.display = 'none';
+      document.body.appendChild(a); a.click();
+      setTimeout(() => a.remove(), 1000);
+    }
+
+    async function showPaidMagDetail() {
       const mag = document.getElementById('paidMagSelect').value;
       const card = document.getElementById('paidDetailCard');
       if (!mag) { card.style.display = 'none'; return; }
+      setStatus('paidStatus', 'loading', '<span class="spinner dark"></span> தரவு ஏற்றப்படுகிறது...');
+      let d;
+      try {
+        const res = await fetch('/api/payments/paid-report?' + paidReportQuery('json'));
+        if (res.status === 401) { location.href = '/login'; return; }
+        d = await res.json();
+      } catch (e) { setStatus('paidStatus', 'error', '❌ பிழை: ' + e.message); return; }
+      if (!d.success) { setStatus('paidStatus', 'error', '❌ ' + d.message); card.style.display = 'none'; return; }
+      clearStatus('paidStatus');
 
-      const rows = _paidAllRows.filter(r => r.magazine === mag);
-      if (rows.length === 0) { card.style.display = 'none'; return; }
+      const qtxt = (d.quarters || []).map(q => q.replace('-Q', ' Q')).join(', ') || 'All Quarters';
+      document.getElementById('paidDetailTitle').textContent = '📋 ' + d.magazine;
+      document.getElementById('paidVendorInfo').innerHTML =
+        '<b>Vendor:</b> ' + _pe(d.vendorName) +
+        (d.vendorCode ? ' &nbsp;|&nbsp; <b>Vendor Code:</b> ' + _pe(d.vendorCode) : '') +
+        ' &nbsp;|&nbsp; <b>Quarter:</b> ' + _pe(qtxt) +
+        (d.vendorMagazines.length > 1 ? '<br><b>Magazines under this Vendor Code:</b> ' + d.vendorMagazines.map(_pe).join(', ') : '');
 
-      document.getElementById('paidDetailTitle').textContent = '📋 ' + mag;
-
-      // Stats
-      const totalReq  = rows.reduce((s, r) => s + r.requestedAmt, 0);
-      const totalPaid = rows.reduce((s, r) => s + r.paidAmt, 0);
-      const diff      = totalReq - totalPaid;
-      document.getElementById('paidStatsRow').innerHTML = [
-        { icon:'📄', label:'மொத்த பதிவுகள்',       value: rows.length },
-        { icon:'💰', label:'கோரப்பட்ட மொத்தம்',    value: '₹ ' + totalReq.toLocaleString('en-IN',{minimumFractionDigits:2}) },
-        { icon:'✅', label:'வழங்கப்பட்ட மொத்தம்',  value: '₹ ' + totalPaid.toLocaleString('en-IN',{minimumFractionDigits:2}) },
-        { icon:'⚖️', label:'பிடித்தம்',            value: '₹ ' + diff.toLocaleString('en-IN',{minimumFractionDigits:2}) },
-      ].map(s => `
-        <div style="background:var(--card);border:1.5px solid var(--border);border-radius:12px;padding:16px;text-align:center;box-shadow:var(--shadow);">
-          <div style="font-size:22px;margin-bottom:4px;">${s.icon}</div>
-          <div style="font-size:17px;font-weight:700;color:var(--navy);">${s.value}</div>
-          <div style="font-size:12px;color:var(--muted);margin-top:2px;">${s.label}</div>
-        </div>`).join('');
-
-      // Table rows
-      document.getElementById('paidDetailTableBody').innerHTML = rows.map(r => `
-        <tr>
-          <td style="font-weight:600;">${r.invoiceNo || '—'}</td>
-          <td class="ctr">${r.invoiceDate || '—'}</td>
-          <td class="num">₹ ${r.requestedAmt.toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
-          <td class="num" style="color:var(--success-fg); font-weight:600;">₹ ${r.paidAmt.toLocaleString('en-IN',{minimumFractionDigits:2})}</td>
-          <td class="ctr">${r.paidDate || '—'}</td>
-          <td class="ctr">
-            ${r.mailSent
-              ? `<span style="color:var(--success-fg); font-weight:600;">✅ மெயில் அனுப்பப்பட்டுள்ளது</span>
-                 ${r.pdfUrl ? `<br><a href="${r.pdfUrl}" target="_blank" style="font-size:12px; color:var(--blue); text-decoration:underline;">📄 PDF Download</a>` : ''}`
-              : `<span style="color:var(--muted);">— அனுப்பவில்லை</span>`
-            }
-          </td>
-        </tr>`).join('');
-
+      let h = '';
+      if (!d.groups.length) {
+        h = '<tr><td colspan="8" class="ctr" style="padding:22px; color:var(--muted);">No paid records found for the selected quarter(s).</td></tr>';
+      }
+      d.groups.forEach(g => {
+        let lbl = 'QUARTER: ' + g.quarterLabel;
+        if (g.setNo) lbl += ' &nbsp;|&nbsp; BILL SET: ' + _pe(g.setNo);
+        if (g.multi) lbl += ' &nbsp;|&nbsp; GROUPED PAYMENT (' + g.magazines.length + ' magazines)';
+        h += '<tr class="grp-head"><td colspan="8">' + lbl + '</td></tr>';
+        g.rows.forEach(r => {
+          h += '<tr class="grp-item"><td class="ctr">' + r.sno + '</td><td>' + _pe(r.magazine) + '</td>' +
+               '<td>' + _pe(r.invoiceNo || '—') + '</td><td class="ctr">' + _pe(r.invoiceDate || '—') + '</td>' +
+               '<td class="num">' + _pm(r.requestedAmt) + '</td>' +
+               '<td class="num" style="color:var(--success-fg); font-weight:600;">' + _pm(r.paidAmt) + '</td>' +
+               '<td class="ctr">' + _pe(r.paidDate || '—') + '</td><td>' + _pe(r.transactionNo || '—') + '</td></tr>';
+        });
+        if (g.multi) {
+          h += '<tr class="grp-total"><td colspan="4" style="text-align:right;">GROUP TOTAL</td>' +
+               '<td class="num">' + _pm(g.totalRequested) + '</td><td class="num">' + _pm(g.totalPaid) + '</td><td colspan="2"></td></tr>';
+        }
+      });
+      if (d.groups.length) {
+        h += '<tr class="grp-total"><td colspan="4" style="text-align:right;">GRAND TOTAL</td>' +
+             '<td class="num">' + _pm(d.totalRequested) + '</td><td class="num">' + _pm(d.totalPaid) + '</td><td colspan="2"></td></tr>';
+      }
+      document.getElementById('paidDetailTableBody').innerHTML = h;
       card.style.display = 'block';
-      card.scrollIntoView({ behavior: 'smooth' });
     }
     // ════ Payment Voucher Creation Functions ════
 
@@ -3727,6 +3757,10 @@
               <option value="">-- இதழைத் தேர்ந்தெடுக்கவும் --</option>
             </select>
           </div>
+          <div>
+            <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Quarter (ஒன்று அல்லது பல)</label>
+            <div class="qsel" id="paidQuarter" data-onchange="showPaidMagDetail"></div>
+          </div>
           <div style="align-self:flex-end;">
             <button class="btn-secondary" onclick="loadPaidMagazines()">🔄 புதுப்பி</button>
           </div>
@@ -3737,22 +3771,25 @@
       <!-- Detail Card -->
       <div id="paidDetailCard" style="display:none;">
         <div class="card">
-          <div class="card-title" id="paidDetailTitle">விவரம்</div>
-
-          <!-- Stats row -->
-          <div id="paidStatsRow" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:12px; margin-bottom:20px;"></div>
-
-          <!-- Detail Table -->
-          <div class="data-table-wrap">
+          <div class="card-title" id="paidDetailTitle">Details</div>
+          <div id="paidVendorInfo" style="font-size:14px; color:var(--text); margin-bottom:12px;"></div>
+          <div class="btn-row" style="margin:0 0 14px;">
+            <button class="btn-primary" onclick="downloadPaidReport('pdf')">⬇️ PDF</button>
+            <button class="btn-secondary" onclick="downloadPaidReport('xlsx')">⬇️ Excel</button>
+            <button class="btn-secondary" onclick="downloadPaidReport('csv')">⬇️ CSV</button>
+          </div>
+          <div class="data-table-wrap" style="max-height:560px;">
             <table class="data-table">
               <thead>
                 <tr>
-                  <th style="width:120px;">பட்டியல் எண்</th>
-                  <th style="width:100px;">பட்டியல் நாள்</th>
-                  <th style="width:110px; text-align:right;">கோரப்பட்ட தொகை</th>
-                  <th style="width:110px; text-align:right;">வழங்கப்பட்ட தொகை</th>
-                  <th style="width:100px;">வழங்கப்பட்ட நாள்</th>
-                  <th style="width:160px;">மெயில் நிலை</th>
+                  <th class="ctr">S.NO</th>
+                  <th>MAGAZINE</th>
+                  <th>INVOICE NUMBER</th>
+                  <th>INVOICE DATE</th>
+                  <th style="text-align:right;">REQUESTED AMOUNT</th>
+                  <th style="text-align:right;">PAID AMOUNT</th>
+                  <th>PAID DATE</th>
+                  <th>BANK TRANSACTION NUMBER</th>
                 </tr>
               </thead>
               <tbody id="paidDetailTableBody"></tbody>
@@ -3829,6 +3866,26 @@ function _pdfHelper(fnName, targetId) {
             <div style="font-size:16px; font-weight:700; color:var(--navy);">Payment Details</div>
             <div style="font-size:13px; color:var(--muted); margin-top:3px;">எல்லா பதிவுகளும் (A–V) — CSV / Excel / PDF பதிவிறக்கம்</div>
           </div>
+        </div>
+        <div class="menu-card" onclick="showMastersUsers()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
+          <div style="font-size:36px;">🔐</div>
+          <div>
+            <div style="font-size:16px; font-weight:700; color:var(--navy);">பயனர் கணக்கு</div>
+            <div style="font-size:13px; color:var(--muted); margin-top:3px;">Username / Password மாற்று (admin &amp; Section)</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════ USERS PANEL ══════════ -->
+      <div id="mastersUsersPanel" class="master-panel" style="display:none;">
+        <div class="card">
+          <div class="card-title">🔐 பயனர் கணக்கு — Username / Password மாற்று</div>
+          <p style="font-size:13px; color:var(--muted); margin:0 0 12px;">Password காலியாக விட்டால் பழைய Password அப்படியே இருக்கும். புதிய Password குறைந்தது 6 எழுத்துகள்.</p>
+          <div id="usersList"></div>
+          <div id="usersStatus" class="status"></div>
+        </div>
+        <div style="margin-top:8px;">
+          <button class="btn-secondary" onclick="showMastersDashboard()">← Master Data-க்கு</button>
         </div>
       </div>
 
@@ -4173,6 +4230,57 @@ function _pdfHelper(fnName, targetId) {
       document.getElementById('mastersVendorPanel').style.display = 'none';
       document.getElementById('mastersDeleteTxnPanel').style.display = 'none';
       document.getElementById('mastersPaymentsPanel').style.display = 'none';
+      document.getElementById('mastersUsersPanel').style.display = 'none';
+    }
+
+    // ─── பயனர் கணக்கு (admin மட்டும்) ───
+    const _uEsc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    async function showMastersUsers() {
+      hideMasterPanels();
+      document.getElementById('mastersUsersPanel').style.display = 'block';
+      clearStatus('usersStatus');
+      const box = document.getElementById('usersList');
+      box.innerHTML = 'ஏற்றப்படுகிறது...';
+      try {
+        const res = await fetch('/api/admin/users');
+        const d = await res.json();
+        if (!d.success) { box.innerHTML = ''; setStatus('usersStatus', 'error', '❌ ' + (d.message || 'பிழை')); return; }
+        box.innerHTML = d.users.map(u => `
+          <div style="border:1.5px solid var(--border); border-radius:12px; padding:14px 16px; margin-bottom:14px;">
+            <div style="font-weight:700; color:var(--navy); margin-bottom:10px;">
+              ${u.role === 'admin' ? '👑 Admin — முழு அணுகல் (Master உட்பட)' : '🧾 Section — Master தவிர மற்ற அனைத்தும்'}
+            </div>
+            <div class="field-row">
+              <div class="field"><label>Username</label>
+                <input type="text" id="usr_name_${u.id}" value="${_uEsc(u.username)}" autocomplete="off"></div>
+              <div class="field"><label>புதிய Password</label>
+                <input type="password" id="usr_pw_${u.id}" autocomplete="new-password" placeholder="மாற்ற வேண்டுமெனில் மட்டும்"></div>
+              <div class="field"><label>Password மீண்டும்</label>
+                <input type="password" id="usr_pw2_${u.id}" autocomplete="new-password"></div>
+            </div>
+            <button class="btn-primary" onclick="saveUserAccount(${u.id})">💾 சேமி</button>
+          </div>`).join('');
+      } catch (e) { box.innerHTML = ''; setStatus('usersStatus', 'error', '❌ ' + e.message); }
+    }
+    async function saveUserAccount(id) {
+      const username = document.getElementById('usr_name_' + id).value.trim();
+      const pw = document.getElementById('usr_pw_' + id).value;
+      const pw2 = document.getElementById('usr_pw2_' + id).value;
+      if (pw !== pw2) { setStatus('usersStatus', 'error', '❌ இரண்டு Password-களும் ஒன்றாக இல்லை.'); return; }
+      try {
+        const res = await fetch('/api/admin/update-user', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, username, newPassword: pw })
+        });
+        const d = await res.json();
+        setStatus('usersStatus', d.success ? 'success' : 'error', d.success ? d.message : '❌ ' + d.message);
+        if (d.success) {
+          document.getElementById('usr_pw_' + id).value = '';
+          document.getElementById('usr_pw2_' + id).value = '';
+          if (window.ME && window.ME.id === id) { window.ME.username = username; document.getElementById('userName').textContent = username; }
+          loadMeAndApplyRole();
+        }
+      } catch (e) { setStatus('usersStatus', 'error', '❌ ' + e.message); }
     }
 
     // ─── Payment Details (A–V) — பார்வை + CSV / Excel / PDF ───
@@ -4950,6 +5058,30 @@ window.QSel = (function () {
   });
 
   return { mount, get, csv, label, reload };
+})();
+</script>
+
+<script>
+/* உள் நுழைந்த பயனர் — பெயர், வெளியேறு பட்டன்; Master Data admin-க்கு மட்டும் */
+async function loadMeAndApplyRole() {
+  try {
+    const r = await fetch('/api/me');
+    if (r.status === 401) { location.href = '/login'; return; }
+    const d = await r.json();
+    window.ME = d;
+    document.getElementById('userName').textContent = d.username || '';
+    document.getElementById('userChip').style.display = d.username ? 'inline-block' : 'none';
+    const mc = document.getElementById('menuMasterCard');
+    if (mc) mc.style.display = (d.role === 'admin') ? '' : 'none';
+  } catch (e) { /* புறக்கணி */ }
+}
+(function () {
+  const f = window.showMastersDashboard;
+  window.showMastersDashboard = function () {
+    if (!window.ME || window.ME.role !== 'admin') { alert('Master Data Admin-க்கு மட்டுமே.'); return; }
+    return f.apply(this, arguments);
+  };
+  loadMeAndApplyRole();
 })();
 </script>
 
