@@ -441,12 +441,15 @@
       border-radius: 18px;
       box-shadow: var(--shadow-lg);
       overflow: hidden;
+      display: flex; flex-direction: column;
+      max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px);
       transform: translateY(18px) scale(.96);
       transition: transform .25s cubic-bezier(.2,.9,.3,1.2);
       font-family: 'Noto Sans Tamil', sans-serif;
     }
     .cc-overlay.show .cc-card { transform: none; }
     .cc-head {
+      flex: 0 0 auto;
       display: flex; align-items: center; gap: 14px;
       padding: 18px 22px;
       background: linear-gradient(135deg, var(--navy), var(--blue));
@@ -462,7 +465,7 @@
     }
     .cc-title { font-size: 17px; font-weight: 700; line-height: 1.3; }
     .cc-sub   { font-size: 12.5px; opacity: .8; margin-top: 2px; }
-    .cc-body  { padding: 20px 22px 6px; color: var(--text); max-height: 65vh; overflow-y: auto; }
+    .cc-body  { padding: 20px 22px 6px; color: var(--text); flex: 1 1 auto; min-height: 0; overflow-y: auto; }
     .cc-name  {
       font-size: 18px; font-weight: 700; color: var(--navy);
       margin-bottom: 14px; word-break: break-word;
@@ -494,8 +497,12 @@
     .cc-row span { color: var(--muted); flex: 0 0 auto; }
     .cc-row b    { color: var(--navy); word-break: break-word; }
     .cc-ask   { margin-top: 16px; font-size: 14.5px; font-weight: 600; text-align: center; color: var(--text); }
+    .cc-jumps-label { margin-top: 16px; font-size: 13px; font-weight: 700; color: var(--navy); }
+    .cc-jumps { margin-top: 8px; margin-bottom: 14px; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+    .cc-jumps .cc-btn { flex: none; width: 100%; padding: 10px 12px; font-size: 13px; }
     .cc-actions {
-      display: flex; gap: 10px; padding: 16px 22px 20px;
+      flex: 0 0 auto; border-top: 1px solid var(--border); background: var(--card);
+      display: flex; gap: 10px; padding: 14px 22px 18px;
       flex-wrap: wrap; justify-content: flex-end;
     }
     .cc-btn {
@@ -1755,13 +1762,29 @@
             close(null);
           }
         }
+        // "➡️ தாவல்" பொத்தான்கள் (value = object) 3-க்கு மேல் இருந்தால் scroll ஆகும் உள்ளடக்கப் பகுதியில் வைக்கவும்;
+        // "சரி / தொடர்கிறேன் / ரத்து" பொத்தான்கள் கீழே எப்போதும் தெரியும்படி நிலையாக இருக்கும்.
+        const _isJump = b => b.value && typeof b.value === 'object';
+        const jumpBtns = btns.filter(_isJump);
+        const useJumps = jumpBtns.length > 3;
+        let jumpsBox = null;
+        if (useJumps) {
+          const body = ov.querySelector('.cc-body');
+          const lbl = document.createElement('div');
+          lbl.className = 'cc-jumps-label';
+          lbl.textContent = '➡️ நேரடியாகச் செல்ல (' + jumpBtns.length + '):';
+          jumpsBox = document.createElement('div');
+          jumpsBox.className = 'cc-jumps';
+          body.appendChild(lbl);
+          body.appendChild(jumpsBox);
+        }
         btns.forEach(b => {
           const el = document.createElement('button');
           el.type = 'button';
           el.className = 'cc-btn ' + (b.style || 'ghost');
           el.textContent = b.label;
           el.onclick = () => close(b.value);
-          actions.appendChild(el);
+          (useJumps && _isJump(b) ? jumpsBox : actions).appendChild(el);
         });
         ov.addEventListener('mousedown', e => { if (e.target === ov && !opts.locked) close(null); });
         document.addEventListener('keydown', onKey, true);
