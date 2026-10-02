@@ -1850,21 +1850,30 @@ def api_group_status():
                 (code, magazine),
             )
             names = {r["name"] for r in cur.fetchall()}
-            if not names:
-                return jsonify({"success": True, "code": code, "vendorName": vendor, "siblings": []})
 
+            # மற்ற Quarter-களில் Invoice பதிவாகி, இன்னும் தொகை வழங்காதவை —
+            # தேர்ந்தெடுத்த இதழ் + அதே Vendor Code-ன் அனைத்து இதழ்களும் (தற்போதைய Quarter தவிர)
             cur.execute(
-                "SELECT magazine, part, months, quarter, payment_date, paid_amt, requested_amt, voucher_no, bill_set_no "
-                "FROM payments WHERE quarter=%s AND magazine = ANY(%s) ORDER BY magazine, part",
-                (quarter, list(names)),
+                "SELECT magazine, part, months, quarter, requested_amt FROM payments "
+                "WHERE magazine = ANY(%s) AND quarter<>%s AND payment_date IS NULL "
+                "ORDER BY quarter, magazine, part",
+                (list(names | {magazine}), quarter),
             )
-            pay = {}
-            for r in cur.fetchall():
-                pay.setdefault(r["magazine"], []).append(r)
-            cur.execute("SELECT name, periodicity FROM magazines WHERE name = ANY(%s)", (list(names),))
-            ticks = {x["name"] for x in cur.fetchall() if uses_month_tick(x["periodicity"])}
-            # carry-forward இதழ்கள் குழுவில் வரக்கூடாது — அந்த Quarter-க்கு நேரடி Master பதிவு உள்ளவை மட்டும்
-            in_quarter = get_direct_master_magazines_for_quarter(cur, quarter)
+            other_pending = cur.fetchall()
+
+            pay, ticks, in_quarter = {}, set(), set()
+            if names:
+                cur.execute(
+                    "SELECT magazine, part, months, quarter, payment_date, paid_amt, requested_amt, voucher_no, bill_set_no "
+                    "FROM payments WHERE quarter=%s AND magazine = ANY(%s) ORDER BY magazine, part",
+                    (quarter, list(names)),
+                )
+                for r in cur.fetchall():
+                    pay.setdefault(r["magazine"], []).append(r)
+                cur.execute("SELECT name, periodicity FROM magazines WHERE name = ANY(%s)", (list(names),))
+                ticks = {x["name"] for x in cur.fetchall() if uses_month_tick(x["periodicity"])}
+                # carry-forward இதழ்கள் குழுவில் வரக்கூடாது — அந்த Quarter-க்கு நேரடி Master பதிவு உள்ளவை மட்டும்
+                in_quarter = get_direct_master_magazines_for_quarter(cur, quarter)
 
         siblings = []
         for name in sorted(names):
@@ -1893,6 +1902,12 @@ def api_group_status():
                     "magazine": name, "part": 1, "status": "no_invoice", "partialMissing": True,
                     "label": "%s — %s Invoice பதிவாகவில்லை" % (name, month_span_text(quarter, ",".join(str(x) for x in miss))),
                 })
+        for p in other_pending:
+            siblings.append({
+                "magazine": p["magazine"], "label": row_label(p), "part": p["part"], "status": "pending",
+                "requestedAmt": float(p["requested_amt"] or 0),
+                "quarter": p["quarter"], "quarterLabel": quarter_label(p["quarter"]), "otherQuarter": True,
+            })
         return jsonify({"success": True, "code": code, "vendorName": vendor, "siblings": siblings})
     finally:
         conn.close()

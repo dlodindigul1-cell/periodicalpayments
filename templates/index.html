@@ -2848,17 +2848,38 @@
 
     // ─── ஒரே Vendor/Beneficiary Code குழு: நிலை பட்டியல் HTML ───
     function _groupStatusRows(siblings) {
-      return '<div class="gs-list">' + siblings.map(x => {
+      const row = x => {
+        const qtag = x.otherQuarter ? ' <span style="font-weight:600; color:#a15c00;">[' + _ccEsc(x.quarterLabel || x.quarter) + ']</span>' : '';
         if (x.status === 'paid')
           return '<div class="gs-row"><span class="gs-ic">✅</span><span class="gs-name">' + _ccEsc(x.label || x.magazine) +
                  '</span><span class="gs-note">வழங்கப்பட்டது' + (x.billSetNo ? ' · Set ' + _ccEsc(x.billSetNo) : '') + '<br>' +
                  _ccEsc(x.paymentDate || '') + ' · ₹ ' + _fmtAmt(x.paidAmt) + '</span></div>';
         if (x.status === 'pending')
-          return '<div class="gs-row pending"><span class="gs-ic">⏳</span><span class="gs-name">' + _ccEsc(x.label || x.magazine) +
+          return '<div class="gs-row pending"><span class="gs-ic">⏳</span><span class="gs-name">' + _ccEsc(x.label || x.magazine) + qtag +
                  '</span><span class="gs-note">வழங்க வேண்டும்<br>Bill ₹ ' + _fmtAmt(x.requestedAmt) + '</span></div>';
         return '<div class="gs-row noinv"><span class="gs-ic">❗</span><span class="gs-name">' + _ccEsc(x.label || x.magazine) +
                '</span><span class="gs-note">' + (x.partialMissing ? 'நிலுவை' : 'Invoice பதிவாகவில்லை') + '</span></div>';
-      }).join('') + '</div>';
+      };
+      const cur = siblings.filter(x => !x.otherQuarter);
+      const oth = siblings.filter(x => x.otherQuarter);
+      let h = '';
+      if (cur.length) h += '<div class="gs-list">' + cur.map(row).join('') + '</div>';
+      if (oth.length)
+        h += '<div style="margin-top:14px; font-weight:700; color:#a15c00;">📅 மற்ற Quarter-களில் Invoice பதிவாகி, தொகை வழங்க வேண்டியவை (' + oth.length + ')</div>' +
+             '<div class="gs-list">' + oth.map(row).join('') + '</div>';
+      return h;
+    }
+
+    // தேர்ந்தெடுத்த Quarter / இதழ் / Part-க்குத் திரையை மாற்ற
+    async function _gotoPayment(quarter, magazine, part) {
+      _skipGroupPopupOnce = true;
+      try {
+        document.getElementById('quarterSelect').value = quarter;
+        await loadMagazinesForQuarter();
+        document.getElementById('magazineSelect').value = magazine;
+        _wantPart = part || 1;
+        await loadNonSupplyData();
+      } finally { _skipGroupPopupOnce = false; _wantPart = null; }
     }
 
     // ─── இதழைத் தேர்ந்தெடுத்ததும்: ஒரே நிறுவனத்தின் மற்ற இதழ்கள் — எச்சரிக்கை மட்டும் (தடை இல்லை) ───
@@ -2870,19 +2891,31 @@
         });
       } catch (e) { return; }   // popup பெற முடியாவிட்டாலும் படிவம் தொடரட்டும்
       if (!gs || !gs.siblings || gs.siblings.length === 0) return;
-      await showConfirmCard({
+      const otherPend = gs.siblings.filter(x => x.otherQuarter && x.status === 'pending');
+      const hasCur = gs.siblings.some(x => !x.otherQuarter);
+      const chosen = await showConfirmCard({
         icon: '⚠️',
-        title: 'ஒரே நிறுவனத்தின் மற்ற இதழ்கள்',
+        title: otherPend.length ? 'தொகை வழங்க வேண்டிய மற்ற இதழ்கள் / Quarter-கள்' : 'ஒரே நிறுவனத்தின் மற்ற இதழ்கள்',
         subtitle: (gs.vendorName || '') + ' · Code: ' + gs.code + ' · ' + quarter,
         wide: true,
         html:
-          '<div class="cc-msg"><b>' + _ccEsc(magazine) + '</b> இதழின் நிறுவனத்துக்கு இந்த Quarter-ல் கீழ்க்காணும் இதழ்களும் உள்ளன. ' +
-          '<b>இவற்றுக்கும் அதே Set எண்ணில்</b> தொகை வழங்கினால் ஒரே Bank Transaction-ஆகவும் ஒரே மெயில்/PDF-ஆகவும் செல்லும். ' +
-          'வேறு Set எண்ணில் அல்லது தனியாக வழங்கினால் தனித்தனியாகச் செல்லும். ' +
-          '<i>(இது எச்சரிக்கை மட்டுமே — வழக்கம்போல் தொடரலாம்.)</i></div>' +
+          (hasCur
+            ? '<div class="cc-msg"><b>' + _ccEsc(magazine) + '</b> இதழின் நிறுவனத்துக்கு இந்த Quarter-ல் கீழ்க்காணும் இதழ்களும் உள்ளன. ' +
+              '<b>இவற்றுக்கும் அதே Set எண்ணில்</b> தொகை வழங்கினால் ஒரே Bank Transaction-ஆகவும் ஒரே மெயில்/PDF-ஆகவும் செல்லும். ' +
+              'வேறு Set எண்ணில் அல்லது தனியாக வழங்கினால் தனித்தனியாகச் செல்லும்.</div>'
+            : '') +
+          (otherPend.length
+            ? '<div class="cc-msg" style="margin-top:8px;"><b>⚠️ மற்ற Quarter-களிலும் Invoice பதிவாகி, இன்னும் தொகை வழங்கப்படவில்லை — அவற்றுக்கும் தொகை வழங்க வேண்டும்.</b> ' +
+              'அதே Set எண்ணில் வழங்கினால் ஒரே தொகை வழங்கலாகக் காட்டப்படும்.</div>'
+            : '') +
+          '<div class="cc-msg"><i>(இது நினைவூட்டல் மட்டுமே — வழக்கம்போல் தொடரலாம்.)</i></div>' +
           _groupStatusRows(gs.siblings),
-        buttons: [{ label: '✅ சரி, தொடர்கிறேன்', value: true, style: 'primary' }]
+        buttons: otherPend.map(x => ({
+          label: '➡️ ' + (x.quarterLabel || x.quarter) + ' — ' + (x.label || x.magazine),
+          value: { quarter: x.quarter, magazine: x.magazine, part: x.part || 1 }, style: 'ghost'
+        })).concat([{ label: '✅ சரி, தொடர்கிறேன்', value: null, style: 'primary' }])
       });
+      if (chosen && chosen.quarter) await _gotoPayment(chosen.quarter, chosen.magazine, chosen.part);
     }
 
     // ─── சேமித்தபின்: குழுவில் மீதமுள்ளவை + ஒரே கிளிக்கில் அடுத்த இதழுக்குச் செல் ───
@@ -2895,7 +2928,7 @@
       } catch (e) { return; }
       if (!gs || !gs.siblings || gs.siblings.length === 0) return;
       const pending = gs.siblings.filter(x => x.status === 'pending');
-      const buttons = pending.map(x => ({ label: '➡️ ' + (x.label || x.magazine), value: { magazine: x.magazine, part: x.part || 1 }, style: 'primary' }));
+      const buttons = pending.map(x => ({ label: '➡️ ' + (x.otherQuarter ? (x.quarterLabel || x.quarter) + ' — ' : '') + (x.label || x.magazine), value: { quarter: x.quarter || quarter, magazine: x.magazine, part: x.part || 1 }, style: 'primary' }));
       buttons.push({ label: pending.length ? 'பிறகு பார்க்கிறேன்' : '✔️ சரி', value: null, style: 'ghost' });
       const chosen = await showConfirmCard({
         icon: pending.length ? '⏳' : '✅',
@@ -2912,14 +2945,7 @@
         buttons
       });
       if (!chosen) return;
-      _skipGroupPopupOnce = true;
-      try {
-        document.getElementById('quarterSelect').value = quarter;
-        await loadMagazinesForQuarter();
-        document.getElementById('magazineSelect').value = chosen.magazine;
-        _wantPart = chosen.part;
-        await loadNonSupplyData();
-      } finally { _skipGroupPopupOnce = false; _wantPart = null; }
+      await _gotoPayment(chosen.quarter || quarter, chosen.magazine, chosen.part);
     }
 
     // ─── Reports ───
