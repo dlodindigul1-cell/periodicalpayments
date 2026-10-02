@@ -5266,6 +5266,48 @@ function _pdfHelper(fnName, targetId) {
       }
     }
 
+    // ─── Magazine Master: இதழை முழுமையாக நீக்கு ───
+    async function _postDeleteMagazine(name, force) {
+      const res = await fetch('/api/admin/delete-magazine', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, force: !!force })
+      });
+      return res.json();
+    }
+
+    async function deleteMasterMagazineFully(name) {
+      const ok = await showConfirmCard({
+        icon: '❌',
+        title: 'இதழை முழுமையாக நீக்கு',
+        subtitle: 'இதழ் + அதன் அனைத்து Quarter விலைப் பதிவுகளும் நீக்கப்படும்',
+        html:
+          '<div class="cc-list">' +
+            '<div class="cc-row"><span>இதழ்:</span><b>' + _ccEsc(name) + '</b></div>' +
+          '</div>' +
+          '<div class="cc-ask">Vendor / வங்கி விவரங்களும் சேர்ந்து நீக்கப்படும். தொடரலாமா?</div>',
+        buttons: [
+          { label: 'ரத்து', value: false, style: 'ghost' },
+          { label: 'ஆம், நீக்கு', value: true, style: 'danger' }
+        ]
+      });
+      if (!ok) return;
+      try {
+        let result = await _postDeleteMagazine(name, false);
+        if (result.blocked) {
+          const typed = prompt(
+            result.message + '\n\nஇவையும் சேர்த்து நிரந்தரமாக நீக்கப்படும். உறுதிப்படுத்த இதழ் பெயரை அப்படியே தட்டச்சு செய்யவும்:\n' + name);
+          if (typed === null) return;
+          if (typed.trim() !== name) { alert('பெயர் பொருந்தவில்லை — நீக்கம் ரத்து செய்யப்பட்டது.'); return; }
+          result = await _postDeleteMagazine(name, true);
+        }
+        alert(result.message);
+        if (result.success) loadMasterMagazinesList();
+      } catch (e) {
+        alert('பிழை: ' + e.message);
+      }
+    }
+
     // ─── Magazine Master: List ───
     async function loadMasterMagazinesList() {
       const tbody = document.getElementById('masterMagTableBody');
@@ -5305,7 +5347,8 @@ function _pdfHelper(fnName, targetId) {
           '<td class="ctr">' + _qtrAddSelectHtml(r) + '</td>' +
           '<td class="ctr">' +
             '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="editMasterMagazine(\'' + r.name.replace(/'/g, "\\'") + '\')">✏️</button> ' +
-            '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="deleteMasterMagazineQuarters(\'' + r.name.replace(/'/g, "\\'") + '\')">🗑️</button>' +
+            '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="deleteMasterMagazineQuarters(\'' + r.name.replace(/'/g, "\\'") + '\')">🗑️</button> ' +
+            '<button class="btn-secondary" title="இதழை முழுமையாக நீக்கு" style="padding:4px 10px;font-size:12px;color:#c0392b;" onclick="deleteMasterMagazineFully(\'' + r.name.replace(/'/g, "\\'") + '\')">❌</button>' +
           '</td>' +
         '</tr>'
       )).join('');

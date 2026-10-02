@@ -2349,6 +2349,61 @@ def api_admin_delete_magazine_quarters():
         conn.close()
 
 
+@app.route("/api/admin/delete-magazine", methods=["POST"])
+def api_admin_delete_magazine():
+    """இதழை முழுமையாக நீக்கும் (magazines + magazine_quarters).
+    body: {name, force?}
+      - அந்த இதழுக்கு Payments / Vouchers / Despatch பதிவுகள் இருந்தால், force=true இல்லாமல் நீக்காது;
+        எண்ணிக்கையுடன் blocked=true திருப்பித் தரும்.
+      - force=true -> அந்தப் பதிவுகளையும் சேர்த்து நீக்கும் (ஒரே transaction; பிழை வந்தால் rollback)."""
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    force = bool(data.get("force"))
+    if not name:
+        return jsonify({"success": False, "message": "Magazine Name அவசியம்."}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM magazines WHERE name=%s", (name,))
+            mag = cur.fetchone()
+            if not mag:
+                return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை."}), 404
+
+            cur.execute("SELECT COUNT(*) AS c FROM payments WHERE magazine=%s", (name,))
+            n_pay = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) AS c FROM vouchers WHERE magazine=%s", (name,))
+            n_vou = cur.fetchone()["c"]
+            cur.execute("SELECT COUNT(*) AS c FROM despatch_nonsupply WHERE magazine=%s", (name,))
+            n_des = cur.fetchone()["c"]
+
+            if (n_pay or n_vou or n_des) and not force:
+                return jsonify({
+                    "success": False, "blocked": True,
+                    "payments": n_pay, "vouchers": n_vou, "despatch": n_des,
+                    "message": f"'{name}' இதழுக்கு Payments {n_pay}, Vouchers {n_vou}, "
+                               f"Despatch/Non-supply {n_des} பதிவுகள் உள்ளன.",
+                }), 409
+
+            if force:
+                cur.execute("DELETE FROM vouchers WHERE magazine=%s", (name,))
+                cur.execute("DELETE FROM payments WHERE magazine=%s", (name,))
+                cur.execute("DELETE FROM despatch_nonsupply WHERE magazine=%s", (name,))
+            cur.execute("DELETE FROM magazine_quarters WHERE magazine_id=%s", (mag["id"],))
+            n_q = cur.rowcount
+            cur.execute("DELETE FROM magazines WHERE id=%s", (mag["id"],))
+            conn.commit()
+        msg = f"'{name}' இதழ் முழுமையாக நீக்கப்பட்டது ({n_q} quarter விலைப் பதிவு(கள்))."
+        if force and (n_pay or n_vou or n_des):
+            msg += f" Payments {n_pay}, Vouchers {n_vou}, Despatch {n_des} பதிவுகளும் நீக்கப்பட்டன."
+        return jsonify({"success": True, "message": msg})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @app.route("/api/admin/payment-delete", methods=["POST"])
 def api_admin_payment_delete():
     """Payment Details Delete — தொகை வழங்கியதை (Payment stage) மட்டும் நீக்கி,
