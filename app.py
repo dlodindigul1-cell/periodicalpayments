@@ -2986,6 +2986,41 @@ def api_report_payment_status():
         conn.close()
 
 
+@app.route("/api/reports/unpaid")
+def api_report_unpaid():
+    """இன்னும் தொகை வழங்கப்படாதவை — Invoice பெறப்பட்டு (payments-ல் பதிவு உள்ளது), payment_date இல்லாதவை.
+    ?quarter=Q1  /  ?quarter=Q1,Q2  /  காலி = அனைத்து Quarter-களும்."""
+    quarters = get_quarters_arg()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            sql = ("SELECT * FROM payments WHERE payment_date IS NULL "
+                   "AND (COALESCE(TRIM(invoice_no),'')<>'' OR COALESCE(requested_amt,0)>0)")
+            args = []
+            if quarters:
+                sql += " AND quarter = ANY(%s)"
+                args.append(quarters)
+            sql += " ORDER BY quarter, magazine, part"
+            cur.execute(sql, args)
+            rows = cur.fetchall()
+        result = [
+            {
+                "serial": i,
+                "magazine": row_label(r),
+                "quarter": r["quarter"] or "",
+                "invoiceNo": r["invoice_no"] or "",
+                "invoiceDate": fmt_date(r["invoice_date"]),
+                "requestedAmt": float(r["requested_amt"] or 0),
+                "netPayable": float(r["net_payable"] or 0),
+            }
+            for i, r in enumerate(rows, start=1)
+        ]
+        return jsonify({"success": True, "rows": result,
+                        "total": sum(x["requestedAmt"] for x in result)})
+    finally:
+        conn.close()
+
+
 @app.route("/api/reports/voucher-register")
 def api_report_voucher_register():
     conn = get_conn()

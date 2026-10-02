@@ -636,20 +636,20 @@
             <span>Payment Processing</span>
           </div>
         </div>
+        <div class="menu-card" onclick="showVoucherDashboard()">
+          <div class="menu-icon">🔖</div>
+          <div class="menu-info">
+            <div class="num">03</div>
+            <h3>Voucher Numbers</h3>
+            <span>வவுச்சர் உருவாக்கு &amp; பார்</span>
+          </div>
+        </div>
         <div class="menu-card" onclick="showMailOptions()">
           <div class="menu-icon">✉️</div>
           <div class="menu-info">
-            <div class="num">03</div>
+            <div class="num">04</div>
             <h3>மெயில் அனுப்புதல்</h3>
             <span>Email to Publisher</span>
-          </div>
-        </div>
-        <div class="menu-card" onclick="showReports()">
-          <div class="menu-icon">📊</div>
-          <div class="menu-info">
-            <div class="num">04</div>
-            <h3>அறிக்கைகள்</h3>
-            <span>Reports Dashboard</span>
           </div>
         </div>
         <div class="menu-card" onclick="showPendingInvoiceReminder()">
@@ -660,12 +660,12 @@
             <span>Invoice வராதவற்றுக்கு மெயில்</span>
           </div>
         </div>
-        <div class="menu-card" onclick="showBankDashboard()">
-          <div class="menu-icon">🏦</div>
+        <div class="menu-card" onclick="showReports()">
+          <div class="menu-icon">📊</div>
           <div class="menu-info">
             <div class="num">06</div>
-            <h3>Bank Account விவரங்கள்</h3>
-            <span>Publisher Bank Details Dashboard</span>
+            <h3>அறிக்கைகள்</h3>
+            <span>Reports Dashboard</span>
           </div>
         </div>
         <div class="menu-card" onclick="showAmountMismatch()">
@@ -676,18 +676,10 @@
             <span>Net Payable vs Requested Amount Mismatch</span>
           </div>
         </div>
-        <div class="menu-card" onclick="showVoucherDashboard()">
-          <div class="menu-icon">🔖</div>
-          <div class="menu-info">
-            <div class="num">08</div>
-            <h3>Voucher Numbers</h3>
-            <span>வவுச்சர் உருவாக்கு &amp; பார்</span>
-          </div>
-        </div>
         <div class="menu-card" onclick="showPaidDetails()">
           <div class="menu-icon">💳</div>
           <div class="menu-info">
-            <div class="num">09</div>
+            <div class="num">08</div>
             <h3>தொகை வழங்கப்பட்ட விவரம்</h3>
             <span>Paid Magazine Details</span>
           </div>
@@ -695,7 +687,7 @@
         <div class="menu-card" id="menuMasterCard" style="display:none;" onclick="showMastersDashboard()">
           <div class="menu-icon">🗂️</div>
           <div class="menu-info">
-            <div class="num">10</div>
+            <div class="num">09</div>
             <h3>Master Data</h3>
             <span>இதழ் &amp; Vendor Master</span>
           </div>
@@ -1116,6 +1108,16 @@
           <div class="r-num">அறிக்கை 05</div>
           <div class="r-title">Email &amp; PDF Sent Status</div>
         </div>
+        <div class="report-btn" onclick="showUnpaidReport()">
+          <div class="r-icon">⏳</div>
+          <div class="r-num">அறிக்கை 06</div>
+          <div class="r-title">இன்னும் தொகை வழங்கப்படாதவை</div>
+        </div>
+        <div class="report-btn" onclick="showBankDashboard()">
+          <div class="r-icon">🏦</div>
+          <div class="r-num">அறிக்கை 07</div>
+          <div class="r-title">Bank Account விவரங்கள்</div>
+        </div>
         <div class="report-btn" onclick="showCsvExport()">
           <div class="r-icon">⬇️</div>
           <div class="r-num">பதிவிறக்கம்</div>
@@ -1174,6 +1176,8 @@
       <div class="breadcrumb">
         <a onclick="backToWelcome()">🏠 முகப்பு</a>
         <span class="sep">›</span>
+        <a onclick="showReports()">அறிக்கைகள்</a>
+        <span class="sep">›</span>
         <span>Bank Account விவரங்கள்</span>
       </div>
       <div class="page-header">
@@ -1229,7 +1233,7 @@
       </div>
 
       <div style="margin-top:4px;">
-        <button class="btn-secondary" onclick="backToWelcome()">← முகப்பிற்கு</button>
+        <button class="btn-secondary" onclick="showReports()">← அறிக்கைகளுக்கு</button>
       </div>
     </div>
 
@@ -2087,6 +2091,64 @@
       document.getElementById('reportsDashboard').style.display = 'block';
       document.getElementById('reportContent').innerHTML =
         '<p style="text-align:center;padding:40px;color:var(--muted);">மேலே உள்ள அறிக்கை பட்டன்களில் ஒன்றை கிளிக் செய்யவும்</p>';
+    }
+    // ─── அறிக்கை 06: இன்னும் தொகை வழங்கப்படாதவை (Invoice பெறப்பட்டவை) ───
+    let _unpaidRows = [];
+    function showUnpaidReport() {
+      document.getElementById('reportContent').innerHTML =
+        '<h3 style="color:#1e4d8c;text-align:center;margin-bottom:6px;">⏳ இன்னும் தொகை வழங்கப்படாதவை</h3>' +
+        '<p style="text-align:center;color:var(--muted);line-height:1.7;">Invoice பெறப்பட்டு, இன்னும் தொகை வழங்கப்படாத இதழ்கள்.</p>' +
+        '<div class="field" style="max-width:720px;margin:16px auto;"><label>Quarter (ஒன்று அல்லது பல டிக் செய்யலாம்; "அனைத்தும்" = எல்லா Quarter-களும்)</label>' +
+        '<div class="qsel" id="unpaidQuarter"></div></div>' +
+        '<div style="text-align:center;"><button class="btn-primary" onclick="loadUnpaidReport()">📊 அறிக்கை காட்டு</button></div>' +
+        '<div id="unpaidResult" style="margin-top:24px;"></div>';
+      QSel.mount('unpaidQuarter');
+      loadUnpaidReport();
+    }
+    async function loadUnpaidReport() {
+      const box = document.getElementById('unpaidResult');
+      if (!box) return;
+      const q = QSel.csv('unpaidQuarter');
+      box.innerHTML = '<div style="text-align:center;padding:30px;"><span class="spinner dark"></span></div>';
+      try {
+        const res = await fetch('/api/reports/unpaid' + (q ? '?quarter=' + encodeURIComponent(q) : ''));
+        const d = await res.json();
+        if (!d.success) { box.innerHTML = '<div class="status show error">❌ ' + _ccEsc(d.message || 'பிழை') + '</div>'; return; }
+        _unpaidRows = d.rows || [];
+        const fmt = n => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const title = q ? q.split(',').map(x => x.replace('-Q', ' Q')).join(', ') : 'அனைத்து Quarter-களும்';
+        let h = '<div style="text-align:center;font-weight:700;color:#a15c00;margin-bottom:10px;">' + _ccEsc(title) +
+                ' — ' + _unpaidRows.length + ' பதிவுகள் · மொத்தம் ₹ ' + fmt(d.total) + '</div>' +
+          '<div style="overflow-x:auto;"><table border="1" cellpadding="10" cellspacing="0" style="width:100%;border-collapse:collapse;background:white;font-size:14px;">' +
+          '<thead><tr style="background:#1e4d8c;color:white;"><th>S.No</th><th>Magazine Name</th><th>Quarter</th><th>Invoice No</th><th>Invoice Date</th><th>வழங்க வேண்டிய தொகை (₹)</th></tr></thead><tbody>';
+        _unpaidRows.forEach(x => {
+          h += '<tr><td style="text-align:center;">' + x.serial + '</td><td>' + _ccEsc(x.magazine) + '</td>' +
+               '<td style="text-align:center;">' + _ccEsc(x.quarter) + '</td><td>' + _ccEsc(x.invoiceNo) + '</td>' +
+               '<td style="text-align:center;">' + _ccEsc(x.invoiceDate || '-') + '</td>' +
+               '<td style="text-align:right;font-weight:600;">₹ ' + fmt(x.requestedAmt) + '</td></tr>';
+        });
+        if (!_unpaidRows.length)
+          h += '<tr><td colspan="6" style="text-align:center;padding:30px;color:green;font-weight:600;">✅ தொகை வழங்க வேண்டியவை எதுவும் இல்லை.</td></tr>';
+        else
+          h += '<tr style="background:#fff3cd;font-weight:700;"><td colspan="5" style="text-align:right;">மொத்தம்</td><td style="text-align:right;">₹ ' + fmt(d.total) + '</td></tr>';
+        h += '</tbody></table></div>';
+        if (_unpaidRows.length)
+          h += '<div style="text-align:center;margin-top:20px;"><button class="btn-secondary" onclick="downloadUnpaidCsv()">⬇️ CSV பதிவிறக்கு</button></div>';
+        box.innerHTML = h;
+      } catch (e) {
+        box.innerHTML = '<div class="status show error">❌ பிழை: ' + _ccEsc(e.message) + '</div>';
+      }
+    }
+    function downloadUnpaidCsv() {
+      const esc = v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+      const lines = [['S.No','Magazine Name','Quarter','Invoice No','Invoice Date','Requested Amount'].map(esc).join(',')];
+      _unpaidRows.forEach(x => lines.push([x.serial, x.magazine, x.quarter, x.invoiceNo, x.invoiceDate, x.requestedAmt].map(esc).join(',')));
+      const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'unpaid-invoices.csv';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     }
     // ─── Google Sheet-க்கான CSV பதிவிறக்கம் (A:V அமைப்பு) ───
     function showCsvExport() {
