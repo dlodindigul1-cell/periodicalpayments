@@ -1118,6 +1118,11 @@
           <div class="r-num">அறிக்கை 07</div>
           <div class="r-title">Bank Account விவரங்கள்</div>
         </div>
+        <div class="report-btn" onclick="showFyReport()">
+          <div class="r-icon">🗓️</div>
+          <div class="r-num">அறிக்கை 08</div>
+          <div class="r-title">நிதியாண்டு அறிக்கை</div>
+        </div>
         <div class="report-btn" onclick="showCsvExport()">
           <div class="r-icon">⬇️</div>
           <div class="r-num">பதிவிறக்கம்</div>
@@ -2091,6 +2096,83 @@
       document.getElementById('reportsDashboard').style.display = 'block';
       document.getElementById('reportContent').innerHTML =
         '<p style="text-align:center;padding:40px;color:var(--muted);">மேலே உள்ள அறிக்கை பட்டன்களில் ஒன்றை கிளிக் செய்யவும்</p>';
+    }
+    // ─── அறிக்கை 08: நிதியாண்டு அறிக்கை (Paid Date அடிப்படையில் 01-04 முதல் 31-03) ───
+    function _fyQs() {
+      return [].slice.call(document.querySelectorAll('#fyQuarters input:checked')).map(b => b.value).join(',');
+    }
+    function showFyReport() {
+      const chips = [['Q1', 'ஏப்ரல்–சூன்'], ['Q2', 'சூலை–செப்டம்பர்'], ['Q3', 'அக்டோபர்–டிசம்பர்'], ['Q4', 'ஜனவரி–மார்ச்']].map(x =>
+        '<label class="mc-chip" style="min-width:120px;"><input type="checkbox" value="' + x[0] + '" onchange="loadFyReport()"><span>' + x[0] + '</span><small style="color:var(--muted);">' + x[1] + '</small></label>').join('');
+      document.getElementById('reportContent').innerHTML =
+        '<h3 style="color:#1e4d8c;text-align:center;margin-bottom:6px;">🗓️ நிதியாண்டு அறிக்கை</h3>' +
+        '<p style="text-align:center;color:var(--muted);line-height:1.7;">தொகை <b>வழங்கிய தேதி (Paid Date)</b> அடிப்படையில் — ஏப்ரல் 1 முதல் மார்ச் 31 வரை. ' +
+        'முந்தைய நிதியாண்டின் Quarter-க்கு இப்போது வழங்கிய தொகையும் வழங்கிய நிதியாண்டில் வரும்.</p>' +
+        '<div class="field" style="max-width:320px;margin:14px auto 0;"><label>நிதியாண்டு</label><select id="fyYear" onchange="loadFyReport()"></select></div>' +
+        '<div style="text-align:center;margin-top:8px;font-weight:600;color:var(--navy);">Quarter (வழங்கிய தேதிப்படி) — எதுவும் தேர்ந்தெடுக்காவிட்டால் முழு ஆண்டு</div>' +
+        '<div class="mc-chips" id="fyQuarters">' + chips + '</div>' +
+        '<div style="text-align:center;margin:12px 0;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">' +
+        '<button class="btn-primary" onclick="loadFyReport()">📊 அறிக்கை காட்டு</button>' +
+        '<button class="btn-secondary" onclick="downloadFyReport(\'csv\')">⬇️ CSV</button>' +
+        '<button class="btn-secondary" onclick="downloadFyReport(\'xlsx\')">⬇️ Excel</button>' +
+        '<button class="btn-secondary" onclick="downloadFyReport(\'pdf\')">⬇️ PDF</button></div>' +
+        '<div id="fyResult" style="margin-top:18px;"></div>';
+      loadFyReport(true);
+    }
+    async function loadFyReport(first) {
+      const box = document.getElementById('fyResult');
+      if (!box) return;
+      const sel = document.getElementById('fyYear');
+      const params = new URLSearchParams({ format: 'json', quarter: _fyQs() });
+      if (sel.value) params.set('fy', sel.value);
+      box.innerHTML = '<div style="text-align:center;padding:30px;"><span class="spinner dark"></span></div>';
+      try {
+        const res = await fetch('/api/reports/financial-year?' + params);
+        const d = await res.json();
+        if (!d.success) { box.innerHTML = '<div class="status show error">❌ ' + _ccEsc(d.message || 'பிழை') + '</div>'; return; }
+        if (!sel.options.length || first) {
+          sel.innerHTML = d.fys.map(f => '<option value="' + _ccEsc(f) + '">' + _ccEsc(f) + '</option>').join('');
+        }
+        sel.value = d.fy;
+        const fmt = n => Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const fd = v => v ? v.split('-').reverse().join('/') : '';
+        const th = 'style="background:#1e4d8c;color:white;"';
+        const qtxt = d.quarters.length ? d.quarters.join(', ') : 'முழு நிதியாண்டு';
+        let h = '<div style="text-align:center;font-weight:700;color:#1e4d8c;margin-bottom:10px;">' + _ccEsc(d.fy) + ' (' + fd(d.from) + ' – ' + fd(d.to) + ') · ' + _ccEsc(qtxt) +
+          '<br>' + d.count + ' பதிவுகள் · வழங்கிய மொத்தம் ₹ ' + fmt(d.totalPaid) + '</div>';
+        h += '<div style="text-align:center;color:var(--muted);font-size:13px;margin-bottom:12px;">இந்த நிதியாண்டின் Quarter-களுக்கு ₹ ' + fmt(d.ownFyPaid) +
+          ' · முந்தைய நிதியாண்டின் Quarter-களுக்கு இப்போது வழங்கியது ₹ ' + fmt(d.otherFyPaid) + '</div>';
+        h += '<div style="display:flex;gap:18px;flex-wrap:wrap;justify-content:center;margin-bottom:16px;">' +
+          '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;background:white;font-size:13.5px;"><thead><tr><th ' + th + '>Q (Paid Date)</th><th ' + th + '>பதிவுகள்</th><th ' + th + '>வழங்கிய தொகை (₹)</th></tr></thead><tbody>' +
+          d.byPaidQuarter.map(b => '<tr><td style="text-align:center;">' + b.q + ' · ' + _ccEsc(b.span) + '</td><td style="text-align:center;">' + b.count + '</td><td style="text-align:right;">' + fmt(b.paid) + '</td></tr>').join('') +
+          '<tr style="background:#fff8e1;font-weight:700;"><td style="text-align:right;">மொத்தம்</td><td style="text-align:center;">' + d.count + '</td><td style="text-align:right;">' + fmt(d.totalPaid) + '</td></tr></tbody></table>' +
+          '<table border="1" cellpadding="8" cellspacing="0" style="border-collapse:collapse;background:white;font-size:13.5px;"><thead><tr><th ' + th + '>Bill Quarter</th><th ' + th + '>பதிவுகள்</th><th ' + th + '>வழங்கிய தொகை (₹)</th></tr></thead><tbody>' +
+          (d.byBillQuarter.map(b => '<tr><td style="text-align:center;">' + _ccEsc(String(b.quarter).replace('-Q', ' Q')) + '</td><td style="text-align:center;">' + b.count + '</td><td style="text-align:right;">' + fmt(b.paid) + '</td></tr>').join('') ||
+            '<tr><td colspan="3" style="text-align:center;color:var(--muted);">பதிவுகள் இல்லை</td></tr>') + '</tbody></table></div>';
+        h += '<div style="overflow-x:auto;"><table border="1" cellpadding="8" cellspacing="0" style="width:100%;border-collapse:collapse;background:white;font-size:13px;white-space:nowrap;">' +
+          '<thead><tr><th ' + th + '>வ.எண்</th><th ' + th + '>வழங்கிய தேதி</th><th ' + th + '>Q</th><th ' + th + '>இதழ் பெயர்</th><th ' + th + '>Bill Quarter</th><th ' + th + '>Invoice No</th><th ' + th + '>Invoice Date</th>' +
+          '<th ' + th + '>கோரப்பட்ட (₹)</th><th ' + th + '>வழங்கிய (₹)</th><th ' + th + '>Bank Txn No</th><th ' + th + '>Voucher</th><th ' + th + '>Set</th></tr></thead><tbody>';
+        d.rows.forEach(r => {
+          h += '<tr><td style="text-align:center;">' + r.sno + '</td><td style="text-align:center;">' + fd(r.payment_date) + '</td><td style="text-align:center;">' + r.paid_q + '</td>' +
+            '<td>' + _ccEsc(r.magazine) + '</td><td style="text-align:center;">' + _ccEsc(String(r.quarter).replace('-Q', ' Q')) + '</td><td>' + _ccEsc(r.invoice_no) + '</td><td style="text-align:center;">' + fd(r.invoice_date) + '</td>' +
+            '<td style="text-align:right;">' + fmt(r.requested_amt) + '</td><td style="text-align:right;font-weight:700;">' + fmt(r.paid_amt) + '</td>' +
+            '<td>' + _ccEsc(r.transaction_no) + '</td><td style="text-align:center;">' + _ccEsc(r.voucher_no) + '</td><td style="text-align:center;">' + _ccEsc(r.bill_set_no) + '</td></tr>';
+        });
+        if (!d.rows.length) h += '<tr><td colspan="12" style="text-align:center;padding:20px;color:var(--muted);">இந்தக் காலத்தில் தொகை வழங்கிய பதிவுகள் இல்லை.</td></tr>';
+        else h += '<tr style="background:#fff8e1;font-weight:700;"><td colspan="7" style="text-align:right;">மொத்தம்</td><td style="text-align:right;">' + fmt(d.totalRequested) + '</td><td style="text-align:right;">' + fmt(d.totalPaid) + '</td><td colspan="3"></td></tr>';
+        h += '</tbody></table></div>';
+        box.innerHTML = h;
+      } catch (e) {
+        box.innerHTML = '<div class="status show error">❌ பிழை: ' + _ccEsc(e.message) + '</div>';
+      }
+    }
+    function downloadFyReport(fmt) {
+      const sel = document.getElementById('fyYear');
+      const a = document.createElement('a');
+      a.href = '/api/reports/financial-year?' + new URLSearchParams({ format: fmt, fy: sel ? sel.value : '', quarter: _fyQs() });
+      a.style.display = 'none';
+      document.body.appendChild(a); a.click();
+      setTimeout(() => a.remove(), 1000);
     }
     // ─── அறிக்கை 06: இன்னும் தொகை வழங்கப்படாதவை (Invoice பெறப்பட்டவை) ───
     let _unpaidRows = [];
