@@ -525,6 +525,15 @@ def classify_vendor_code(code):
     return "OTHER"
 
 
+def vendor_mix_allowed(quarter):
+    """2025-2026 Q1, Q2, Q3 (பழைய Quarter-கள்) — ஒரே Bill Set-ல் BENEFICIARY + BUSINESS VENDOR கலக்கலாம்.
+    2025-2026 Q4 முதல் (அதற்குப் பின்) கலக்கக்கூடாது."""
+    m = re.match(r"^(\d{4})-(\d{4})-Q([1-4])$", (quarter or "").strip())
+    if not m:
+        return False
+    return (int(m.group(1)), int(m.group(3))) < (2025, 4)
+
+
 def norm_code(code):
     """Vendor/Beneficiary Code ஒப்பீட்டுக்கு: இடைவெளி நீக்கி, பெரிய எழுத்தாக்கும்."""
     return (code or "").strip().upper()
@@ -1629,7 +1638,7 @@ def api_save_payment_processing():
             vendor_type = classify_vendor_code(vendor_code)
 
             # ஒரே Quarter-க்குள் ஒரே Bill Set-ல் BENEFICIARY மற்றும் BUSINESS VENDOR கலக்கக்கூடாது
-            if bill_set_no:
+            if bill_set_no and not vendor_mix_allowed(quarter):
                 cur.execute(
                     """
                     SELECT p.magazine, m.tnpfts_code
@@ -5384,7 +5393,7 @@ def api_fx_update_payment():
                                         voucher_no, new_q, row_label(dup))}), 409
 
             # ---- Bill Set No: BENEFICIARY / BUSINESS VENDOR கலக்கக்கூடாது ----
-            if bill_set_no:
+            if bill_set_no and not vendor_mix_allowed(new_q):
                 cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (new_mag,))
                 mv = cur.fetchone()
                 my_type = classify_vendor_code(mv["tnpfts_code"] if mv else "")
