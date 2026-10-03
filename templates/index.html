@@ -4210,8 +4210,59 @@
         '<td class="num">' + _pm(r.requestedAmt) + '</td><td class="num">' + _pm(r.paidAmt) + '</td>' +
         '<td>' + fd(r.paymentDate) + '</td><td>' + _pe(r.transactionNo || '—') + '</td>' +
         '<td>' + _pe(r.voucherNo || '—') + '</td><td>' + _pe(r.billSetNo || '—') + '</td>' +
-        '<td><button class="btn-secondary" onclick="fxEditRow(' + i + ')">✏️ திருத்து</button></td></tr>').join('') ||
+        '<td><button class="btn-secondary" onclick="fxEditRow(' + i + ')">✏️ திருத்து</button>' +
+        (_fxBaseName(r.magazine) ? '<div style="margin-top:6px;"><button class="btn-primary" style="padding:6px 12px;font-size:12.5px;" onclick="fxRowToPart(' + i + ')">➕ \'' + _pe(_fxBaseName(r.magazine)) + '\'-ன் Part ஆக மாற்று</button></div>' : '') +
+        '</td></tr>').join('') ||
         '<tr><td colspan="10" class="ctr" style="padding:18px; color:var(--muted);">பதிவுகள் இல்லை.</td></tr>';
+    }
+    // 'Civil Service Chronicle-2' போன்ற பெயர் Master-லேயே தனி இதழாக இருந்தாலும், அடிப்படை இதழின் அடுத்த Part ஆக மாற்ற
+    function _fxBaseName(name) {
+      const base = String(name || '').replace(/\s*[-–]\s*\d+\s*$/, '').trim();
+      if (!base || base === String(name || '').trim()) return '';
+      return (_fxMaster || []).find(m => String(m).trim().toLowerCase() === base.toLowerCase()) || '';
+    }
+    async function fxRowToPart(i) {
+      const r = (window._fxRows || [])[i];
+      if (!r) return;
+      const target = _fxBaseName(r.magazine);
+      if (!target) { setStatus('fxRowsStatus', 'error', '❌ அடிப்படை இதழ் Master-ல் கிடைக்கவில்லை.'); return; }
+      const t = await _fxApi('/api/admin/data-fix/payments?magazine=' + encodeURIComponent(target));
+      if (!t.success) { setStatus('fxRowsStatus', 'error', '❌ ' + _pe(t.message)); return; }
+      const same = t.rows.filter(x => x.quarter === r.quarter);
+      const used = [];
+      same.forEach(x => (x.months || []).forEach(m => { if (!used.includes(m)) used.push(m); }));
+      const nextPart = same.length ? Math.max.apply(null, same.map(x => x.part)) + 1 : 1;
+      const names = r.monthNames;
+      const chips = [1, 2, 3].map(m => {
+        const u = used.includes(m);
+        return '<label class="mc-chip' + (u ? ' used' : '') + '"><input type="checkbox" value="' + m + '"' + (u ? ' disabled' : '') +
+          (!u ? ' checked' : '') + '><span>' + _pe(names[m - 1]) + '</span>' + (u ? '<small>பதிவில் உள்ளது</small>' : '') + '</label>';
+      }).join('');
+      const res = await showConfirmCard({
+        icon: '➕', title: 'Part ' + nextPart + ' ஆக மாற்று', subtitle: r.magazine + ' → ' + target + ' · ' + r.quarter, wide: true,
+        html: '<div class="cc-msg">இந்தப் பதிவு <b>' + _pe(target) + '</b> இதழின் <b>Part ' + nextPart + '</b> ஆகும். எந்த மாதங்களுக்கான இன்வாய்ஸ் இது என்பதை உறுதிசெய்யவும்:</div>' +
+          '<div class="mc-chips">' + chips + '</div>' +
+          '<div class="cc-note">' + (same.length ? 'ஏற்கனவே உள்ள Part-கள்: ' + same.map(x => 'Part ' + x.part + ' (' + _pe(x.monthsText) + ')').join(', ') : 'இந்த Quarter-ல் இதுவரை பதிவு இல்லை.') +
+          '<br>தொகை வழங்கிய பதிவு எனில் வழங்கிய தொகை மாறாது; Voucher பதிவுகளும் புதிய Part-உடன் நகரும்.</div>',
+        buttons: [{ label: 'ரத்து', value: false, style: 'ghost' }, { label: '✅ மாற்று', value: true, style: 'primary' }],
+        onMount: function (ov) {
+          const ok = ov.querySelector('.cc-btn.primary');
+          const boxes = [].slice.call(ov.querySelectorAll('input[type=checkbox]'));
+          const refresh = () => { ok.disabled = !boxes.some(b => b.checked && !b.disabled); };
+          boxes.forEach(b => b.addEventListener('change', refresh)); refresh();
+        },
+        resolveWith: function (val, ov) {
+          if (val !== true) return null;
+          return [].slice.call(ov.querySelectorAll('input[type=checkbox]:checked')).map(b => parseInt(b.value));
+        }
+      });
+      if (!res || !res.length) return;
+      const d = await _fxApi('/api/admin/data-fix/to-part', { id: r.id, to: target, months: res });
+      if (!d.success) { setStatus('fxRowsStatus', 'error', '❌ ' + _pe(d.message)); return; }
+      await fxScan();
+      document.getElementById('fxMagSelect').value = target;
+      await fxLoadRows();
+      setStatus('fxRowsStatus', 'success', '✅ ' + _pe(d.message));
     }
     async function fxEditRow(i) {
       const r = window._fxRows[i];

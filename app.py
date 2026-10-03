@@ -5378,7 +5378,7 @@ def api_fx_update_payment():
                             (new_mag, new_q, old["part"], pid))
                 if cur.fetchone():
                     return jsonify({"success": False,
-                                    "message": "'%s' (%s) பதிவு ஏற்கனவே உள்ளது." % (new_mag, new_q)}), 409
+                                    "message": "'%s' (%s) பதிவு ஏற்கனவே உள்ளது. (இது அடுத்த Part எனில் அட்டவணையில் 'Part ஆக மாற்று' பட்டனைப் பயன்படுத்தவும்.)" % (new_mag, new_q)}), 409
 
             # ---- Voucher No: அதே Quarter-ல் மற்றொரு பதிவில் அதே எண் இருக்கக்கூடாது ----
             if voucher_no and voucher_no != (old["voucher_no"] or "").strip() or \
