@@ -4209,8 +4209,9 @@
         '<tr><td>' + _pe(r.quarter) + (r.partial || r.part > 1 ? '<div style="color:#a12b20;font-size:11.5px;font-weight:700;">Part ' + r.part + ' · ' + _pe(r.monthsText) + '</div>' : '') + '</td><td>' + _pe(r.invoiceNo || '—') + '</td><td>' + fd(r.invoiceDate) + '</td>' +
         '<td class="num">' + _pm(r.requestedAmt) + '</td><td class="num">' + _pm(r.paidAmt) + '</td>' +
         '<td>' + fd(r.paymentDate) + '</td><td>' + _pe(r.transactionNo || '—') + '</td>' +
+        '<td>' + _pe(r.voucherNo || '—') + '</td><td>' + _pe(r.billSetNo || '—') + '</td>' +
         '<td><button class="btn-secondary" onclick="fxEditRow(' + i + ')">✏️ திருத்து</button></td></tr>').join('') ||
-        '<tr><td colspan="8" class="ctr" style="padding:18px; color:var(--muted);">பதிவுகள் இல்லை.</td></tr>';
+        '<tr><td colspan="10" class="ctr" style="padding:18px; color:var(--muted);">பதிவுகள் இல்லை.</td></tr>';
     }
     async function fxEditRow(i) {
       const r = window._fxRows[i];
@@ -4223,7 +4224,18 @@
         inp('fxEQ', 'Quarter', r.quarter) + inp('fxEInv', 'Invoice Number', r.invoiceNo) +
         inp('fxEInvD', 'Invoice Date', r.invoiceDate, 'date') +
         inp('fxEReq', 'Requested Amount', r.requestedAmt, 'number') + inp('fxEPaid', 'Paid Amount', r.paidAmt, 'number') +
-        inp('fxEPayD', 'Paid Date', r.paymentDate, 'date') + inp('fxETxn', 'Bank Transaction Number', r.transactionNo);
+        inp('fxEPayD', 'Paid Date', r.paymentDate, 'date') + inp('fxETxn', 'Bank Transaction Number', r.transactionNo) +
+        inp('fxEVou', 'Voucher Number', r.voucherNo) + inp('fxESet', 'பில் செட் நம்பர் (Bill Set No)', r.billSetNo) +
+        (r.monthTick
+          ? '<div class="field" style="margin-bottom:10px;"><label>எந்த மாதங்களுக்கான இன்வாய்ஸ் (Part ' + r.part + ')</label>' +
+            '<div class="mc-chips" id="fxEMonths" style="justify-content:flex-start;margin:6px 0 0;">' +
+            [1, 2, 3].map(m => {
+              const used = (r.usedByOthers || []).includes(m);
+              return '<label class="mc-chip' + (used ? ' used' : '') + '"><input type="checkbox" value="' + m + '"' +
+                (used ? ' disabled' : '') + ((r.months || []).includes(m) ? ' checked' : '') + '><span>' + _pe(r.monthNames[m - 1]) + '</span>' +
+                (used ? '<small>வேறு Part-ல் உள்ளது</small>' : '') + '</label>';
+            }).join('') + '</div></div>'
+          : '');
       const val = await showConfirmCard({
         icon: '✏️', title: 'Payment பதிவு திருத்து', subtitle: r.magazine + ' · ' + r.quarter, html, wide: true,
         buttons: [{ label: 'ரத்து', value: null, style: 'ghost' }, { label: '💾 சேமி', value: 'save', style: 'primary' }],
@@ -4231,7 +4243,9 @@
           id: r.id, magazine: ov.querySelector('#fxEMag').value, quarter: ov.querySelector('#fxEQ').value,
           invoiceNo: ov.querySelector('#fxEInv').value, invoiceDate: ov.querySelector('#fxEInvD').value,
           requestedAmt: ov.querySelector('#fxEReq').value, paidAmt: ov.querySelector('#fxEPaid').value,
-          paymentDate: ov.querySelector('#fxEPayD').value, transactionNo: ov.querySelector('#fxETxn').value }
+          paymentDate: ov.querySelector('#fxEPayD').value, transactionNo: ov.querySelector('#fxETxn').value,
+          voucherNo: ov.querySelector('#fxEVou').value, billSetNo: ov.querySelector('#fxESet').value,
+          months: r.monthTick ? [].slice.call(ov.querySelectorAll('#fxEMonths input:checked')).map(b => parseInt(b.value)) : undefined }
       });
       if (!val) return;
       const d = await _fxApi('/api/admin/data-fix/update-payment', val);
@@ -4548,7 +4562,7 @@ function _pdfHelper(fnName, targetId) {
         <div class="card">
           <div class="card-title">✏️ 2) ஒரு இதழின் Payment பதிவுகளைத் திருத்து</div>
           <p style="font-size:13px; color:var(--muted); margin-bottom:12px;">
-            Invoice No / Date, Requested / Paid Amount, Paid Date, Bank Transaction No, இதழ் பெயர், Quarter ஆகியவற்றைத் திருத்தலாம்.
+            Invoice No / Date, Requested / Paid Amount, Paid Date, Bank Transaction No, Voucher No, Bill Set No, மாதங்கள் (Part), இதழ் பெயர், Quarter ஆகியவற்றைத் திருத்தலாம்.
             ஒவ்வொரு மாற்றமும் (பழைய → புதிய) பதிவு செய்யப்படும்.
           </p>
           <div class="field">
@@ -4559,7 +4573,7 @@ function _pdfHelper(fnName, targetId) {
           <div class="data-table-wrap" style="max-height:420px;">
             <table class="data-table" style="font-size:12.5px; white-space:nowrap;">
               <thead><tr><th>Quarter</th><th>Invoice No</th><th>Invoice Date</th><th style="text-align:right;">Requested</th>
-                <th style="text-align:right;">Paid</th><th>Paid Date</th><th>Bank Txn No</th><th></th></tr></thead>
+                <th style="text-align:right;">Paid</th><th>Paid Date</th><th>Bank Txn No</th><th>Voucher No</th><th>Set No</th><th></th></tr></thead>
               <tbody id="fxRowsBody"></tbody>
             </table>
           </div>

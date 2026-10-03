@@ -5268,20 +5268,32 @@ def api_fx_payments():
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            cur.execute("SELECT periodicity FROM magazines WHERE name=%s", (magazine,))
+            mg = cur.fetchone()
+            month_tick = uses_month_tick(mg["periodicity"] if mg else "")
             cur.execute(
                 "SELECT id, magazine, quarter, part, months, invoice_no, invoice_date, requested_amt, paid_amt, "
-                "       payment_date, transaction_no, voucher_no FROM payments "
+                "       payment_date, transaction_no, voucher_no, bill_set_no FROM payments "
                 "WHERE magazine=%s ORDER BY quarter, part", (magazine,))
-            rows = [{
-                "id": r["id"], "magazine": r["magazine"], "quarter": r["quarter"],
-                "part": r["part"], "monthsText": month_span_text(r["quarter"], r["months"]),
-                "partial": parse_months(r["months"]) != [1, 2, 3],
-                "invoiceNo": r["invoice_no"] or "",
-                "invoiceDate": r["invoice_date"].isoformat() if r["invoice_date"] else "",
-                "requestedAmt": float(r["requested_amt"] or 0), "paidAmt": float(r["paid_amt"] or 0),
-                "paymentDate": r["payment_date"].isoformat() if r["payment_date"] else "",
-                "transactionNo": r["transaction_no"] or "", "voucherNo": r["voucher_no"] or "",
-            } for r in cur.fetchall()]
+            db_rows = cur.fetchall()
+            rows = []
+            for r in db_rows:
+                used_others = sorted({m for x in db_rows
+                                      if x["quarter"] == r["quarter"] and x["id"] != r["id"]
+                                      for m in parse_months(x["months"])})
+                rows.append({
+                    "id": r["id"], "magazine": r["magazine"], "quarter": r["quarter"],
+                    "part": r["part"], "monthsText": month_span_text(r["quarter"], r["months"]),
+                    "partial": parse_months(r["months"]) != [1, 2, 3],
+                    "months": parse_months(r["months"]), "monthNames": quarter_month_names(r["quarter"]),
+                    "monthTick": month_tick, "usedByOthers": used_others,
+                    "invoiceNo": r["invoice_no"] or "",
+                    "invoiceDate": r["invoice_date"].isoformat() if r["invoice_date"] else "",
+                    "requestedAmt": float(r["requested_amt"] or 0), "paidAmt": float(r["paid_amt"] or 0),
+                    "paymentDate": r["payment_date"].isoformat() if r["payment_date"] else "",
+                    "transactionNo": r["transaction_no"] or "", "voucherNo": r["voucher_no"] or "",
+                    "billSetNo": (r["bill_set_no"] or "").strip(),
+                })
         return jsonify({"success": True, "rows": rows})
     finally:
         conn.close()
@@ -5337,6 +5349,14 @@ def api_fx_update_payment():
             txn = (data.get("transactionNo") or "").strip() or None
             new_mag = (data.get("magazine") or old["magazine"]).strip()
             new_q = (data.get("quarter") or old["quarter"]).strip()
+            # Voucher No / Bill Set No / மாதங்கள் — அனுப்பப்பட்டால் மட்டுமே மாற்றப்படும்
+            voucher_no = ((data.get("voucherNo") or "").strip() or None) if "voucherNo" in data else old["voucher_no"]
+            bill_set_no = ((str(data.get("billSetNo") or "")).strip() or None) if "billSetNo" in data else old["bill_set_no"]
+            months_req = None
+            if isinstance(data.get("months"), list):
+                months_req = sorted({x for x in (q_int(v) for v in data.get("months")) if 1 <= x <= 3})
+                if not months_req:
+                    return jsonify({"success": False, "message": "குறைந்தது ஒரு மாதத்தைத் தேர்ந்தெடுக்கவும்."}), 400
 
             if new_mag != old["magazine"]:
                 cur.execute("SELECT 1 FROM magazines WHERE name=%s", (new_mag,))
@@ -5351,10 +5371,78 @@ def api_fx_update_payment():
                     return jsonify({"success": False,
                                     "message": "'%s' (%s) பதிவு ஏற்கனவே உள்ளது." % (new_mag, new_q)}), 409
 
+            # ---- Voucher No: அதே Quarter-ல் மற்றொரு பதிவில் அதே எண் இருக்கக்கூடாது ----
+            if voucher_no and voucher_no != (old["voucher_no"] or "").strip() or \
+                    (voucher_no and (new_mag, new_q) != (old["magazine"], old["quarter"])):
+                cur.execute("SELECT magazine, part, months, quarter FROM payments "
+                            "WHERE quarter=%s AND TRIM(COALESCE(voucher_no,''))=%s AND id<>%s",
+                            (new_q, voucher_no, pid))
+                dup = cur.fetchone()
+                if dup:
+                    return jsonify({"success": False, "message":
+                                    "Voucher No %s (%s) ஏற்கனவே '%s'-க்கு உள்ளது." % (
+                                        voucher_no, new_q, row_label(dup))}), 409
+
+            # ---- Bill Set No: BENEFICIARY / BUSINESS VENDOR கலக்கக்கூடாது ----
+            if bill_set_no:
+                cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (new_mag,))
+                mv = cur.fetchone()
+                my_type = classify_vendor_code(mv["tnpfts_code"] if mv else "")
+                cur.execute(
+                    "SELECT p.magazine, m.tnpfts_code FROM payments p LEFT JOIN magazines m ON m.name=p.magazine "
+                    "WHERE p.quarter=%s AND p.bill_set_no=%s AND p.magazine<>%s", (new_q, bill_set_no, new_mag))
+                for o in cur.fetchall():
+                    o_type = classify_vendor_code(o["tnpfts_code"])
+                    if o_type and my_type and o_type != my_type:
+                        return jsonify({"success": False, "message":
+                                        "Bill Set %s (%s)-ல் ஏற்கனவே '%s' (%s) உள்ளது. '%s' (%s) — BENEFICIARY மற்றும் "
+                                        "BUSINESS VENDOR ஒரே Set-ல் கலக்க முடியாது." % (
+                                            bill_set_no, new_q, o["magazine"], o_type, new_mag, my_type)}), 400
+
+            # ---- மாதங்கள் (Part-ன் மாத விவரம்) ----
+            months_db, months_changed, months_note = old["months"], False, ""
+            if months_req is not None and months_req != parse_months(old["months"]):
+                cur.execute("SELECT periodicity FROM magazines WHERE name=%s", (new_mag,))
+                mp = cur.fetchone()
+                if months_req != [1, 2, 3] and not uses_month_tick(mp["periodicity"] if mp else ""):
+                    return jsonify({"success": False, "message":
+                                    "இந்த இதழ் வகைக்கு மாத வாரியாகப் பிரிக்கும் வசதி இல்லை."}), 400
+                cur.execute("SELECT part, months FROM payments WHERE magazine=%s AND quarter=%s AND id<>%s",
+                            (new_mag, new_q, pid))
+                used_by_others = set()
+                for o in cur.fetchall():
+                    used_by_others |= set(parse_months(o["months"]))
+                overlap = sorted(used_by_others & set(months_req))
+                if overlap:
+                    nm = quarter_month_names(new_q)
+                    return jsonify({"success": False, "message":
+                                    "இந்த மாதங்கள் (%s) ஏற்கனவே மற்றொரு Part-ல் உள்ளன." % ", ".join(nm[x - 1] for x in overlap)}), 409
+                months_db = None if months_req == [1, 2, 3] else ",".join(str(x) for x in months_req)
+                months_changed = True
+
             cur.execute(
                 "UPDATE payments SET magazine=%s, quarter=%s, invoice_no=%s, invoice_date=%s, requested_amt=%s, "
-                "paid_amt=%s, payment_date=%s, transaction_no=%s, updated_at=now() WHERE id=%s",
-                (new_mag, new_q, invoice_no, invoice_date, requested, paid, payment_date, txn, pid))
+                "paid_amt=%s, payment_date=%s, transaction_no=%s, voucher_no=%s, bill_set_no=%s, months=%s, "
+                "updated_at=now() WHERE id=%s",
+                (new_mag, new_q, invoice_no, invoice_date, requested, paid, payment_date, txn,
+                 voucher_no, bill_set_no, months_db, pid))
+
+            if months_changed:
+                old_cnt, new_cnt = len(parse_months(old["months"])), len(parse_months(months_db))
+                if old_cnt != new_cnt and not (paid > 0):
+                    cur.execute("SELECT qtr_issues, issue_price, subscriptions, deduction FROM payments WHERE id=%s", (pid,))
+                    pr = cur.fetchone()
+                    new_qi = max(1, round((pr["qtr_issues"] or 0) * new_cnt / max(old_cnt, 1)))
+                    price, libs = float(pr["issue_price"] or 0), q_int(pr["subscriptions"])
+                    cost = price * libs * new_qi
+                    cur.execute("UPDATE payments SET qtr_issues=%s, total_issues=%s, actual_cost=%s, "
+                                "net_payable=%s - deduction WHERE id=%s", (new_qi, libs * new_qi, cost, cost, pid))
+                    months_note = " QTR Issues %d ஆக மாற்றப்பட்டது." % new_qi
+                elif old_cnt != new_cnt:
+                    months_note = " (தொகை வழங்கப்பட்ட பதிவு — QTR Issues / தொகை மாறவில்லை.)"
+                changed_ns = rebalance_non_supply(cur, new_mag, new_q)
+                if changed_ns:
+                    months_note += " Non-supply கழிவு Part %s-ல் சமன் செய்யப்பட்டது." % ", ".join(str(x) for x in changed_ns)
 
             # vouchers நகல்களையும் ஒத்திசைவாக வைக்க
             _fx_move_related(cur, old["magazine"], old["quarter"], new_mag, new_q, old["part"], old["part"])
@@ -5372,13 +5460,15 @@ def api_fx_update_payment():
                 "old": {"magazine": old["magazine"], "quarter": old["quarter"], "invoice_no": old["invoice_no"],
                         "invoice_date": old["invoice_date"], "requested_amt": old["requested_amt"],
                         "paid_amt": old["paid_amt"], "payment_date": old["payment_date"],
-                        "transaction_no": old["transaction_no"]},
+                        "transaction_no": old["transaction_no"], "voucher_no": old["voucher_no"],
+                        "bill_set_no": old["bill_set_no"], "months": old["months"]},
                 "new": {"magazine": new_mag, "quarter": new_q, "invoice_no": invoice_no,
                         "invoice_date": invoice_date, "requested_amt": requested, "paid_amt": paid,
-                        "payment_date": payment_date, "transaction_no": txn},
+                        "payment_date": payment_date, "transaction_no": txn, "voucher_no": voucher_no,
+                        "bill_set_no": bill_set_no, "months": months_db},
             })
         conn.commit()
-        return jsonify({"success": True, "message": "பதிவு புதுப்பிக்கப்பட்டது."})
+        return jsonify({"success": True, "message": "பதிவு புதுப்பிக்கப்பட்டது." + months_note})
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
