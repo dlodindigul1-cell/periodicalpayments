@@ -4538,6 +4538,363 @@ def build_payments_pdf(rows, quarter=None):
     return bytes(pdf.output())
 
 
+# =============================================================================
+# நிதியாண்டு அறிக்கை — Paid Date (தொகை வழங்கிய தேதி) அடிப்படையில்: 01-04 முதல் 31-03 வரை
+#   Quarter (Paid Date): Q1 = Apr–Jun, Q2 = Jul–Sep, Q3 = Oct–Dec, Q4 = Jan–Mar
+#   (Bill Quarter = இன்வாய்ஸ் பதிவான Quarter; முந்தைய நிதியாண்டின் Quarter-க்கு இப்போது வழங்கினாலும் Paid Date-ன் நிதியாண்டில் வரும்)
+# =============================================================================
+FY_PAID_Q_MONTHS = {"Q1": (4, 5, 6), "Q2": (7, 8, 9), "Q3": (10, 11, 12), "Q4": (1, 2, 3)}
+FY_PAID_Q_TEXT = {"Q1": "Apr-Jun", "Q2": "Jul-Sep", "Q3": "Oct-Dec", "Q4": "Jan-Mar"}
+FY_COLS = [
+    ("வ.எண்", "sno", "int"),
+    ("வழங்கிய தேதி", "payment_date", "date"),
+    ("Q (Paid Date)", "paid_q", "txt"),
+    ("இதழ் பெயர்", "magazine", "txt"),
+    ("Bill Quarter", "quarter", "txt"),
+    ("Invoice No", "invoice_no", "txt"),
+    ("Invoice Date", "invoice_date", "date"),
+    ("கோரப்பட்ட தொகை", "requested_amt", "money"),
+    ("வழங்கிய தொகை", "paid_amt", "money"),
+    ("Bank Txn No", "transaction_no", "txt"),
+    ("Voucher No", "voucher_no", "txt"),
+    ("Set No", "bill_set_no", "txt"),
+]
+
+
+def _fy_of(d):
+    start = d.year if d.month >= 4 else d.year - 1
+    return "%d-%d" % (start, start + 1)
+
+
+def _paid_q_of(d):
+    for q, ms in FY_PAID_Q_MONTHS.items():
+        if d.month in ms:
+            return q
+    return ""
+
+
+def fetch_fy_list(cur):
+    cur.execute("SELECT DISTINCT payment_date FROM payments WHERE payment_date IS NOT NULL AND COALESCE(paid_amt,0) > 0")
+    fys = {_fy_of(r["payment_date"]) for r in cur.fetchall()}
+    fys.add(_fy_of(date.today()))
+    return sorted(fys, reverse=True)
+
+
+def fetch_fy_report(cur, fy, quarters):
+    m = re.match(r"^(\d{4})-(\d{4})$", (fy or "").strip())
+    if not m or int(m.group(2)) != int(m.group(1)) + 1:
+        raise ValueError("நிதியாண்டு வடிவம் தவறு (எ.கா. 2025-2026).")
+    y = int(m.group(1))
+    start, end = date(y, 4, 1), date(y + 1, 3, 31)
+    qs = [q for q in _qlist(quarters) if q in FY_PAID_Q_MONTHS]
+    cur.execute(
+        "SELECT * FROM payments WHERE payment_date BETWEEN %s AND %s AND COALESCE(paid_amt,0) > 0",
+        (start, end))
+    db_rows = [r for r in cur.fetchall() if not qs or _paid_q_of(r["payment_date"]) in qs]
+    db_rows.sort(key=lambda r: (r["payment_date"], (r["magazine"] or "").strip().lower(), r["part"] or 1))
+    rows = []
+    for n, r in enumerate(db_rows, 1):
+        rows.append({
+            "sno": n,
+            "payment_date": r["payment_date"],
+            "paid_q": _paid_q_of(r["payment_date"]),
+            "magazine": row_label(r) if r["magazine"] else "",
+            "quarter": r["quarter"] or "",
+            "invoice_no": r["invoice_no"] or "",
+            "invoice_date": r["invoice_date"],
+            "requested_amt": float(r["requested_amt"] or 0),
+            "paid_amt": float(r["paid_amt"] or 0),
+            "transaction_no": r["transaction_no"] or "",
+            "voucher_no": r["voucher_no"] or "",
+            "bill_set_no": r["bill_set_no"] or "",
+        })
+    total_req = sum(x["requested_amt"] for x in rows)
+    total_paid = sum(x["paid_amt"] for x in rows)
+
+    by_paid_q = []
+    for q in (qs or list(FY_PAID_Q_MONTHS)):
+        sub = [x for x in rows if x["paid_q"] == q]
+        by_paid_q.append({"q": q, "span": FY_PAID_Q_TEXT[q], "count": len(sub),
+                          "paid": sum(x["paid_amt"] for x in sub)})
+    bq = {}
+    for x in rows:
+        b = bq.setdefault(x["quarter"] or "-", {"quarter": x["quarter"] or "-", "count": 0, "paid": 0.0})
+        b["count"] += 1
+        b["paid"] += x["paid_amt"]
+    by_bill_q = sorted(bq.values(), key=lambda b: b["quarter"])
+    own = sum(x["paid_amt"] for x in rows if (x["quarter"] or "")[:9] == fy)
+    return {
+        "fy": fy, "from": start, "to": end, "quarters": qs, "rows": rows, "count": len(rows),
+        "totalRequested": total_req, "totalPaid": total_paid,
+        "byPaidQuarter": by_paid_q, "byBillQuarter": by_bill_q,
+        "ownFyPaid": own, "otherFyPaid": total_paid - own,
+    }
+
+
+def _fy_title(d):
+    qtxt = ", ".join("%s (%s)" % (q, FY_PAID_Q_TEXT[q]) for q in d["quarters"]) if d["quarters"] else "முழு நிதியாண்டு"
+    return "நிதியாண்டு அறிக்கை %s (%s முதல் %s வரை) - %s" % (d["fy"], fmt_date(d["from"]), fmt_date(d["to"]), qtxt)
+
+
+def _fy_cell(r, key, kind):
+    v = r.get(key)
+    if v is None or v == "":
+        return ""
+    if kind == "date":
+        return fmt_date(v)
+    if kind == "money":
+        return indian_grouping(v)
+    return str(v)
+
+
+def build_fy_csv(d):
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([_fy_title(d)])
+    w.writerow([c[0] for c in FY_COLS])
+    for r in d["rows"]:
+        line = []
+        for _h, key, kind in FY_COLS:
+            v = r.get(key)
+            if v is None or v == "":
+                line.append("")
+            elif kind == "date":
+                line.append(fmt_date(v))
+            elif kind == "money":
+                line.append(("%.2f" % v).rstrip("0").rstrip("."))
+            else:
+                line.append(v)
+        w.writerow(line)
+    tot = [""] * len(FY_COLS)
+    tot[3] = "TOTAL"
+    tot[7] = ("%.2f" % d["totalRequested"]).rstrip("0").rstrip(".")
+    tot[8] = ("%.2f" % d["totalPaid"]).rstrip("0").rstrip(".")
+    w.writerow(tot)
+    w.writerow([])
+    w.writerow(["Q (Paid Date)", "காலம்", "பதிவுகள்", "வழங்கிய தொகை"])
+    for b in d["byPaidQuarter"]:
+        w.writerow([b["q"], b["span"], b["count"], ("%.2f" % b["paid"]).rstrip("0").rstrip(".")])
+    w.writerow([])
+    w.writerow(["Bill Quarter", "", "பதிவுகள்", "வழங்கிய தொகை"])
+    for b in d["byBillQuarter"]:
+        w.writerow([b["quarter"], "", b["count"], ("%.2f" % b["paid"]).rstrip("0").rstrip(".")])
+    return ("\ufeff" + buf.getvalue()).encode("utf-8")
+
+
+def build_fy_xlsx(d):
+    import xlsxwriter
+
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"in_memory": True})
+    ws = wb.add_worksheet("FY Report")
+    title = wb.add_format({"bold": True, "font_size": 13, "align": "left"})
+    head = wb.add_format({"bold": True, "font_color": "#FFFFFF", "bg_color": "#0F2347", "border": 1,
+                          "text_wrap": True, "align": "center", "valign": "vcenter"})
+    txt = wb.add_format({"border": 1, "valign": "top"})
+    txtc = wb.add_format({"border": 1, "valign": "top", "align": "center"})
+    num = wb.add_format({"border": 1, "valign": "top", "num_format": "#,##0.00"})
+    integer = wb.add_format({"border": 1, "valign": "top", "align": "center", "num_format": "0"})
+    dt = wb.add_format({"border": 1, "valign": "top", "align": "center", "num_format": "dd/mm/yyyy"})
+    tot_l = wb.add_format({"bold": True, "border": 1, "bg_color": "#FFF3C4", "align": "right"})
+    tot_n = wb.add_format({"bold": True, "border": 1, "bg_color": "#FFF3C4", "num_format": "#,##0.00"})
+    tot_b = wb.add_format({"bold": True, "border": 1, "bg_color": "#FFF3C4"})
+    widths = [7, 13, 12, 36, 16, 16, 13, 15, 15, 24, 12, 8]
+    for i, wd in enumerate(widths):
+        ws.set_column(i, i, wd)
+    ws.write(0, 0, _fy_title(d), title)
+    hr = 2
+    ws.set_row(hr, 34)
+    for c, (h, _k, _t) in enumerate(FY_COLS):
+        ws.write(hr, c, h, head)
+    for r_i, r in enumerate(d["rows"], start=hr + 1):
+        for c, (_h, key, kind) in enumerate(FY_COLS):
+            v = r.get(key)
+            if v is None or v == "":
+                ws.write_blank(r_i, c, None, txt)
+            elif kind == "date":
+                ws.write_datetime(r_i, c, datetime(v.year, v.month, v.day), dt)
+            elif kind == "money":
+                ws.write_number(r_i, c, float(v), num)
+            elif kind == "int":
+                ws.write_number(r_i, c, int(v), integer)
+            elif key in ("paid_q", "quarter", "voucher_no", "bill_set_no"):
+                ws.write_string(r_i, c, str(v), txtc)
+            else:
+                ws.write_string(r_i, c, str(v), txt)
+    tr = hr + 1 + len(d["rows"])
+    for c, (_h, key, _t) in enumerate(FY_COLS):
+        if c == 3:
+            ws.write(tr, c, "TOTAL", tot_l)
+        elif key in ("requested_amt", "paid_amt") and d["rows"]:
+            col = xlsxwriter.utility.xl_col_to_name(c)
+            val = d["totalRequested"] if key == "requested_amt" else d["totalPaid"]
+            ws.write_formula(tr, c, "=SUM(%s%d:%s%d)" % (col, hr + 2, col, tr), tot_n, val)
+        else:
+            ws.write(tr, c, "", tot_b)
+    ws.freeze_panes(hr + 1, 4)
+    if d["rows"]:
+        ws.autofilter(hr, 0, hr + len(d["rows"]), len(FY_COLS) - 1)
+    ws.set_landscape()
+    ws.set_paper(9)
+    ws.fit_to_pages(1, 0)
+    ws.repeat_rows(hr)
+
+    sm = wb.add_worksheet("Summary")
+    sm.set_column(0, 0, 18)
+    sm.set_column(1, 1, 14)
+    sm.set_column(2, 2, 12)
+    sm.set_column(3, 3, 18)
+    sm.write(0, 0, _fy_title(d), title)
+    sm.write_row(2, 0, ["Q (Paid Date)", "காலம்", "பதிவுகள்", "வழங்கிய தொகை"], head)
+    r_i = 3
+    for b in d["byPaidQuarter"]:
+        sm.write(r_i, 0, b["q"], txtc)
+        sm.write(r_i, 1, b["span"], txtc)
+        sm.write_number(r_i, 2, b["count"], integer)
+        sm.write_number(r_i, 3, b["paid"], num)
+        r_i += 1
+    sm.write(r_i, 0, "TOTAL", tot_b)
+    sm.write(r_i, 1, "", tot_b)
+    sm.write_formula(r_i, 2, "=SUM(C4:C%d)" % r_i, tot_b, sum(b["count"] for b in d["byPaidQuarter"]))
+    sm.write_formula(r_i, 3, "=SUM(D4:D%d)" % r_i, tot_n, sum(b["paid"] for b in d["byPaidQuarter"]))
+    r_i += 2
+    sm.write_row(r_i, 0, ["Bill Quarter", "", "பதிவுகள்", "வழங்கிய தொகை"], head)
+    first = r_i + 2
+    r_i += 1
+    for b in d["byBillQuarter"]:
+        sm.write(r_i, 0, b["quarter"], txtc)
+        sm.write(r_i, 1, "", txt)
+        sm.write_number(r_i, 2, b["count"], integer)
+        sm.write_number(r_i, 3, b["paid"], num)
+        r_i += 1
+    if d["byBillQuarter"]:
+        sm.write(r_i, 0, "TOTAL", tot_b)
+        sm.write(r_i, 1, "", tot_b)
+        sm.write_formula(r_i, 2, "=SUM(C%d:C%d)" % (first, r_i), tot_b, sum(b["count"] for b in d["byBillQuarter"]))
+        sm.write_formula(r_i, 3, "=SUM(D%d:D%d)" % (first, r_i), tot_n, sum(b["paid"] for b in d["byBillQuarter"]))
+    wb.close()
+    return buf.getvalue()
+
+
+def build_fy_pdf(d):
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+
+    pdf = FPDF(orientation="L", unit="mm", format="A4")
+    pdf.set_margins(10, 10, 10)
+    pdf.set_auto_page_break(auto=True, margin=10)
+    pdf.add_font("Tamil", "", TAMIL_FONT_PATH)
+    pdf.set_text_shaping(True)
+    pdf.add_page()
+    pdf.set_font("Tamil", size=14)
+    pdf.cell(0, 8, "திண்டுக்கல் மாவட்ட நூலக ஆணைக்குழு", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Tamil", size=10.5)
+    pdf.multi_cell(0, 6, "%s  |  பதிவுகள்: %d  |  %s" % (_fy_title(d), d["count"], datetime.now().strftime("%d/%m/%Y")),
+                   align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+
+    widths = (10, 21, 14, 54, 26, 24, 20, 24, 24, 30, 16, 14)
+    aligns = tuple("RIGHT" if k == "money" else ("CENTER" if k in ("int", "date") or key in ("paid_q", "quarter", "voucher_no", "bill_set_no") else "LEFT")
+                   for _h, key, k in FY_COLS)
+    head_style = FontFace(color=(255, 255, 255), fill_color=(15, 35, 71))
+    fill = FontFace(fill_color=(255, 243, 196))
+    pdf.set_font("Tamil", size=7)
+    with pdf.table(col_widths=widths, text_align=aligns, headings_style=head_style,
+                   line_height=4, padding=0.8, borders_layout="ALL") as table:
+        h = table.row()
+        for t, _k, _tp in FY_COLS:
+            h.cell(t, align="C")
+        for r in d["rows"]:
+            row = table.row()
+            for _h, key, kind in FY_COLS:
+                row.cell(_fy_cell(r, key, kind))
+        if d["rows"]:
+            tot = table.row()
+            tot.cell("TOTAL", colspan=7, align="R", style=fill)
+            tot.cell(indian_grouping(d["totalRequested"]), align="R", style=fill)
+            tot.cell(indian_grouping(d["totalPaid"]), align="R", style=fill)
+            tot.cell("", colspan=3, style=fill)
+
+    pdf.ln(5)
+    pdf.set_font("Tamil", size=9)
+    sub_head = FontFace(color=(255, 255, 255), fill_color=(30, 77, 140))
+    with pdf.table(col_widths=(40, 30, 25, 40), text_align=("CENTER", "CENTER", "CENTER", "RIGHT"),
+                   headings_style=sub_head, line_height=5, padding=1, borders_layout="ALL", width=135) as t1:
+        hh = t1.row()
+        for t in ("Q (Paid Date)", "காலம்", "பதிவுகள்", "வழங்கிய தொகை"):
+            hh.cell(t, align="C")
+        for b in d["byPaidQuarter"]:
+            rr = t1.row()
+            rr.cell(b["q"])
+            rr.cell(b["span"])
+            rr.cell(str(b["count"]))
+            rr.cell(indian_grouping(b["paid"]))
+        rr = t1.row()
+        rr.cell("TOTAL", colspan=2, align="R", style=fill)
+        rr.cell(str(d["count"]), align="C", style=fill)
+        rr.cell(indian_grouping(d["totalPaid"]), align="R", style=fill)
+    if d["byBillQuarter"]:
+        pdf.ln(4)
+        with pdf.table(col_widths=(55, 25, 40), text_align=("CENTER", "CENTER", "RIGHT"),
+                       headings_style=sub_head, line_height=5, padding=1, borders_layout="ALL", width=120) as t2:
+            hh = t2.row()
+            for t in ("Bill Quarter", "பதிவுகள்", "வழங்கிய தொகை"):
+                hh.cell(t, align="C")
+            for b in d["byBillQuarter"]:
+                rr = t2.row()
+                rr.cell(quarter_label(b["quarter"]))
+                rr.cell(str(b["count"]))
+                rr.cell(indian_grouping(b["paid"]))
+    return bytes(pdf.output())
+
+
+@app.route("/api/reports/financial-year")
+def api_report_financial_year():
+    """fy=2025-2026 (விடுத்தால் நடப்பு நிதியாண்டு) ; quarter=Q1,Q2.. (Paid Date Quarter; காலி = முழு ஆண்டு) ;
+    format = json | csv | xlsx | pdf"""
+    fmt = (request.args.get("format") or "json").strip().lower()
+    fy = (request.args.get("fy") or "").strip() or _fy_of(date.today())
+    quarters = get_quarters_arg()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            fys = fetch_fy_list(cur)
+            try:
+                d = fetch_fy_report(cur, fy, quarters)
+            except ValueError as ve:
+                return jsonify({"success": False, "message": str(ve)}), 400
+    finally:
+        conn.close()
+
+    stem = "Financial_Year_Report_%s%s_%s" % (
+        d["fy"], ("_" + "+".join(d["quarters"])) if d["quarters"] else "", datetime.now().strftime("%Y%m%d"))
+    try:
+        if fmt == "csv":
+            return send_file(io.BytesIO(build_fy_csv(d)), mimetype="text/csv",
+                             as_attachment=True, download_name=stem + ".csv")
+        if fmt == "xlsx":
+            return send_file(io.BytesIO(build_fy_xlsx(d)),
+                             mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             as_attachment=True, download_name=stem + ".xlsx")
+        if fmt == "pdf":
+            return send_file(io.BytesIO(build_fy_pdf(d)), mimetype="application/pdf",
+                             as_attachment=True, download_name=stem + ".pdf")
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    def _iso(v):
+        return v.isoformat() if v else ""
+
+    return jsonify({
+        "success": True, "fys": fys, "fy": d["fy"], "from": _iso(d["from"]), "to": _iso(d["to"]),
+        "quarters": d["quarters"], "count": d["count"],
+        "totalRequested": d["totalRequested"], "totalPaid": d["totalPaid"],
+        "ownFyPaid": d["ownFyPaid"], "otherFyPaid": d["otherFyPaid"],
+        "byPaidQuarter": d["byPaidQuarter"], "byBillQuarter": d["byBillQuarter"],
+        "rows": [{**r, "payment_date": _iso(r["payment_date"]), "invoice_date": _iso(r["invoice_date"])} for r in d["rows"]],
+    })
+
+
 @app.route("/api/export/payments")
 def api_export_payments():
     """format=json (திரைக் காட்சி) | csv | xlsx | pdf ;  quarter (விருப்பம்)"""
