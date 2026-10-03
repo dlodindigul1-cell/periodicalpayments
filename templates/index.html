@@ -921,7 +921,7 @@
         </div>
         <div class="field-row">
           <div class="field">
-            <label>7. பில் செட் நம்பர்</label>
+            <label>7. பில் செட் நம்பர் <span class="req">*</span></label>
             <select id="billSetNo">
               <option value="">-- தேர்ந்தெடுக்கவும் --</option>
             </select>
@@ -2875,6 +2875,19 @@
       const quarter = document.getElementById('quarterSelect').value;
       if (!magazine || !quarter) {
         setStatus('paymentStatus', 'error', '❌ Quarter மற்றும் Magazine தேர்ந்தெடுக்கவும்!');
+        hideLoading(btn); return;
+      }
+
+      // ✅ கட்டாய விவரங்கள் — தொகை, தேதி, Bill Set No மூன்றும் நிரப்பப்பட வேண்டும்
+      const _chkAmt  = Math.round(parseFloat(document.getElementById('amountNowPaid').value) || 0);
+      const _chkDate = document.getElementById('paymentDate').value;
+      const _chkSet  = document.getElementById('billSetNo').value;
+      const _missing = [];
+      if (!(_chkAmt > 0)) _missing.push('இப்போது வழங்கும் தொகை');
+      if (!_chkDate)      _missing.push('வழங்கும் தேதி');
+      if (!_chkSet)       _missing.push('பில் செட் நம்பர்');
+      if (_missing.length) {
+        setStatus('paymentStatus', 'error', '❌ கீழ்க்கண்ட விவரங்களை நிரப்பவும்: ' + _missing.join(', '));
         hideLoading(btn); return;
       }
 

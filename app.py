@@ -1582,6 +1582,18 @@ def api_save_payment_processing():
     remarks = data.get("remarks")
     bill_set_no = data.get("billSetNo")
 
+    # கட்டாய விவரங்கள்: தொகை (>0), வழங்கும் தேதி, Bill Set No
+    missing = []
+    if amount_now_paid <= 0:
+        missing.append("இப்போது வழங்கும் தொகை")
+    if not payment_date:
+        missing.append("வழங்கும் தேதி")
+    if not str(bill_set_no or "").strip():
+        missing.append("பில் செட் நம்பர்")
+    if missing:
+        return jsonify({"success": False,
+                        "message": "கீழ்க்கண்ட விவரங்களை நிரப்பவும்: " + ", ".join(missing)}), 400
+
     conn = get_conn()
     try:
         with conn.cursor() as cur:
