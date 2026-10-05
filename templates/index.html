@@ -1895,6 +1895,7 @@
 
       // முந்தைய தேர்வுகளை reset செய்
       magSel.value = '';
+      const _ib = document.getElementById('invoiceBtn'); if (_ib) _ib.disabled = false;
       document.getElementById('existingInvoiceCard').style.display = 'none';
       document.getElementById('appendBtn').style.display = 'none';
       isDuplicateExists = false;
@@ -1918,7 +1919,16 @@
       document.getElementById('appendBtn').style.display = 'none';
       const magName = document.getElementById('magazine').value;
       const qtrInput = document.getElementById('qtrIssues');
+      const invBtn = document.getElementById('invoiceBtn');
+      if (invBtn) invBtn.disabled = false;
       if (!magName) { qtrInput.disabled = true; return; }
+      if (masterData[magName] && masterData[magName].inQuarter === false) {
+        // Master-ல் இந்த Quarter டிக் செய்யப்படாத இதழ் — Invoice பதிவுக்கு அனுமதி இல்லை
+        qtrInput.disabled = true;
+        if (invBtn) invBtn.disabled = true;
+        setStatus('status', 'error', '⛔ இந்த இதழ் இந்த quarter-க்கு உண்டானதுதானா என்பதையும், விலை, நூலக எண்ணிக்கை, கழிவு ஆகியவற்றையும் சரிபார்த்த பின்னரே இன்வாய்ஸ் பதிவு செய்ய இயலும்.');
+        return;
+      }
       qtrInput.disabled = false;
       loadMagazineDetails();
       await checkDuplicateOnSelect();
@@ -2267,7 +2277,11 @@
         sel.innerHTML = '<option value="">-- இதழைத் தேர்ந்தெடுக்கவும் --</option>';
         magazines.forEach(m => {
           const o = document.createElement('option');
-          o.value = m; o.textContent = m; sel.appendChild(o);
+          o.value = m;
+          const inQ = !(masterData[m] && masterData[m].inQuarter === false);
+          o.textContent = inQ ? m : m + ' — இந்த quarter-க்கு இல்லை';
+          if (!inQ) { o.style.color = '#9aa0a6'; o.className = 'not-in-quarter'; }
+          sel.appendChild(o);
         });
         if (magazines.length === 0) {
           setStatus('status', 'error', '⚠️ இந்த Quarter-க்கு Column I-ல் இதழ் பட்டியல் எதுவும் கிடைக்கவில்லை. Master Sheet-ஐ சரிபார்க்கவும்.');
@@ -2525,6 +2539,10 @@
       }
       showLoading(btn, 'Saving...');
       const magName      = document.getElementById('magazine').value;
+      if (masterData[magName] && masterData[magName].inQuarter === false) {
+        setStatus('status', 'error', '⛔ இந்த இதழ் இந்த quarter-க்கு உண்டானதுதானா என்பதையும், விலை, நூலக எண்ணிக்கை, கழிவு ஆகியவற்றையும் சரிபார்த்த பின்னரே இன்வாய்ஸ் பதிவு செய்ய இயலும்.');
+        hideLoading(btn); return;
+      }
       const invoiceNo    = document.getElementById('invoiceNo').value.trim();
       const invoiceDate  = document.getElementById('invoiceDate').value;
       const requestedAmt = parseFloat(document.getElementById('requestedAmt').value) || 0;
@@ -4765,14 +4783,14 @@ function _pdfHelper(fnName, targetId) {
           <div class="field-row3">
             <div class="field">
               <label>Price</label>
-              <input type="number" id="masterMagPrice" min="0" step="0.01">
+              <input type="number" id="masterMagPrice" min="0" step="0.01" oninput="calcMasterIssuePrice()">
             </div>
             <div class="field">
-              <label>Discount</label>
-              <input type="number" id="masterMagDiscount" min="0" step="0.01">
+              <label>Discount (%)</label>
+              <input type="number" id="masterMagDiscount" min="0" max="100" step="0.01" placeholder="சதவீதம் (%)" oninput="calcMasterIssuePrice()">
             </div>
             <div class="field">
-              <label>Issue Price (After Discount)</label>
+              <label>Issue Price (After Discount) <span style="font-weight:400;color:var(--muted);font-size:12px;">— தானாக வரும்; தேவையெனில் மாற்றலாம்</span></label>
               <input type="number" id="masterMagIssuePrice" min="0" step="0.01">
             </div>
           </div>
@@ -5387,7 +5405,19 @@ function _pdfHelper(fnName, targetId) {
     }
 
     // ─── Magazine Master: Add / Edit Form ───
+    // Price − (Price × Discount% ÷ 100) → Issue Price (After Discount); பிறகு கையால் மாற்றலாம்
+    function calcMasterIssuePrice() {
+      const price = parseFloat(document.getElementById('masterMagPrice').value) || 0;
+      let disc = parseFloat(document.getElementById('masterMagDiscount').value) || 0;
+      if (disc < 0) disc = 0;
+      if (disc > 100) disc = 100;
+      const net = Math.round((price - (price * disc / 100)) * 100) / 100;
+      document.getElementById('masterMagIssuePrice').value = (price || disc) ? String(net) : '';
+    }
+    window._masterEditQuarters = {};   // திருத்தும் இதழின் தற்போதைய Quarter-வாரி பதிவுகள்
+
     function clearMagazineMasterForm() {
+      window._masterEditQuarters = {};
       document.getElementById('masterMagFormTitle').textContent = '➕ புதிய இதழ் / விலை சேர்';
       document.getElementById('masterMagName').value = '';
       document.getElementById('masterMagName').disabled = false;
@@ -5414,7 +5444,10 @@ function _pdfHelper(fnName, targetId) {
         document.getElementById('masterMagLanguage').value = result.language || '';
         document.getElementById('masterMagPeriodicity').value = result.periodicity || '';
         const quarters = result.quarters || {};
+        window._masterEditQuarters = quarters;
         const qKeys = Object.keys(quarters).sort();
+        // இதழுக்கு உண்மையில் உள்ள Quarter பதிவுகளின்படி டிக் பெட்டிகள் முன்பே டிக் செய்யப்படும் (மாற்றலாம்)
+        document.querySelectorAll('#masterMagQuarterChecks input[type=checkbox]').forEach(c => { c.checked = qKeys.includes(c.value); });
         if (qKeys.length) {
           const latest = quarters[qKeys[qKeys.length - 1]];
           document.getElementById('masterMagNoOfLibraries').value = latest.noOfLibraries || '';
@@ -5439,6 +5472,35 @@ function _pdfHelper(fnName, targetId) {
       const quarters = Array.from(document.querySelectorAll('#masterMagQuarterChecks input[type=checkbox]:checked')).map(c => c.value);
       if (!name) { setStatus('masterMagFormStatus', 'error', '❌ இதழ் பெயர் அவசியம்.'); return; }
       if (!quarters.length) { setStatus('masterMagFormStatus', 'error', '❌ குறைந்தது ஒரு Quarter தேர்ந்தெடுக்கவும்.'); return; }
+      const nPrice = parseFloat(document.getElementById('masterMagPrice').value) || 0;
+      const nDisc  = parseFloat(document.getElementById('masterMagDiscount').value) || 0;
+      const nIssue = parseFloat(document.getElementById('masterMagIssuePrice').value) || 0;
+      const nLibs  = parseInt(document.getElementById('masterMagNoOfLibraries').value) || 0;
+      // ஏற்கனவே பதிவுள்ள, டிக் செய்த Quarter-களில் மதிப்பு மாறுமா? — மாறினால் உறுதிப்படுத்தல்
+      const ex = window._masterEditQuarters || {};
+      const near = (a, b) => Math.abs((a || 0) - (b || 0)) < 0.005;
+      const changed = quarters.filter(q => ex[q] && !(near(ex[q].price, nPrice) && near(ex[q].discount, nDisc) &&
+                                                      near(ex[q].issuePrice, nIssue) && (ex[q].noOfLibraries || 0) === nLibs));
+      if (changed.length) {
+        const rows = changed.map(q => {
+          const o = ex[q];
+          let t = '₹' + fmtMasterNum(o.issuePrice) + ' → ₹' + fmtMasterNum(nIssue);
+          if ((o.noOfLibraries || 0) !== nLibs) t += ' · நூலகம் ' + (o.noOfLibraries || 0) + ' → ' + nLibs;
+          return '<div class="cc-row"><span>' + _ccEsc(q) + '</span><b>' + _ccEsc(t) + '</b></div>';
+        }).join('');
+        const ok = await showConfirmCard({
+          icon: '⚠️',
+          title: 'இந்த Quarter-களின் விலை மாறும்',
+          subtitle: name,
+          html: '<div class="cc-list">' + rows + '</div>' +
+                '<div class="cc-ask">பழைய Quarter-களின் விலை மாறக் கூடாதென்றால் ரத்து செய்து, அவற்றின் டிக்கை நீக்கிவிட்டு (புதிய Quarter-களை மட்டும் டிக் செய்து) சேமிக்கவும்.</div>',
+          buttons: [
+            { label: 'ரத்து', value: null, style: 'ghost' },
+            { label: 'சரி, மாற்று', value: 'ok', style: 'primary' }
+          ]
+        });
+        if (ok !== 'ok') return;
+      }
       const btn = document.getElementById('masterMagSaveBtn');
       showLoading(btn, 'சேமிக்கப்படுகிறது...');
       setStatus('masterMagFormStatus', 'loading', '<span class="spinner dark"></span> சேமிக்கப்படுகிறது...');
@@ -5459,6 +5521,7 @@ function _pdfHelper(fnName, targetId) {
         });
         const result = await res.json();
         if (result.success) {
+          quarters.forEach(q => { window._masterEditQuarters[q] = { price: nPrice, discount: nDisc, issuePrice: nIssue, noOfLibraries: nLibs }; });
           setStatus('masterMagFormStatus', 'success', '✅ ' + result.message);
           loadMasterMagazinesList();
         } else {

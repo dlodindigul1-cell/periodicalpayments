@@ -147,6 +147,63 @@ def ensure_part_schema():
     _part_ready = True
 
 
+NOT_IN_QUARTER_MSG = ("இந்த இதழ் இந்த quarter-க்கு உண்டானதுதானா என்பதையும், விலை, நூலக எண்ணிக்கை, "
+                      "கழிவு ஆகியவற்றையும் சரிபார்த்த பின்னரே இன்வாய்ஸ் பதிவு செய்ய இயலும்.")
+_quarter_backfill_ready = False
+_BACKFILL_FLAG = "magazine_quarters_backfill_2025Q1_2026Q1"
+_BACKFILL_QUARTERS = ["2025-2026-Q1", "2025-2026-Q2", "2025-2026-Q3", "2025-2026-Q4", "2026-2027-Q1"]
+
+
+def ensure_quarter_backfill():
+    """ஒரே ஒரு முறை: ஏற்கனவே உள்ள எல்லா இதழ்களுக்கும் 2025-2026-Q1 முதல் 2026-2027-Q1 வரை
+    விடுபட்ட magazine_quarters பதிவுகளைச் சேர்க்கும் (இப்போது carry-forward-ல் தெரியும் அதே விலையுடன்:
+    முந்தைய அண்மைய Quarter; அது இல்லையெனில் பிந்தைய அண்மைய Quarter).
+    - எதுவும் நீக்கப்படாது; ஏற்கனவே உள்ள பதிவுகள் மாறாது (DO NOTHING).
+    - app_flags-ல் குறி வைக்கப்படுவதால் மீண்டும் இயங்காது; பிறகு ஒரு Quarter-ஐ நீக்கினால் திரும்பச் சேராது."""
+    global _quarter_backfill_ready
+    if _quarter_backfill_ready:
+        return
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS app_flags ("
+                "key TEXT PRIMARY KEY, done_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            )
+            cur.execute("SELECT 1 FROM app_flags WHERE key=%s", (_BACKFILL_FLAG,))
+            if not cur.fetchone():
+                cur.execute("SELECT id FROM magazines")
+                for m in cur.fetchall():
+                    mid = m["id"]
+                    for q in _BACKFILL_QUARTERS:
+                        cur.execute("SELECT 1 FROM magazine_quarters WHERE magazine_id=%s AND quarter=%s", (mid, q))
+                        if cur.fetchone():
+                            continue
+                        cur.execute(
+                            "SELECT price, discount, issue_price, no_of_libraries FROM magazine_quarters "
+                            "WHERE magazine_id=%s AND quarter<%s ORDER BY quarter DESC LIMIT 1", (mid, q))
+                        src = cur.fetchone()
+                        if not src:
+                            cur.execute(
+                                "SELECT price, discount, issue_price, no_of_libraries FROM magazine_quarters "
+                                "WHERE magazine_id=%s AND quarter>%s ORDER BY quarter ASC LIMIT 1", (mid, q))
+                            src = cur.fetchone()
+                        if not src:
+                            continue
+                        cur.execute(
+                            "INSERT INTO magazine_quarters (magazine_id, quarter, price, discount, issue_price, no_of_libraries) "
+                            "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (magazine_id, quarter) DO NOTHING",
+                            (mid, q, src["price"], src["discount"], src["issue_price"], src["no_of_libraries"]))
+                cur.execute("INSERT INTO app_flags (key) VALUES (%s) ON CONFLICT DO NOTHING", (_BACKFILL_FLAG,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    _quarter_backfill_ready = True
+
+
 # --- Quarter / மாதம் / Part உதவிகள் ------------------------------------------------
 # நிதியாண்டு: Q1=Apr–Jun, Q2=Jul–Sep, Q3=Oct–Dec, Q4=Jan–Mar
 _QUARTER_MONTHS = {"Q1": ("Apr", "May", "Jun"), "Q2": ("Jul", "Aug", "Sep"),
@@ -409,6 +466,7 @@ def global_auth():
     try:
         ensure_auth_tables()
         ensure_part_schema()
+        ensure_quarter_backfill()
     except Exception as e:  # noqa: BLE001
         return Response("Database இணைப்பு பிழை: " + str(e), 503)
     user = current_user()
@@ -1059,6 +1117,7 @@ def magazines_and_master_for_quarter(cur, quarter):
             "discount": float(r["discount"] or 0),
             "priceQuarter": key,
             "isCarriedForward": rank != 0,
+            "inQuarter": rank == 0,   # Master-ல் இந்த Quarter டிக் செய்யப்பட்டுள்ளதா
         }
     return magazines, master
 
@@ -1183,6 +1242,10 @@ def api_add_payment():
             if not month_tick:
                 full_q = True
             names = quarter_month_names(quarter)
+
+            if not is_update and magazine not in get_direct_master_magazines_for_quarter(cur, quarter):
+                conn.rollback()
+                return jsonify({"success": False, "notInQuarter": True, "message": NOT_IN_QUARTER_MSG}), 400
 
             if full_q:
                 months = [1, 2, 3]
@@ -2909,7 +2972,7 @@ def api_report_magazine_wise():
                 # பொருத்திப் பார்க்கிறோம் — invoice பதிவே செய்யாத இதழுக்கு payments
                 # அட்டவணையில் வரிசையே இருக்காது என்பதால், payments அட்டவணையை மட்டும்
                 # வைத்து invoice வராதவற்றை கண்டுபிடிக்க முடியாது.
-                expected_magazines, _ = magazines_and_master_for_quarter(cur, quarter)
+                expected_magazines = sorted(get_direct_master_magazines_for_quarter(cur, quarter))  # டிக் செய்த இதழ்கள் மட்டும்
 
                 cur.execute(
                     "SELECT * FROM payments WHERE quarter=%s ORDER BY sno NULLS LAST, magazine",
@@ -3200,7 +3263,7 @@ def api_pending_invoices():
 
             pending = []
             for quarter in quarters:
-                master_magazines = get_master_magazines_for_quarter(cur, quarter)
+                master_magazines = sorted(get_direct_master_magazines_for_quarter(cur, quarter))  # டிக் செய்த இதழ்கள் மட்டும்
                 cur.execute(
                     "SELECT magazine, part, months, quarter FROM payments "
                     "WHERE quarter=%s AND invoice_no IS NOT NULL AND invoice_no<>''",
