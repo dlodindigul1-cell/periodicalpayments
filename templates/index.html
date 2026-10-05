@@ -1294,11 +1294,9 @@
         <div class="card">
           <div class="card-title">📝 வவுச்சர் உருவாக்கு — Quarter &amp; Set தேர்வு</div>
           <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
-            <div style="min-width:200px;">
-              <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Quarter தேர்ந்தெடுக்கவும்</label>
-              <select id="voucherCreateQuarterSelect" onchange="onVoucherCreateQuarterChange()" class="qsel-dyn" data-qsrc="existing">
-                <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-              </select>
+            <div style="min-width:260px; max-width:560px;">
+              <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Quarter தேர்ந்தெடுக்கவும் <span style="font-weight:500; color:var(--muted);">(பல Quarter-ஐ ஒன்றாகத் தேர்வு செய்யலாம்)</span></label>
+              <div class="qsel" id="voucherCreateQuarterBox" data-noall="1" data-onchange="onVoucherCreateQuarterChange"></div>
             </div>
             <div style="min-width:220px;">
               <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Set Number தேர்ந்தெடுக்கவும்</label>
@@ -1369,11 +1367,9 @@
         <div class="card">
           <div class="card-title">🧾 Payment Advice — Quarter &amp; Set தேர்வு</div>
           <div style="display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
-            <div style="min-width:200px;">
-              <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Quarter தேர்ந்தெடுக்கவும்</label>
-              <select id="adviceQuarterSelect" onchange="onAdviceQuarterChange()" class="qsel-dyn" data-qsrc="existing">
-                <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-              </select>
+            <div style="min-width:260px; max-width:560px;">
+              <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Quarter தேர்ந்தெடுக்கவும் <span style="font-weight:500; color:var(--muted);">(பல Quarter-ஐ ஒன்றாகத் தேர்வு செய்யலாம்)</span></label>
+              <div class="qsel" id="adviceQuarterBox" data-noall="1" data-onchange="onAdviceQuarterChange"></div>
             </div>
             <div style="min-width:220px;">
               <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Set Number தேர்ந்தெடுக்கவும்</label>
@@ -1416,11 +1412,9 @@
         <div class="card">
           <div class="card-title">🖨️ Payment Voucher Creation — Quarter &amp; Set தேர்வு</div>
           <div style="display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap; margin-bottom:20px;">
-            <div style="min-width:200px;">
-              <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Quarter தேர்ந்தெடுக்கவும்</label>
-              <select id="voucherPrintQuarterSelect" onchange="onVoucherPrintQuarterChange()" class="qsel-dyn" data-qsrc="existing">
-                <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
-              </select>
+            <div style="min-width:260px; max-width:560px;">
+              <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Quarter தேர்ந்தெடுக்கவும் <span style="font-weight:500; color:var(--muted);">(பல Quarter-ஐ ஒன்றாகத் தேர்வு செய்யலாம்)</span></label>
+              <div class="qsel" id="voucherPrintQuarterBox" data-noall="1" data-onchange="onVoucherPrintQuarterChange"></div>
             </div>
             <div style="min-width:220px;">
               <label style="font-size:13px; font-weight:600; color:var(--blue); display:block; margin-bottom:6px;">Set Number தேர்ந்தெடுக்கவும்</label>
@@ -3452,7 +3446,7 @@
       document.getElementById('voucherCreatePanel').style.display  = 'block';
       document.getElementById('voucherListPanel').style.display    = 'none';
       document.getElementById('paymentAdvicePanel').style.display  = 'none';
-      document.getElementById('voucherCreateQuarterSelect').value  = '';
+      QSel.reset('voucherCreateQuarterBox');
       document.getElementById('voucherSetSelect').innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
       document.getElementById('voucherSetSelect').disabled  = true;
       document.getElementById('voucherMagTableWrap').style.display = 'none';
@@ -3461,7 +3455,7 @@
 
     // ── Quarter தேர்வு → அந்த Quarter-க்கான Set Numbers மட்டும் ──
     async function onVoucherCreateQuarterChange() {
-      const quarter = document.getElementById('voucherCreateQuarterSelect').value;
+      const quarter = QSel.csv('voucherCreateQuarterBox');
       const sel = document.getElementById('voucherSetSelect');
       document.getElementById('voucherMagTableWrap').style.display = 'none';
       if (!quarter) {
@@ -3484,7 +3478,7 @@
       document.getElementById('voucherListPanel').style.display    = 'none';
       document.getElementById('paymentAdvicePanel').style.display  = 'block';
       document.getElementById('adviceOutputWrap').style.display    = 'none';
-      document.getElementById('adviceQuarterSelect').value = '';
+      QSel.reset('adviceQuarterBox');
       document.getElementById('adviceSetSelect').innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
       document.getElementById('adviceSetSelect').disabled  = true;
       clearStatus('adviceStatus');
@@ -3492,7 +3486,7 @@
 
     // ── Quarter தேர்வு → அந்த Quarter-க்கான Set Numbers மட்டும் ──
     async function onAdviceQuarterChange() {
-      const quarter = document.getElementById('adviceQuarterSelect').value;
+      const quarter = QSel.csv('adviceQuarterBox');
       const sel = document.getElementById('adviceSetSelect');
       if (!quarter) {
         sel.innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
@@ -3543,7 +3537,7 @@
     // ── Set தேர்வு → Magazines table ──
     async function loadMagazinesForVoucher() {
       const setNo   = document.getElementById('voucherSetSelect').value;
-      const quarter = document.getElementById('voucherCreateQuarterSelect').value;
+      const quarter = QSel.csv('voucherCreateQuarterBox');
       const wrap  = document.getElementById('voucherMagTableWrap');
       if (!setNo) { wrap.style.display = 'none'; return; }
 
@@ -3633,7 +3627,7 @@
 
     async function generatePaymentAdvice() {
       const setNo   = document.getElementById('adviceSetSelect').value;
-      const quarter = document.getElementById('adviceQuarterSelect').value;
+      const quarter = QSel.csv('adviceQuarterBox');
       if (!quarter) { setStatus('adviceStatus', 'error', '❌ முதலில் Quarter தேர்ந்தெடுக்கவும்'); return; }
       if (!setNo)   { setStatus('adviceStatus', 'error', '❌ Set Number தேர்ந்தெடுக்கவும்'); return; }
 
@@ -3653,7 +3647,7 @@
         clearStatus('adviceStatus');
 
         // Quarter display — "2025-2026-Q4" → "2025-2026 Q4"
-        const quarterDisplay = d.quarter.replace(/-Q/, ' Q');
+        const quarterDisplay = d.quarterText || d.quarter.replace(/-Q/, ' Q');
 
         // Voucher From/To filter + duplicate auto-remove
         const vFrom = (document.getElementById('adviceVoucherFrom').value || '').trim();
@@ -3771,7 +3765,7 @@
 
     async function downloadAdvicePDF() {
       const setNo   = document.getElementById('adviceSetSelect').value || 'Set';
-      const quarter = document.getElementById('adviceQuarterSelect').value;
+      const quarter = QSel.csv('adviceQuarterBox');
       const btn = event.target;
       btn.disabled = true;
       btn.textContent = '⏳ சேமிக்கிறது...';
@@ -4400,7 +4394,7 @@
 
     async function loadSetNumbersForVoucherPrint() {
       document.getElementById('voucherPrintPreview').style.display = 'none';
-      document.getElementById('voucherPrintQuarterSelect').value = '';
+      QSel.reset('voucherPrintQuarterBox');
       document.getElementById('voucherPrintSetSelect').innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
       document.getElementById('voucherPrintSetSelect').disabled  = true;
       clearStatus('voucherPrintStatus');
@@ -4408,7 +4402,7 @@
 
     // ── Quarter தேர்வு → அந்த Quarter-க்கான Set Numbers மட்டும் ──
     async function onVoucherPrintQuarterChange() {
-      const quarter = document.getElementById('voucherPrintQuarterSelect').value;
+      const quarter = QSel.csv('voucherPrintQuarterBox');
       const sel = document.getElementById('voucherPrintSetSelect');
       document.getElementById('voucherPrintPreview').style.display = 'none';
       if (!quarter) {
@@ -4438,7 +4432,7 @@
 
     async function previewVoucherPrintData() {
       const setNo   = document.getElementById('voucherPrintSetSelect').value;
-      const quarter = document.getElementById('voucherPrintQuarterSelect').value;
+      const quarter = QSel.csv('voucherPrintQuarterBox');
       const preview = document.getElementById('voucherPrintPreview');
       preview.style.display = 'none';
       clearStatus('voucherPrintResult');
@@ -4454,7 +4448,7 @@
           return;
         }
 
-        document.getElementById('vpQuarterLabel').textContent = d.quarter.replace(/-Q/, ' Q');
+        document.getElementById('vpQuarterLabel').textContent = d.quarterText || d.quarter.replace(/-Q/, ' Q');
         document.getElementById('vpTotalRows').textContent    = d.rows.length;
 
         const tbody = document.getElementById('voucherPrintTableBody');
@@ -4481,7 +4475,7 @@
 
     async function printPaymentVoucher() {
       const setNo   = document.getElementById('voucherPrintSetSelect').value;
-      const quarter = document.getElementById('voucherPrintQuarterSelect').value;
+      const quarter = QSel.csv('voucherPrintQuarterBox');
       if (!setNo) { alert('Set Number தேர்ந்தெடுக்கவும்!'); return; }
 
       const btn = document.getElementById('printVoucherBtn');
@@ -5885,7 +5879,7 @@ window.QSel = (function () {
   function renderBox(id) {
     const el = document.getElementById(id), s = st[id];
     if (!el || !s) return;
-    let h = '<label class="qs-item qs-all' + (s.all ? ' on' : '') + '"><input type="checkbox" data-q=""' + (s.all ? ' checked' : '') + '> அனைத்தும்</label>';
+    let h = el.dataset.noall ? '' : '<label class="qs-item qs-all' + (s.all ? ' on' : '') + '"><input type="checkbox" data-q=""' + (s.all ? ' checked' : '') + '> அனைத்தும்</label>';
     quarters.forEach(q => {
       const on = s.sel.has(q);
       h += '<label class="qs-item' + (on ? ' on' : '') + '"><input type="checkbox" data-q="' + esc(q) + '"' + (on ? ' checked' : '') + '> ' + esc(lbl(q)) + '</label>';
@@ -5920,6 +5914,7 @@ window.QSel = (function () {
   const get = id => (st[id] && !st[id].all) ? Array.from(st[id].sel).sort() : [];
   const csv = id => get(id).join(',');
   const label = id => get(id).map(lbl).join(', ');
+  function reset(id) { if (st[id]) { st[id].all = true; st[id].sel.clear(); renderBox(id); } }
 
   function fillSelects() {
     document.querySelectorAll('select.qsel-dyn').forEach(sel => {
@@ -5971,7 +5966,7 @@ window.QSel = (function () {
     if (typeof f === 'function') window[n] = function () { reload(); return f.apply(this, arguments); };
   });
 
-  return { mount, get, csv, label, reload };
+  return { mount, get, csv, label, reload, reset };
 })();
 </script>
 

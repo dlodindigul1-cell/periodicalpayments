@@ -3282,15 +3282,15 @@ Regards,<br>District Library Officer<br>Dindigul"""
 # =============================================================================
 @app.route("/api/vouchers/set-numbers")
 def api_voucher_set_numbers():
-    quarter = request.args.get("quarter", "").strip()
+    ql = _qlist(request.args.get("quarter", "").strip())
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            if quarter:
+            if ql:
                 cur.execute(
                     "SELECT DISTINCT bill_set_no, quarter FROM payments "
-                    "WHERE bill_set_no IS NOT NULL AND bill_set_no<>'' AND quarter=%s",
-                    (quarter,),
+                    "WHERE bill_set_no IS NOT NULL AND bill_set_no<>'' AND quarter = ANY(%s)",
+                    (ql,),
                 )
             else:
                 cur.execute(
@@ -3321,17 +3321,17 @@ def api_voucher_set_numbers():
 @app.route("/api/vouchers/by-set")
 def api_vouchers_by_set():
     set_no = request.args.get("setNo", "").strip()
-    quarter = request.args.get("quarter", "").strip()
+    ql = _qlist(request.args.get("quarter", "").strip())
     if not set_no:
         return jsonify({"success": False, "message": "Set No தேவை"}), 400
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            if quarter:
+            if ql:
                 cur.execute(
                     "SELECT id, magazine, part, months, paid_amt, voucher_no, quarter FROM payments "
-                    "WHERE bill_set_no=%s AND quarter=%s ORDER BY magazine, part",
-                    (set_no, quarter),
+                    "WHERE bill_set_no=%s AND quarter = ANY(%s) ORDER BY quarter, magazine, part",
+                    (set_no, ql),
                 )
             else:
                 cur.execute(
@@ -3413,25 +3413,94 @@ def api_all_vouchers():
 # =============================================================================
 # 15-b) Payment Advice — GAS "getPaymentAdviceData" / "savePaymentAdvicePDF" இதே தர்க்கம்
 # =============================================================================
+def _quarter_parts(q):
+    m = re.match(r"^(\d{4})-(\d{4})-Q([1-4])$", (q or "").strip())
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
+
+
+def quarter_short(q):
+    """'2025-2026-Q1' -> 'Q1 2025-26' (இதழ் பெயருக்கு அருகில் காட்ட)."""
+    p = _quarter_parts(q)
+    return "Q%d %d-%s" % (p[2], p[0], str(p[1])[-2:]) if p else (q or "")
+
+
+def _quarters_sorted(quarters):
+    def k(q):
+        p = _quarter_parts(q)
+        return (p[0], p[2]) if p else (9999, 9)
+    return sorted(set(quarters), key=k)
+
+
+def quarters_contiguous(qs):
+    idx = []
+    for q in qs:
+        p = _quarter_parts(q)
+        if not p:
+            return False
+        idx.append(p[0] * 4 + p[2] - 1)
+    return all(b - a == 1 for a, b in zip(idx, idx[1:]))
+
+
+def quarters_text(quarters):
+    """1 Quarter -> '2025-2026 Q1'; தொடர்ச்சியான பல Quarter -> '2025-2026 Q1-Q4'; இல்லையெனில் 'Q1, Q3'."""
+    qs = _quarters_sorted(quarters)
+    if not qs:
+        return ""
+    if len(qs) == 1:
+        return qs[0].replace("-Q", " Q")
+    if quarters_contiguous(qs):
+        a, b = _quarter_parts(qs[0]), _quarter_parts(qs[-1])
+        if a[0] == b[0]:
+            return "%d-%d Q%d-Q%d" % (a[0], a[1], a[2], b[2])
+        return "%s to %s" % (qs[0].replace("-Q", " Q"), qs[-1].replace("-Q", " Q"))
+    return ", ".join(q.replace("-Q", " Q") for q in qs)
+
+
+def quarters_period_text(quarters):
+    """தொடர்ச்சியான Quarter-கள் -> 'ஏப்ரல் 2025 முதல் மார்ச் 2026 வரை'; தொடர்ச்சி இல்லையெனில் ஒவ்வொன்றும் ';' இட்டு."""
+    qs = _quarters_sorted(quarters)
+    if len(qs) <= 1 or not quarters_contiguous(qs):
+        return "; ".join(voucher_period_text(q) for q in qs)
+    first, last = voucher_period_text(qs[0]), voucher_period_text(qs[-1])
+    return first.split(" முதல் ")[0] + " முதல் " + last.split(" முதல் ")[1]
+
+
+def quarters_fin_year(quarters):
+    """பல நிதியாண்டுகள் கலந்தால் கடைசி Quarter-ன் நிதியாண்டு (Voucher எண்ணுக்கு)."""
+    qs = _quarters_sorted(quarters)
+    return voucher_fin_year(qs[-1]) if qs else ""
+
+
 def get_payment_advice_data(cur, set_no, quarter):
-    """ஒரு Set No + Quarter-க்கான Payment Advice வரிசைகளை உருவாக்கும்.
+    """ஒரு Set No + Quarter(கள்)-க்கான Payment Advice வரிசைகளை உருவாக்கும்.
+    quarter: 'Q' அல்லது 'Q1,Q2,...' (பல Quarter) — ஒவ்வொரு Quarter invoice-க்கும் தனி வரி / தனி Voucher No.
     GAS-ன் getPaymentAdviceData()-ஐ போலவே: Voucher No இல்லாத பதிவு இருந்தால் தடுக்கும்."""
+    ql = _qlist(quarter)
+    if not ql:
+        return {"success": False, "message": "குறைந்தது ஒரு Quarter தேவை"}
     cur.execute(
         """
         SELECT p.magazine, p.part, p.months, p.voucher_no, p.invoice_no, p.invoice_date,
                p.requested_amt, p.paid_amt, p.quarter, m.tnpfts_code
         FROM payments p
         LEFT JOIN magazines m ON m.name = p.magazine
-        WHERE p.bill_set_no = %s AND p.quarter = %s
+        WHERE p.bill_set_no = %s AND p.quarter = ANY(%s)
         """,
-        (set_no, quarter),
+        (set_no, ql),
     )
     prows = cur.fetchall()
 
     if not prows:
         return {"success": False, "message": "இந்த Quarter / Set-ல் பதிவுகள் இல்லை"}
 
-    no_voucher = [row_label(r) for r in prows if not (r["voucher_no"] or "").strip()]
+    present = _quarters_sorted({r["quarter"] for r in prows})
+    multi = len(present) > 1
+
+    def nm(r):
+        lbl = row_label(r)
+        return "%s (%s)" % (lbl, quarter_short(r["quarter"])) if multi else lbl
+
+    no_voucher = [nm(r) for r in prows if not (r["voucher_no"] or "").strip()]
     if no_voucher:
         return {
             "success": False,
@@ -3448,7 +3517,8 @@ def get_payment_advice_data(cur, set_no, quarter):
         rows.append(
             {
                 "voucherNo": (r["voucher_no"] or "").strip(),
-                "magazine": row_label(r),
+                "magazine": nm(r),
+                "quarter": r["quarter"],
                 "tnpftsCode": r["tnpfts_code"] or "",
                 "invoiceNo": r["invoice_no"] or "",
                 "invoiceDate": fmt_date(r["invoice_date"]),
@@ -3471,7 +3541,12 @@ def get_payment_advice_data(cur, set_no, quarter):
     return {
         "success": True,
         "setNo": set_no,
-        "quarter": quarter,
+        "quarter": present[0] if not multi else quarters_text(present),
+        "quarters": present,
+        "quarterText": quarters_text(present),
+        "periodText": quarters_period_text(present),
+        "finYear": quarters_fin_year(present),
+        "multi": multi,
         "totalRows": len(rows),
         "totalNet": total_net,
         "rows": rows,
@@ -3527,7 +3602,7 @@ def build_payment_advice_pdf(d):
     from fpdf import FPDF
     from fpdf.fonts import FontFace
 
-    quarter_display = (d["quarter"] or "").replace("-Q", " Q")
+    quarter_display = d.get("quarterText") or (d["quarter"] or "").replace("-Q", " Q")
     total_in_words = amount_to_english_words(d["totalNet"])
 
     pdf = FPDF(orientation="L", unit="mm", format="Letter")
@@ -3698,12 +3773,15 @@ def build_payment_voucher_pdf(d, file_no=None, doc_date=None):
     rows = d["rows"]
     total = sum(r["netPayable"] for r in rows)
     quarter = d["quarter"] or ""
+    q_text = d.get("quarterText") or quarter.replace("-Q", " Q")
+    p_text = d.get("periodText") or voucher_period_text(quarter)
+    fin_year = d.get("finYear") or voucher_fin_year(quarter)
 
     v_nos = [r["voucherNo"] for r in rows]
     if len(v_nos) == 1:
-        v_range = f"Vouchers Numbers : {v_nos[0]}/{voucher_fin_year(quarter)}"
+        v_range = f"Vouchers Numbers : {v_nos[0]}/{fin_year}"
     else:
-        v_range = f"Vouchers Numbers : {v_nos[0]} to {v_nos[-1]}/{voucher_fin_year(quarter)}"
+        v_range = f"Vouchers Numbers : {v_nos[0]} to {v_nos[-1]}/{fin_year}"
 
     def fmt_amt(x):
         x = float(x)
@@ -3831,7 +3909,7 @@ def build_payment_voucher_pdf(d, file_no=None, doc_date=None):
     draw_c(289.0, 202.9, "சந்தாத் தொகை செலுத்துதல்", size=8.9, bold=True)
 
     draw(158.1, 227.3, "காலம்", size=8.0)
-    period_line = f"{quarter.replace('-Q', ' Q')} ( {voucher_period_text(quarter)} )"
+    period_line = f"{q_text} ( {p_text} )"
     plines = wrap(period_line, 196, 8.9, bold=True, latin="Helvetica")[:2]
     base0 = 220.0 if len(plines) == 2 else 227.3
     for i, ln in enumerate(plines):
@@ -3867,7 +3945,11 @@ def build_payment_voucher_pdf(d, file_no=None, doc_date=None):
         has_tamil = any(_is_tamil_char(c) for c in name)
         draw(158.1, base_no[i], str(i + 1), size=8.9, bold=True, latin="Helvetica")
         draw(174.8, base_no[i], str(r["voucherNo"]), size=8.9, bold=True, latin="Helvetica")
-        draw(192.7, base_no[i] - (1.6 if has_tamil else 0), name, size=8.9, bold=True, latin="Times")
+        # பல Quarter வரிகளில் பெயருடன் (Q1 2025-26) சேர்வதால் — கட்டத்துக்குள் அடங்க எழுத்தளவை குறைக்கும்
+        nsize = 8.9
+        while nsize > 6.4 and text_width(name, nsize, bold=True) > 160:
+            nsize -= 0.3
+        draw(192.7, base_no[i] - (1.6 if has_tamil else 0), name, size=nsize, bold=True, latin="Times")
         draw(357.4, base_rs[i], "ரூ.", size=8.9, bold=True)
         draw_r(423.6, base_amt[i], fmt_amt(r["netPayable"]), size=9.7, bold=True, latin="Times")
 
@@ -3968,8 +4050,10 @@ def api_payment_voucher():
             "wordsLine": f"Rs.{indian_grouping(total)} (Rupees {amount_to_words_voucher(total)})",
             "voucherFrom": d["rows"][0]["voucherNo"],
             "voucherTo": d["rows"][-1]["voucherNo"],
-            "finYear": voucher_fin_year(quarter),
-            "periodText": voucher_period_text(quarter),
+            "quarter": d["quarter"],
+            "quarterText": d["quarterText"],
+            "finYear": d["finYear"],
+            "periodText": d["periodText"],
             "defaultFileNo": VOUCHER_DEFAULT_FILE_NO,
             "rows": d["rows"],
         })
