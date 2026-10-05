@@ -4814,6 +4814,27 @@ function _pdfHelper(fnName, targetId) {
           <div id="masterMagFormStatus" class="status"></div>
         </div>
 
+        <div class="card" id="oldQtrCard" style="display:none; border:2px solid #c8a84b;">
+          <div class="card-title" style="color:#7a5c00;" id="oldQtrTitle">🛠️ பழைய Quarter விலை / No of Libraries (Subscription) மாற்று</div>
+          <p style="font-size:13px;color:var(--muted);margin:0 0 10px;">மேலே பூட்டப்பட்ட (🔒) Quarter-களின் விலையை வேண்டுமென்றே மாற்ற மட்டும் இதைப் பயன்படுத்தவும். சேமிக்கும் முன் பழைய → புதிய மதிப்புகள் காட்டப்படும்.</p>
+          <div class="field">
+            <label>எந்த Quarter(கள்) <span class="req">*</span></label>
+            <div id="oldQtrChecks" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>No of Libraries (Subscription)</label><input type="number" id="oqLibs" min="0"></div>
+            <div class="field"><label>Price</label><input type="number" id="oqPrice" min="0" step="0.01" oninput="calcOldQtrIssue()"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Discount (%)</label><input type="number" id="oqDiscount" min="0" max="100" step="0.01" oninput="calcOldQtrIssue()"></div>
+            <div class="field"><label>Issue Price (After Discount)</label><input type="number" id="oqIssue" min="0" step="0.01"></div>
+          </div>
+          <div class="btn-row" style="margin-top:12px;">
+            <button class="btn-primary" id="oqSaveBtn" onclick="saveOldQuarters()">💾 பழைய Quarter மாற்றைச் சேமி</button>
+          </div>
+          <div id="oqStatus" class="status"></div>
+        </div>
+
         <div class="card">
           <div class="card-title">📋 இதழ்கள் பட்டியல்</div>
           <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:16px;">
@@ -5416,6 +5437,86 @@ function _pdfHelper(fnName, targetId) {
     }
     window._masterEditQuarters = {};   // திருத்தும் இதழின் தற்போதைய Quarter-வாரி பதிவுகள்
 
+    // பதிவுள்ள Quarter-கள் டிக் செய்யப்பட்டுப் பூட்டப்படும்; பதிவில்லாதவை மட்டும் தேர்ந்தெடுக்கலாம்
+    function applyMasterQuarterLocks() {
+      const have = window._masterEditQuarters || {};
+      document.querySelectorAll('#masterMagQuarterChecks label').forEach(lb => {
+        const c = lb.querySelector('input[type=checkbox]');
+        if (!c) return;
+        const locked = Object.prototype.hasOwnProperty.call(have, c.value);
+        if (locked) { c.checked = true; c.disabled = true; } else { c.disabled = false; }
+        lb.style.opacity = locked ? '0.6' : '';
+        let tag = lb.querySelector('.qlock');
+        if (locked && !tag) { tag = document.createElement('span'); tag.className = 'qlock'; tag.textContent = ' 🔒'; lb.appendChild(tag); }
+        if (!locked && tag) tag.remove();
+      });
+      renderOldQtrCard();
+    }
+
+    function renderOldQtrCard() {
+      const card = document.getElementById('oldQtrCard');
+      if (!card) return;
+      const have = Object.keys(window._masterEditQuarters || {}).sort();
+      if (!have.length) { card.style.display = 'none'; return; }
+      card.style.display = 'block';
+      const prev = new Set(Array.from(document.querySelectorAll('#oldQtrChecks input:checked')).map(c => c.value));
+      document.getElementById('oldQtrChecks').innerHTML = have.map(q =>
+        '<label style="font-weight:500;"><input type="checkbox" value="' + _ccEsc(q) + '"' + (prev.has(q) ? ' checked' : '') +
+        ' onchange="onOldQtrPick()"> ' + _ccEsc(_qLabel(q)) + '</label>').join('');
+    }
+    function onOldQtrPick() {
+      const sel = Array.from(document.querySelectorAll('#oldQtrChecks input:checked')).map(c => c.value);
+      if (sel.length !== 1) return;
+      const d = (window._masterEditQuarters || {})[sel[0]];
+      if (!d) return;
+      document.getElementById('oqLibs').value = d.noOfLibraries || '';
+      document.getElementById('oqPrice').value = d.price || '';
+      document.getElementById('oqDiscount').value = d.discount || '';
+      document.getElementById('oqIssue').value = d.issuePrice || '';
+    }
+    function calcOldQtrIssue() {
+      const price = parseFloat(document.getElementById('oqPrice').value) || 0;
+      let disc = Math.min(100, Math.max(0, parseFloat(document.getElementById('oqDiscount').value) || 0));
+      document.getElementById('oqIssue').value = (price || disc) ? String(Math.round((price - price * disc / 100) * 100) / 100) : '';
+    }
+    async function saveOldQuarters() {
+      const name = document.getElementById('masterMagName').value.trim();
+      const qs = Array.from(document.querySelectorAll('#oldQtrChecks input:checked')).map(c => c.value);
+      if (!name || !qs.length) { setStatus('oqStatus', 'error', '❌ குறைந்தது ஒரு Quarter தேர்ந்தெடுக்கவும்.'); return; }
+      const price = parseFloat(document.getElementById('oqPrice').value) || 0;
+      const discount = parseFloat(document.getElementById('oqDiscount').value) || 0;
+      const issuePrice = parseFloat(document.getElementById('oqIssue').value) || 0;
+      const noOfLibraries = parseInt(document.getElementById('oqLibs').value) || 0;
+      const ex = window._masterEditQuarters || {};
+      const rows = qs.map(q => {
+        const o = ex[q] || {};
+        return '<div class="cc-row"><span>' + _ccEsc(q) + '</span><b>₹' + fmtMasterNum(o.issuePrice) + ' → ₹' + fmtMasterNum(issuePrice) +
+               ' · நூலகம் ' + (o.noOfLibraries || 0) + ' → ' + noOfLibraries + '</b></div>';
+      }).join('');
+      const ok = await showConfirmCard({
+        icon: '⚠️', title: 'பழைய Quarter விலை மாறும்', subtitle: name,
+        html: '<div class="cc-list">' + rows + '</div><div class="cc-ask">இந்த மாற்றம் Master-ல் மட்டும் பதிவாகும். இந்த Quarter-களின் ஏற்கனவே பதிவான Invoice-கள் மாறாது. தொடரலாமா?</div>',
+        buttons: [{ label: 'ரத்து', value: null, style: 'ghost' }, { label: 'சரி, மாற்று', value: 'ok', style: 'primary' }]
+      });
+      if (ok !== 'ok') return;
+      const btn = document.getElementById('oqSaveBtn');
+      showLoading(btn, 'சேமிக்கப்படுகிறது...');
+      try {
+        const res = await fetch('/api/admin/update-old-quarters', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, quarters: qs, price, discount, issuePrice, noOfLibraries })
+        });
+        const result = await res.json();
+        if (result.success) {
+          (result.updated || []).forEach(q => { ex[q] = { price, discount, issuePrice, noOfLibraries }; });
+          await editMasterMagazine(name);
+          setStatus('oqStatus', 'success', '✅ ' + result.message);
+          loadMasterMagazinesList();
+        } else setStatus('oqStatus', 'error', '❌ ' + result.message);
+      } catch (e) { setStatus('oqStatus', 'error', '❌ பிழை: ' + e.message); }
+      hideLoading(btn);
+    }
+
     function clearMagazineMasterForm() {
       window._masterEditQuarters = {};
       document.getElementById('masterMagFormTitle').textContent = '➕ புதிய இதழ் / விலை சேர்';
@@ -5427,7 +5528,10 @@ function _pdfHelper(fnName, targetId) {
       document.getElementById('masterMagPrice').value = '';
       document.getElementById('masterMagDiscount').value = '';
       document.getElementById('masterMagIssuePrice').value = '';
-      document.querySelectorAll('#masterMagQuarterChecks input[type=checkbox]').forEach(c => c.checked = false);
+      document.querySelectorAll('#masterMagQuarterChecks input[type=checkbox]').forEach(c => { c.checked = false; c.disabled = false; });
+      applyMasterQuarterLocks();
+      ['oqLibs','oqPrice','oqDiscount','oqIssue'].forEach(id => { const e = document.getElementById(id); if (e) e.value = ''; });
+      clearStatus('oqStatus');
       document.getElementById('masterMagExistingWrap').style.display = 'none';
       clearStatus('masterMagFormStatus');
     }
@@ -5447,7 +5551,7 @@ function _pdfHelper(fnName, targetId) {
         window._masterEditQuarters = quarters;
         const qKeys = Object.keys(quarters).sort();
         // இதழுக்கு உண்மையில் உள்ள Quarter பதிவுகளின்படி டிக் பெட்டிகள் முன்பே டிக் செய்யப்படும் (மாற்றலாம்)
-        document.querySelectorAll('#masterMagQuarterChecks input[type=checkbox]').forEach(c => { c.checked = qKeys.includes(c.value); });
+        applyMasterQuarterLocks();   // பதிவுள்ள Quarter-கள் 🔒 பூட்டப்படும்; புதியவற்றை மட்டும் டிக் செய்யலாம்
         if (qKeys.length) {
           const latest = quarters[qKeys[qKeys.length - 1]];
           document.getElementById('masterMagNoOfLibraries').value = latest.noOfLibraries || '';
@@ -5469,9 +5573,9 @@ function _pdfHelper(fnName, targetId) {
 
     async function saveMagazineMaster() {
       const name = document.getElementById('masterMagName').value.trim();
-      const quarters = Array.from(document.querySelectorAll('#masterMagQuarterChecks input[type=checkbox]:checked')).map(c => c.value);
+      const quarters = Array.from(document.querySelectorAll('#masterMagQuarterChecks input[type=checkbox]:checked:not(:disabled)')).map(c => c.value);
       if (!name) { setStatus('masterMagFormStatus', 'error', '❌ இதழ் பெயர் அவசியம்.'); return; }
-      if (!quarters.length) { setStatus('masterMagFormStatus', 'error', '❌ குறைந்தது ஒரு Quarter தேர்ந்தெடுக்கவும்.'); return; }
+      if (!quarters.length) { setStatus('masterMagFormStatus', 'error', '❌ புதிதாகச் சேர்க்க குறைந்தது ஒரு Quarter-ஐ டிக் செய்யவும். (🔒 பதிவுள்ள Quarter-களை மாற்ற கீழே உள்ள "பழைய Quarter மாற்று" பகுதியைப் பயன்படுத்தவும்.)'); return; }
       const nPrice = parseFloat(document.getElementById('masterMagPrice').value) || 0;
       const nDisc  = parseFloat(document.getElementById('masterMagDiscount').value) || 0;
       const nIssue = parseFloat(document.getElementById('masterMagIssuePrice').value) || 0;
@@ -5522,6 +5626,7 @@ function _pdfHelper(fnName, targetId) {
         const result = await res.json();
         if (result.success) {
           quarters.forEach(q => { window._masterEditQuarters[q] = { price: nPrice, discount: nDisc, issuePrice: nIssue, noOfLibraries: nLibs }; });
+          applyMasterQuarterLocks();
           setStatus('masterMagFormStatus', 'success', '✅ ' + result.message);
           loadMasterMagazinesList();
         } else {
@@ -5994,6 +6099,7 @@ window.QSel = (function () {
     const on = new Set(Array.from(box.querySelectorAll('input:checked')).map(c => c.value));
     box.innerHTML = addable.map(q =>
       '<label style="font-weight:500;"><input type="checkbox" value="' + esc(q) + '"' + (on.has(q) ? ' checked' : '') + '> ' + esc(lbl(q)) + '</label>').join('');
+    if (typeof window.applyMasterQuarterLocks === 'function') window.applyMasterQuarterLocks();
   }
 
   let busy = null;

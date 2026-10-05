@@ -2374,10 +2374,58 @@ def api_admin_update_magazine():
     try:
         with conn.cursor() as cur:
             magazine_id = upsert_magazine_base(cur, name, language, periodicity)
+            # ஏற்கனவே பதிவுள்ள Quarter-கள் பூட்டப்பட்டவை — இங்கே மாற்றப்படாது
+            # (மாற்ற: "பழைய Quarter விலை / No of Libraries மாற்று" வசதி)
+            cur.execute("SELECT quarter FROM magazine_quarters WHERE magazine_id=%s", (magazine_id,))
+            have = {r["quarter"] for r in cur.fetchall()}
+            skipped = [q for q in quarters if str(q).strip() in have]
+            quarters = [q for q in quarters if str(q).strip() not in have]
             if quarters:
                 upsert_quarter_rows(cur, magazine_id, quarters, price, discount, issue_price, no_of_libraries)
             conn.commit()
-        return jsonify({"success": True, "message": f"'{name}' புதுப்பிக்கப்பட்டது ({len(quarters)} quarter(s))."})
+        msg = f"'{name}' புதுப்பிக்கப்பட்டது ({len(quarters)} புதிய quarter)."
+        if skipped:
+            msg += " பதிவுள்ள Quarter-கள் (%s) தொடப்படவில்லை." % ", ".join(skipped)
+        return jsonify({"success": True, "message": msg})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/update-old-quarters", methods=["POST"])
+def api_admin_update_old_quarters():
+    """ஏற்கனவே பதிவுள்ள Quarter-களின் Price / Discount / Issue Price / No of Libraries-ஐ
+    வேண்டுமென்றே மாற்ற (Master திருத்து படிவத்தில் பூட்டப்பட்டவை). புதிய Quarter-ஐ உருவாக்காது."""
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    quarters = [str(q).strip() for q in (data.get("quarters") or []) if str(q).strip()]
+    if not name or not quarters:
+        return jsonify({"success": False, "message": "இதழ் பெயர் மற்றும் குறைந்தது ஒரு Quarter அவசியம்."}), 400
+    price = q_num(data.get("price"))
+    discount = q_num(data.get("discount"))
+    issue_price = q_num(data.get("issuePrice"))
+    no_of_libraries = q_int(data.get("noOfLibraries"))
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM magazines WHERE name=%s", (name,))
+            m = cur.fetchone()
+            if not m:
+                return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை."}), 404
+            updated, missing = [], []
+            for q in quarters:
+                cur.execute(
+                    "UPDATE magazine_quarters SET price=%s, discount=%s, issue_price=%s, no_of_libraries=%s "
+                    "WHERE magazine_id=%s AND quarter=%s",
+                    (price, discount, issue_price, no_of_libraries, m["id"], q))
+                (updated if cur.rowcount else missing).append(q)
+            conn.commit()
+        msg = f"'{name}': {len(updated)} பழைய quarter-ன் விலை / நூலக எண்ணிக்கை மாற்றப்பட்டது."
+        if missing:
+            msg += " பதிவு இல்லாதவை: " + ", ".join(missing)
+        return jsonify({"success": True, "message": msg, "updated": updated, "missing": missing})
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
