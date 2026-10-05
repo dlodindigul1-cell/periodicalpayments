@@ -3570,8 +3570,18 @@
           wrap.style.display = 'block';
           clearStatus('voucherCreateStatus'); return;
         }
+        let lastGroup = '';
         rows.forEach((r, idx) => {
           const tr = document.createElement('tr');
+          // ஒரே நிறுவனக் குழு (Vendor Code) இதழ்கள் அடுத்தடுத்து வரும்; குழு தொடக்கத்தில் நிறுவனப் பெயர் தலைப்பு
+          if (r.groupKey && r.groupKey !== lastGroup) {
+            const gh = document.createElement('tr');
+            gh.innerHTML = '<td colspan="5" style="background:#eef3fb;color:var(--navy);font-weight:700;font-size:12.5px;padding:6px 10px;">🏢 ' +
+              _pe(r.groupName) + ' — ஒரே நிறுவனம் (' + r.groupSize + ' இதழ்கள்) · அடுத்தடுத்த Voucher No கொடுக்கவும்</td>';
+            tbody.appendChild(gh);
+          }
+          lastGroup = r.groupKey || '';
+          if (r.groupKey) tr.style.background = '#f7faff';
           tr.innerHTML =
             '<td class="ctr">' + (idx + 1) + '</td>' +
             '<td style="font-weight:600;">' + r.magazine + '</td>' +

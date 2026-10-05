@@ -3431,6 +3431,9 @@ def api_voucher_set_numbers():
 
 @app.route("/api/vouchers/by-set")
 def api_vouchers_by_set():
+    """வவுச்சர் உருவாக்கு பட்டியல்: ஒரே Vendor/Beneficiary Code (அதே Quarter + அதே Set) உள்ள இதழ்கள்
+    ஒரே நிறுவனக் குழுவாக அடுத்தடுத்து வரும் (அதனால் அடுத்தடுத்த Voucher No கொடுக்கலாம்).
+    குழுவுக்குள் A→Z; குழு, அதன் A→Z முதல் இதழின் இடத்தில் வரும். குழு இல்லாத இதழ்கள் வழக்கம்போல் A→Z."""
     set_no = request.args.get("setNo", "").strip()
     ql = _qlist(request.args.get("quarter", "").strip())
     if not set_no:
@@ -3438,28 +3441,44 @@ def api_vouchers_by_set():
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            sql = (
+                "SELECT p.id, p.magazine, p.part, p.months, p.paid_amt, p.voucher_no, p.quarter, p.bill_set_no, "
+                "       m.tnpfts_code, m.vendor_name, m.payee_name "
+                "FROM payments p LEFT JOIN magazines m ON m.name = p.magazine "
+                "WHERE p.bill_set_no=%s"
+            )
+            params = [set_no]
             if ql:
-                cur.execute(
-                    "SELECT id, magazine, part, months, paid_amt, voucher_no, quarter FROM payments "
-                    "WHERE bill_set_no=%s AND quarter = ANY(%s) ORDER BY quarter, magazine, part",
-                    (set_no, ql),
-                )
-            else:
-                cur.execute(
-                    "SELECT id, magazine, part, months, paid_amt, voucher_no, quarter FROM payments "
-                    "WHERE bill_set_no=%s ORDER BY magazine, part",
-                    (set_no,),
-                )
+                sql += " AND p.quarter = ANY(%s)"
+                params.append(ql)
+            cur.execute(sql, tuple(params))
             rows = cur.fetchall()
+
+        items = []
+        for r in rows:
+            key = group_key_for(r)
+            items.append((key, row_label(r), r))
+        # குழுவின் நங்கூரம் = குழுவில் A→Z முதல் இதழ்
+        anchor = {}
+        size = {}
+        for key, lbl, r in items:
+            low = lbl.casefold()
+            if key not in anchor or low < anchor[key]:
+                anchor[key] = low
+            size[key] = size.get(key, 0) + 1
+        items.sort(key=lambda t: ((t[2]["quarter"] or ""), anchor[t[0]], str(t[0]), t[1].casefold()))
         result = [
             {
                 "row": r["id"],
-                "magazine": row_label(r),
+                "magazine": lbl,
                 "amountPaid": float(r["paid_amt"] or 0),
                 "voucherNo": r["voucher_no"] or "",
                 "quarter": r["quarter"] or "",
+                "groupSize": size[key],
+                "groupName": vendor_display_name(r["vendor_name"], r["payee_name"], lbl) if size[key] > 1 else "",
+                "groupKey": "|".join(str(x) for x in key) if size[key] > 1 else "",
             }
-            for r in rows
+            for key, lbl, r in items
         ]
         return jsonify({"success": True, "rows": result})
     finally:
