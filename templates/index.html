@@ -2275,18 +2275,17 @@
         despatchData = data.despatch || {};
         const sel = document.getElementById('magazine');
         sel.innerHTML = '<option value="">-- இதழைத் தேர்ந்தெடுக்கவும் --</option>';
-        magazines.forEach(m => {
+        // இந்த Quarter-க்கு Master-ல் டிக் செய்யப்பட்ட இதழ்கள் மட்டுமே பட்டியலில் வரும்
+        const listed = magazines.filter(m => !(masterData[m] && masterData[m].inQuarter === false));
+        listed.forEach(m => {
           const o = document.createElement('option');
-          o.value = m;
-          const inQ = !(masterData[m] && masterData[m].inQuarter === false);
-          o.textContent = inQ ? m : m + ' — இந்த quarter-க்கு இல்லை';
-          if (!inQ) { o.style.color = '#9aa0a6'; o.className = 'not-in-quarter'; }
+          o.value = m; o.textContent = m;
           sel.appendChild(o);
         });
-        if (magazines.length === 0) {
-          setStatus('status', 'error', '⚠️ இந்த Quarter-க்கு Column I-ல் இதழ் பட்டியல் எதுவும் கிடைக்கவில்லை. Master Sheet-ஐ சரிபார்க்கவும்.');
+        if (listed.length === 0) {
+          setStatus('status', 'error', '⚠️ இந்த Quarter-க்கு Master-ல் டிக் செய்யப்பட்ட இதழ் எதுவும் இல்லை. Master → இதழ் திருத்து-ல் இந்த Quarter-ஐ டிக் செய்யவும்.');
         } else {
-          setStatus('status', 'success', '✅ ' + magazines.length + ' இதழ்கள் ஏற்றப்பட்டன (' + selectedQuarter + ')!');
+          setStatus('status', 'success', '✅ ' + listed.length + ' இதழ்கள் ஏற்றப்பட்டன (' + selectedQuarter + ')!');
         }
       } catch(e) {
         setStatus('status', 'error', '❌ பிழை: ' + e.message);
