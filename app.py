@@ -4578,7 +4578,7 @@ def api_admin_mail_reset_range():
     try:
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT id, voucher_no, magazine, part, quarter, mail_sent, transaction_no FROM payments WHERE {where}",
+                f"SELECT id, voucher_no, magazine, part, months, quarter, mail_sent, transaction_no FROM payments WHERE {where}",
                 (lo, hi),
             )
             rows = cur.fetchall()
