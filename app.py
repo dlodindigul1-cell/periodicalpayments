@@ -383,14 +383,22 @@ LOGIN_HTML = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>உள் நுழைவு — பருவ இதழ்கள் தொகை செலுத்துதல்</title>
 <style>
-  *{box-sizing:border-box} body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
-  background:linear-gradient(135deg,#0f2347,#1e4d8c);font-family:"Noto Sans Tamil","Segoe UI",Arial,sans-serif;padding:16px}
-  .card{background:#fff;width:100%;max-width:400px;border-radius:18px;padding:32px 28px;box-shadow:0 20px 50px rgba(0,0,0,.35)}
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
+    font-family:"Noto Sans Tamil","Segoe UI",Arial,sans-serif;padding:16px;
+    background:#0f2347 url('/static/img/landing_bg.jpg') center/cover no-repeat fixed;position:relative}
+  /* படம் மேல் இருண்ட நீல overlay — படிவம் தெளிவாகத் தெரிய */
+  body::before{content:"";position:fixed;inset:0;z-index:0;
+    background:linear-gradient(135deg,rgba(15,35,71,.88),rgba(30,77,140,.72))}
+  .card{position:relative;z-index:1;background:rgba(255,255,255,.97);width:100%;max-width:400px;
+    border-radius:18px;padding:32px 28px;box-shadow:0 20px 50px rgba(0,0,0,.5);
+    -webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
   .emb{font-size:44px;text-align:center} h1{font-size:19px;text-align:center;color:#0f2347;margin:8px 0 2px}
-  p.sub{text-align:center;color:#6b7690;font-size:13px;margin:0 0 22px}
+  p.sub{text-align:center;color:#55607a;font-size:13px;margin:0 0 22px}
   label{display:block;font-size:13px;font-weight:600;color:#1e4d8c;margin:14px 0 6px}
-  input{width:100%;padding:12px 14px;border:1.5px solid #d5dcec;border-radius:10px;font-size:15px;outline:none}
-  input:focus{border-color:#1e4d8c}
+  input{width:100%;padding:12px 14px;border:1.5px solid #c5cee3;border-radius:10px;font-size:15px;outline:none;background:#fff;color:#111}
+  input:focus{border-color:#1e4d8c;box-shadow:0 0 0 3px rgba(30,77,140,.18)}
   button{width:100%;margin-top:22px;padding:13px;border:0;border-radius:10px;background:#1e4d8c;color:#fff;font-size:16px;font-weight:700;cursor:pointer}
   button:hover{background:#0f2347}
   .err{background:#fdecea;color:#a12b20;border-radius:10px;padding:10px 12px;font-size:13.5px;margin-top:14px}
