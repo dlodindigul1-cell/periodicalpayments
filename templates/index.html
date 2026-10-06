@@ -1008,10 +1008,47 @@
           <h3>Publisher-க்கு மெயில் அனுப்பு</h3>
           <p>Send Email with PDF</p>
         </div>
+        <div class="sub-menu-card" id="mailResetCard" style="display:none;" onclick="showMailResetScreen()">
+          <div class="sm-icon">🔁</div>
+          <h3>மீண்டும் அனுப்ப தயார் செய்</h3>
+          <p>Voucher வரம்பு — Re-send (Admin)</p>
+        </div>
       </div>
       <div style="margin-top:28px;">
         <button class="btn-secondary" onclick="backToWelcome()">← முகப்பிற்கு</button>
       </div>
+    </div>
+
+
+    <!-- ════════════════════ MAIL RE-SEND (VOUCHER RANGE) ════════════════════ -->
+    <div id="mailResetScreen" class="content">
+      <div class="breadcrumb">
+        <a onclick="backToWelcome()">🏠 முகப்பு</a>
+        <span class="sep">›</span>
+        <a onclick="showMailOptions()">மெயில்</a>
+        <span class="sep">›</span>
+        <span>மீண்டும் அனுப்ப தயார் செய்</span>
+      </div>
+      <div class="page-header">
+        <div class="ph-icon">🔁</div>
+        <div>
+          <h2>Voucher வரம்புக்கு மெயிலை மீண்டும் அனுப்ப</h2>
+          <p>நிலையை மீட்டமைத்தபின் "Publisher-க்கு மெயில் அனுப்பு" திரையில் புதிய PDF-உடன் அனுப்பலாம்</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-title">Voucher எண் வரம்பு</div>
+        <div class="field-row">
+          <div class="field"><label>From Voucher No</label><input type="number" id="mrFrom" value="436"></div>
+          <div class="field"><label>To Voucher No</label><input type="number" id="mrTo" value="471"></div>
+        </div>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <button class="btn-secondary" onclick="mailResetRun(true)">🔍 பார்வையிடு (மாற்றாது)</button>
+          <button class="btn-primary" onclick="mailResetRun(false)">♻️ மெயில் நிலையை மீட்டமை</button>
+        </div>
+        <div id="mrResult" style="margin-top:20px;"></div>
+      </div>
+      <div style="margin-top:20px;"><button class="btn-secondary" onclick="showMailOptions()">← திரும்பு</button></div>
     </div>
 
     <!-- ════════════════════ TRANSACTION FORM ════════════════════ -->
@@ -2112,6 +2149,32 @@
     function showMailOptions() {
       hideAll();
       document.getElementById('mailOptionsScreen').style.display = 'block';
+    }
+    function showMailResetScreen() {
+      hideAll();
+      document.getElementById('mailResetScreen').style.display = 'block';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    async function mailResetRun(dry) {
+      const from = document.getElementById('mrFrom').value, to = document.getElementById('mrTo').value;
+      const box = document.getElementById('mrResult');
+      if (!dry && !confirm('Voucher ' + from + ' முதல் ' + to + ' வரை "மெயில் அனுப்பப்பட்டது" நிலையை நீக்கவா?\n(மெயில் எதுவும் தானாக அனுப்பப்படாது.)')) return;
+      box.innerHTML = '⏳ ...';
+      try {
+        const r = await fetch('/api/admin/mail-reset-range', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from: from, to: to, dryRun: dry }) });
+        const d = await r.json();
+        if (!d.success) { box.innerHTML = '<div style="color:#a32020;">❌ ' + (d.message || 'பிழை') + '</div>'; return; }
+        let h = '<div style="margin-bottom:10px; font-weight:600; color:' + (dry ? '#1a3d7c' : '#1a6630') + ';">' +
+          (dry ? '🔍 பார்வை: ' : '✅ முடிந்தது: ') + 'Voucher ' + d.from + '–' + d.to + ' → மொத்தம் ' + d.total + ' பதிவுகள்; மெயில் அனுப்பப்பட்டவை ' + d.alreadySent +
+          (dry ? '' : '; மீட்டமைக்கப்பட்டவை ' + d.reset) + '</div>';
+        if (!dry) h += '<div style="margin-bottom:10px;">இப்போது <b>"Publisher-க்கு மெயில் அனுப்பு"</b> திரைக்குச் சென்று மீண்டும் அனுப்பவும்.</div>';
+        h += '<div style="max-height:360px; overflow:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px;"><tr style="background:#0f2347; color:#fff;"><th style="padding:6px;">Voucher</th><th style="padding:6px; text-align:left;">இதழ்</th><th style="padding:6px;">Quarter</th><th style="padding:6px;">மெயில்</th></tr>';
+        (d.rows || []).forEach(x => {
+          h += '<tr style="border-bottom:1px solid #ddd;"><td style="padding:6px; text-align:center;">' + x.voucherNo + '</td><td style="padding:6px;">' + x.magazine + '</td><td style="padding:6px; text-align:center;">' + x.quarter + '</td><td style="padding:6px; text-align:center;">' +
+            (dry ? (x.mailSent ? '✓ Sent' : '—') : (x.mailSent ? '♻️ மீட்டமைக்கப்பட்டது' : '—')) + '</td></tr>';
+        });
+        box.innerHTML = h + '</table></div>';
+      } catch (e) { box.innerHTML = '<div style="color:#a32020;">❌ ' + e + '</div>'; }
     }
     function showTransactionForm() {
       hideAll();
@@ -6189,6 +6252,8 @@ async function loadMeAndApplyRole() {
     document.getElementById('userChip').style.display = d.username ? 'inline-block' : 'none';
     const mc = document.getElementById('menuMasterCard');
     if (mc) mc.style.display = (d.role === 'admin') ? '' : 'none';
+    const rc = document.getElementById('mailResetCard');
+    if (rc) rc.style.display = (d.role === 'admin') ? '' : 'none';
   } catch (e) { /* புறக்கணி */ }
 }
 (function () {

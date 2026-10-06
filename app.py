@@ -985,6 +985,147 @@ def build_payment_intimation_html(p):
     return build_group_intimation_html([p])
 
 
+_INTIMATION_FONT_REG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "fonts", "NotoSansTamil-Regular.ttf")
+_INTIMATION_FONT_BOLD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "fonts", "NotoSansTamil-Bold.ttf")
+
+
+def build_group_intimation_pdf(items):
+    """Payment Cleared Intimation letter PDF — fpdf2 + uharfbuzz + Noto Sans Tamil.
+    இதழ் / Vendor பெயர்கள் தமிழில் இருந்தாலும் ■ கட்டங்கள் வராமல் சரியாக (shaping உடன்) அச்சாகும்.
+    items: fetch_payment_for_mail() dict-களின் பட்டியல்."""
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+
+    def distinct(vals):
+        seen, out = set(), []
+        for v in vals:
+            if v and v not in seen:
+                seen.add(v)
+                out.append(v)
+        return out
+
+    bank = next((i["bank"] for i in items if (i.get("bank") or {}).get("accNo")), items[0].get("bank") or {})
+    quarter = items[0].get("quarter") or "---"
+    multi = len(items) > 1
+    total_bill = sum(i.get("billAmount") or 0 for i in items)
+    total_ded = sum(i.get("deduction") or 0 for i in items)
+    total_net = sum(i.get("netAmount") or 0 for i in items)
+    txns = distinct([i.get("transactionNo") for i in items])
+    dates = distinct([i.get("paymentDate") for i in items])
+    remarks = distinct([i.get("remarks") for i in items])
+    mag_names = [str(i["magazine"]) for i in items]
+    dates_txt = ", ".join(dates) or "---"
+    remarks_txt = f"{quarter} SETTLED" + (" | " + " | ".join(remarks) if remarks else "")
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(18, 20, 18)
+    pdf.set_auto_page_break(auto=True, margin=18)
+    pdf.add_font("Tamil", "", _INTIMATION_FONT_REG)
+    pdf.add_font("Tamil", "B", _INTIMATION_FONT_BOLD)
+    pdf.set_text_shaping(True)
+    pdf.add_page()
+    W = pdf.w - pdf.l_margin - pdf.r_margin
+
+    def para(parts, size=11, lh=6, gap=2):
+        """parts: [(text, bold?), ...] — ஒரே பத்தியில் bold / normal கலந்து எழுத."""
+        for text, bold in parts:
+            pdf.set_font("Tamil", "B" if bold else "", size)
+            pdf.write(lh, text)
+        pdf.ln(lh + gap)
+
+    pdf.set_font("Tamil", "", 11)
+    pdf.cell(0, 6, f"Date: {dates_txt}", align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+    pdf.set_font("Tamil", "B", 18)
+    pdf.cell(0, 10, "District Library Office, Dindigul", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_line_width(0.8)
+    y = pdf.get_y() + 1
+    pdf.line(pdf.l_margin, y, pdf.l_margin + W, y)
+    pdf.set_line_width(0.2)
+    pdf.ln(4)
+    pdf.set_font("Tamil", "B", 12)
+    pdf.cell(0, 7, f"PAYMENT CLEARED INTIMATION FOR {quarter}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+
+    para([("Sir,", False)])
+    if multi:
+        para([("Ref: Your Invoices listed in the table below, for the supply of the magazines ", False),
+              (", ".join(mag_names), True)])
+        para([("Sir,", False)], gap=0)
+        para([("Kindly see below the details of the ", False),
+              (f"single consolidated payment of Rs.{_money(total_net)}", True),
+              (" transferred to your Bank Account from ", False),
+              ("The District Library Officer, Dindigul", True),
+              (", for the supply of the above magazines, with the break-up shown against each magazine. "
+               "We kindly request you to acknowledge receipt of the same.", False)])
+    else:
+        i0 = items[0]
+        para([("Ref: Your Invoice Number ", False), (str(i0.get("invoiceNo") or "---"), True),
+              (" dated ", False), (str(i0.get("invoiceDate") or "---"), True),
+              (" for the supply of Magazine ", False), (mag_names[0], True)])
+        para([("Sir,", False)], gap=0)
+        para([("Kindly see below the details of the payment transferred to your Bank Account from ", False),
+              ("The District Library Officer, Dindigul", True),
+              (", for the supply of the magazine ", False), (mag_names[0], True),
+              (", as per the invoice under reference cited. We kindly request you to acknowledge receipt of the same.", False)])
+
+    pdf.ln(2)
+    pdf.set_font("Tamil", "", 9.5)
+    head = FontFace(emphasis="BOLD", color=(255, 255, 255), fill_color=(30, 77, 140), size_pt=8.5)
+    tot_style = FontFace(emphasis="BOLD", fill_color=(238, 242, 248))
+    with pdf.table(
+        col_widths=(13, 36, 40, 25, 19, 22, 19),
+        text_align=("CENTER", "LEFT", "CENTER", "CENTER", "RIGHT", "RIGHT", "RIGHT"),
+        headings_style=head, line_height=6, padding=1.5, borders_layout="ALL",
+    ) as t:
+        h = t.row()
+        for c in ["S.No", "Magazine", "Invoice No", "Invoice Date", "Bill Amt", "Deduction", "Paid Amt"]:
+            h.cell(c, align="C")
+        for n, i in enumerate(items, 1):
+            r = t.row()
+            r.cell(str(n))
+            r.cell(str(i["magazine"]))
+            r.cell(str(i.get("invoiceNo") or "---"))
+            r.cell(str(i.get("invoiceDate") or "---"))
+            r.cell(_money(i.get("billAmount")))
+            r.cell(_money(i.get("deduction")))
+            r.cell(_money(i.get("netAmount")))
+        if multi:
+            r = t.row()
+            r.cell("TOTAL", colspan=4, align="R", style=tot_style)
+            r.cell(_money(total_bill), style=tot_style)
+            r.cell(_money(total_ded), style=tot_style)
+            r.cell(_money(total_net), style=tot_style)
+
+    pdf.ln(5)
+    pdf.set_x(pdf.l_margin)
+    para([("Transaction Ref No: ", True), (", ".join(txns) or "---", False),
+          ("   |   ", False), ("Payment Date: ", True), (dates_txt, False)], size=10.5)
+    para([("Remarks: ", True), (remarks_txt, False)], size=10.5)
+    para([("Please send back the Acknowledgement receipt.", False)], size=10.5)
+    para([("Bank Details:", True)], size=10.5)
+
+    pdf.set_font("Tamil", "", 10)
+    with pdf.table(
+        col_widths=(45, W - 45), text_align=("LEFT", "LEFT"),
+        line_height=6, padding=1.5, borders_layout="ALL", first_row_as_headings=False,
+    ) as t:
+        for label, val in [("PAYEE NAME", bank.get("payeeName")), ("BANK NAME", bank.get("bankName")),
+                           ("BRANCH", bank.get("branch")), ("A/C NO", bank.get("accNo")), ("IFSC", bank.get("ifsc"))]:
+            r = t.row()
+            r.cell(label)
+            r.cell(str(val or "---"))
+
+    pdf.ln(8)
+    if pdf.get_y() + 18 > pdf.h - 18:      # கையொப்பப் பகுதி (3 வரி = 18 mm) பக்கத்தில் நுழையவில்லை என்றால் மட்டும் புதிய பக்கம்
+        pdf.add_page()
+    pdf.set_font("Tamil", "", 11)
+    for line in ("Thanking and Regards,", "District Library Officer", "Dindigul"):
+        pdf.cell(0, 6, line, align="R", new_x="LMARGIN", new_y="NEXT")
+    return bytes(pdf.output())
+
+
 def fetch_payment_for_mail(cur, payment_id):
     """ஒரு payments.id-க்கான, மெயில்/PDF-க்குத் தேவையான தகவல்கள் அனைத்தையும் ஒரே dict-ஆக எடுக்கும்."""
     cur.execute(
@@ -4377,7 +4518,7 @@ def api_mail_send():
                 return jsonify({"success": False, "message": f"'{names}'-க்கு Email இல்லை. Master Data → Vendors-ல் சேர்க்கவும்."}), 400
 
             quarter = members[0]["quarter"]
-            pdf_bytes = html_to_pdf_bytes(build_group_intimation_html(members))
+            pdf_bytes = build_group_intimation_pdf(members)
             if len(members) == 1:
                 m0 = members[0]
                 subject = f"Magazine Payment - {m0['magazine']} - {quarter}"
@@ -4414,6 +4555,57 @@ Please find the PDF attached with the break-up for each magazine.<br><br>Thank y
         conn.close()
 
 
+@app.route("/api/admin/mail-reset-range", methods=["POST"])
+def api_admin_mail_reset_range():
+    """Voucher எண் வரம்புக்கு (எ.கா. 436–471) 'மெயில் அனுப்பப்பட்டது' நிலையை மீட்டமைக்கும் — அதன் பிறகு அவை
+    'Publisher-க்கு மெயில் அனுப்பு' பட்டியலில் மீண்டும் தோன்றும்; அங்கிருந்து புதிய PDF-உடன் மீண்டும் அனுப்பலாம்.
+    dryRun=true → எதையும் மாற்றாமல் எந்த வரிசைகள் பாதிக்கப்படும் என்று மட்டும் காட்டும்.
+    (/api/admin/* என்பதால் admin பயனர் மட்டுமே.)"""
+    data = request.get_json(force=True) or {}
+    try:
+        lo, hi = int(data.get("from")), int(data.get("to"))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "From / To Voucher எண்களை எண்களாக உள்ளிடவும்."}), 400
+    if lo > hi:
+        lo, hi = hi, lo
+    if hi - lo > 500:
+        return jsonify({"success": False, "message": "ஒரே நேரத்தில் 500-க்கு மேற்பட்ட Voucher வேண்டாம்."}), 400
+    dry = bool(data.get("dryRun"))
+    where = (
+        "(CASE WHEN voucher_no ~ '^[[:space:]]*[0-9]+' THEN substring(voucher_no from '[0-9]+')::int END) BETWEEN %s AND %s"
+    )
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id, voucher_no, magazine, part, quarter, mail_sent, transaction_no FROM payments WHERE {where}",
+                (lo, hi),
+            )
+            rows = cur.fetchall()
+            rows.sort(key=lambda r: (voucher_sort_key(r["voucher_no"]), r["magazine"] or ""))
+            listing = [
+                {"voucherNo": r["voucher_no"], "magazine": row_label(r), "quarter": r["quarter"] or "",
+                 "mailSent": bool(r["mail_sent"]), "hasTransaction": bool((r["transaction_no"] or "").strip())}
+                for r in rows
+            ]
+            changed = 0
+            if not dry and rows:
+                cur.execute(
+                    f"UPDATE payments SET mail_sent=FALSE, pdf_url=NULL, updated_at=now() WHERE {where} AND mail_sent=TRUE",
+                    (lo, hi),
+                )
+                changed = cur.rowcount
+                conn.commit()
+        return jsonify({"success": True, "dryRun": dry, "from": lo, "to": hi, "total": len(listing),
+                        "alreadySent": sum(1 for x in listing if x["mailSent"]),
+                        "reset": changed, "rows": listing})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @app.route("/api/mail/pdf/<int:payment_id>")
 def api_mail_pdf(payment_id):
     """Drive-ல் சேமிக்காமல், தேவைப்படும்போது PDF-ஐ மீண்டும் உருவாக்கி காட்டும்/பதிவிறக்கும்.
@@ -4432,7 +4624,7 @@ def api_mail_pdf(payment_id):
         if not members:
             return jsonify({"success": False, "message": "Payment record கிடைக்கவில்லை"}), 404
         members.sort(key=lambda m: (voucher_sort_key(m["voucherNo"]), m["magazine"]))
-        pdf_bytes = html_to_pdf_bytes(build_group_intimation_html(members))
+        pdf_bytes = build_group_intimation_pdf(members)
         base = members[0]["magazine"] if len(members) == 1 else members[0]["vendorName"]
         return send_file(
             io.BytesIO(pdf_bytes),
