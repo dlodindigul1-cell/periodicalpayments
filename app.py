@@ -301,6 +301,33 @@ def row_label(r):
     return part_label(r["magazine"], r["part"], r["months"], r["quarter"])
 
 
+# --------------------------------------------------------------------------- #
+# Voucher எண் = நிதியாண்டு (ஏப்ரல்–மார்ச்) வாரியானது.
+# நிதியாண்டை தீர்மானிப்பது: தொகை செலுத்திய தேதி (payment_date); அது இல்லையெனில் Quarter-ன் தொடக்க ஆண்டு.
+# எ.கா. 2025-2026-Q3-க்கான தொகையை 05/10/2026-ல் செலுத்தினால் → நிதியாண்டு 2026-27.
+# --------------------------------------------------------------------------- #
+def fy_start_year(payment_date, quarter=None):
+    """payment_date (date) அல்லது quarter ('2025-2026-Q3') -> நிதியாண்டின் தொடக்க ஆண்டு (int) / None."""
+    if payment_date:
+        return payment_date.year if payment_date.month >= 4 else payment_date.year - 1
+    m = re.match(r"^(\d{4})", (quarter or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def fy_label(y):
+    return f"{y}-{str(y + 1)[-2:]}" if y else "?"
+
+
+def fy_sql(alias=""):
+    """payments வரிசையின் நிதியாண்டு (தொடக்க ஆண்டு) -> SQL expression."""
+    a = (alias + ".") if alias else ""
+    return (
+        f"COALESCE(CASE WHEN {a}payment_date IS NOT NULL THEN "
+        f"EXTRACT(YEAR FROM {a}payment_date)::int - (CASE WHEN EXTRACT(MONTH FROM {a}payment_date) < 4 THEN 1 ELSE 0 END) END, "
+        f"NULLIF(substring({a}quarter from '^[0-9]{{4}}'), '')::int)"
+    )
+
+
 def missing_months(rows):
     """payments வரிசைகளின் months-ல் இன்னும் வராத மாதங்கள் (1,2,3-ல்)."""
     used = set()
@@ -3657,6 +3684,56 @@ def api_save_voucher_numbers():
         conn.close()
 
 
+@app.route("/api/vouchers/missing")
+def api_vouchers_missing():
+    """ஒரு நிதியாண்டில் (ஏப்ரல்–மார்ச்) தொகை வழங்கப்பட்டும் Voucher No பதிவாகாத payments.
+    ?fy=2026  → 2026-27.  (fy இல்லையெனில் இன்றைய நிதியாண்டு; அதில் தரவு இல்லையெனில் சமீபத்திய நிதியாண்டு.)
+    நிதியாண்டு = தொகை செலுத்திய தேதியின் நிதியாண்டு (தேதி இல்லையெனில் Quarter-ன் தொடக்க ஆண்டு)."""
+    paid_cond = "(COALESCE(paid_amt,0) > 0 OR payment_date IS NOT NULL)"
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"SELECT DISTINCT {fy_sql()} AS fy FROM payments WHERE {paid_cond}")
+            fys = sorted({r["fy"] for r in cur.fetchall() if r["fy"]}, reverse=True)
+            try:
+                fy = int(request.args.get("fy")) if request.args.get("fy") else None
+            except ValueError:
+                fy = None
+            if fy is None:
+                today_fy = fy_start_year(date.today())
+                fy = today_fy if (today_fy in fys or not fys) else fys[0]
+
+            cur.execute(
+                f"SELECT id, magazine, part, months, quarter, bill_set_no, invoice_no, paid_amt, payment_date, "
+                f"transaction_no, voucher_no FROM payments WHERE {paid_cond} AND {fy_sql()} = %s",
+                (fy,),
+            )
+            rows = cur.fetchall()
+        missing = [r for r in rows if not (r["voucher_no"] or "").strip()]
+        missing.sort(key=lambda r: (r["payment_date"] is None, r["payment_date"] or date.max,
+                                    (r["magazine"] or "").lower()))
+        return jsonify({
+            "success": True,
+            "fy": fy, "fyLabel": fy_label(fy),
+            "fys": [{"value": y, "label": fy_label(y)} for y in (fys or [fy])],
+            "totalPaid": len(rows),
+            "withVoucher": len(rows) - len(missing),
+            "missing": len(missing),
+            "missingAmount": round(sum(float(r["paid_amt"] or 0) for r in missing), 2),
+            "rows": [
+                {
+                    "id": r["id"], "magazine": row_label(r), "quarter": r["quarter"] or "",
+                    "setNo": r["bill_set_no"] or "", "invoiceNo": r["invoice_no"] or "",
+                    "paidAmt": float(r["paid_amt"] or 0), "paymentDate": fmt_date(r["payment_date"]),
+                    "transactionNo": r["transaction_no"] or "", "noDate": r["payment_date"] is None,
+                }
+                for r in missing
+            ],
+        })
+    finally:
+        conn.close()
+
+
 @app.route("/api/vouchers/all")
 def api_all_vouchers():
     conn = get_conn()
@@ -4571,15 +4648,21 @@ def api_admin_mail_reset_range():
     if hi - lo > 500:
         return jsonify({"success": False, "message": "ஒரே நேரத்தில் 500-க்கு மேற்பட்ட Voucher வேண்டாம்."}), 400
     dry = bool(data.get("dryRun"))
+    # Voucher எண் நிதியாண்டு வாரியானது — வேறு நிதியாண்டின் அதே எண் பாதிக்கப்படாமல் இருக்க FY கட்டாயம்
+    try:
+        fy = int(data.get("fy")) if data.get("fy") not in (None, "") else fy_start_year(date.today())
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "message": "நிதியாண்டு (தொடக்க ஆண்டு) எண்ணாக இருக்க வேண்டும் — எ.கா. 2026."}), 400
     where = (
         "(CASE WHEN voucher_no ~ '^[[:space:]]*[0-9]+' THEN substring(voucher_no from '[0-9]+')::int END) BETWEEN %s AND %s"
+        " AND " + fy_sql() + " = %s"
     )
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 f"SELECT id, voucher_no, magazine, part, months, quarter, mail_sent, transaction_no FROM payments WHERE {where}",
-                (lo, hi),
+                (lo, hi, fy),
             )
             rows = cur.fetchall()
             rows.sort(key=lambda r: (voucher_sort_key(r["voucher_no"]), r["magazine"] or ""))
@@ -4592,11 +4675,11 @@ def api_admin_mail_reset_range():
             if not dry and rows:
                 cur.execute(
                     f"UPDATE payments SET mail_sent=FALSE, pdf_url=NULL, updated_at=now() WHERE {where} AND mail_sent=TRUE",
-                    (lo, hi),
+                    (lo, hi, fy),
                 )
                 changed = cur.rowcount
                 conn.commit()
-        return jsonify({"success": True, "dryRun": dry, "from": lo, "to": hi, "total": len(listing),
+        return jsonify({"success": True, "dryRun": dry, "from": lo, "to": hi, "fy": fy_label(fy), "total": len(listing),
                         "alreadySent": sum(1 for x in listing if x["mailSent"]),
                         "reset": changed, "rows": listing})
     except Exception as e:  # noqa: BLE001
@@ -6151,17 +6234,22 @@ def api_fx_update_payment():
                     return jsonify({"success": False,
                                     "message": "'%s' (%s) பதிவு ஏற்கனவே உள்ளது. (இது அடுத்த Part எனில் அட்டவணையில் 'Part ஆக மாற்று' பட்டனைப் பயன்படுத்தவும்.)" % (new_mag, new_q)}), 409
 
-            # ---- Voucher No: அதே Quarter-ல் மற்றொரு பதிவில் அதே எண் இருக்கக்கூடாது ----
-            if voucher_no and voucher_no != (old["voucher_no"] or "").strip() or \
-                    (voucher_no and (new_mag, new_q) != (old["magazine"], old["quarter"])):
+            # ---- Voucher No: அதே நிதியாண்டில் மற்றொரு பதிவில் அதே எண் இருக்கக்கூடாது ----
+            # (Voucher எண் நிதியாண்டுக்குரியது — பழைய நிதியாண்டின் Quarter-க்கு புதிய நிதியாண்டில் தொகை
+            #  செலுத்தினால், புதிய நிதியாண்டின் எண் வரிசையே பொருந்தும்; பழைய நிதியாண்டின் எண்ணுடன் மோதாது.)
+            my_fy = fy_start_year(payment_date, new_q)
+            old_fy = fy_start_year(old["payment_date"], old["quarter"])
+            if voucher_no and (voucher_no != (old["voucher_no"] or "").strip()
+                               or (new_mag, new_q) != (old["magazine"], old["quarter"])
+                               or my_fy != old_fy):
                 cur.execute("SELECT magazine, part, months, quarter FROM payments "
-                            "WHERE quarter=%s AND TRIM(COALESCE(voucher_no,''))=%s AND id<>%s",
-                            (new_q, voucher_no, pid))
+                            "WHERE TRIM(COALESCE(voucher_no,''))=%s AND id<>%s AND " + fy_sql() + " = %s",
+                            (voucher_no, pid, my_fy))
                 dup = cur.fetchone()
                 if dup:
                     return jsonify({"success": False, "message":
-                                    "Voucher No %s (%s) ஏற்கனவே '%s'-க்கு உள்ளது." % (
-                                        voucher_no, new_q, row_label(dup))}), 409
+                                    "Voucher No %s (நிதியாண்டு %s) ஏற்கனவே '%s' (%s)-க்கு உள்ளது." % (
+                                        voucher_no, fy_label(my_fy), row_label(dup), dup["quarter"])}), 409
 
             # ---- Bill Set No: BENEFICIARY / BUSINESS VENDOR கலக்கக்கூடாது ----
             if bill_set_no and not vendor_mix_allowed(new_q):

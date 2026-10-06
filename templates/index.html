@@ -1042,6 +1042,11 @@
           <div class="field"><label>From Voucher No</label><input type="number" id="mrFrom" value="436"></div>
           <div class="field"><label>To Voucher No</label><input type="number" id="mrTo" value="471"></div>
         </div>
+        <div class="field" style="max-width:320px;">
+          <label>நிதியாண்டு (தொடக்க ஆண்டு) — 2026 = 2026-27</label>
+          <input type="number" id="mrFy" value="2026">
+          <div style="font-size:12px; color:var(--muted); margin-top:4px;">Voucher எண் நிதியாண்டுக்குரியது; தொகை செலுத்திய தேதியின் நிதியாண்டு கணக்கில் எடுக்கப்படும்.</div>
+        </div>
         <div style="display:flex; gap:12px; flex-wrap:wrap;">
           <button class="btn-secondary" onclick="mailResetRun(true)">🔍 பார்வையிடு (மாற்றாது)</button>
           <button class="btn-primary" onclick="mailResetRun(false)">♻️ மெயில் நிலையை மீட்டமை</button>
@@ -1353,6 +1358,13 @@
             <div style="font-size:13px; color:var(--muted); margin-top:3px;">Voucher_print Sheet நிரப்பி PDF பிரிண்ட்</div>
           </div>
         </div>
+        <div class="menu-card" onclick="showVoucherMissing()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
+          <div style="font-size:36px;">🔎</div>
+          <div>
+            <div style="font-size:16px; font-weight:700; color:var(--navy);">Voucher No இல்லாதவை</div>
+            <div style="font-size:13px; color:var(--muted); margin-top:3px;">நிதியாண்டில் தொகை வழங்கியும் எண் பதியாதவை</div>
+          </div>
+        </div>
       </div>
 
       <!-- ── VOUCHER CREATE PANEL ── -->
@@ -1392,6 +1404,37 @@
               <button class="btn-primary" onclick="saveVoucherNos()">💾 Voucher Numbers சேமி</button>
             </div>
             <div id="voucherSaveStatus" class="status"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── VOUCHER MISSING PANEL ── -->
+      <div id="voucherMissingPanel" style="display:none;">
+        <div class="card">
+          <div class="card-title">🔎 Voucher No இல்லாத payments</div>
+          <div style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap; margin-bottom:16px;">
+            <div class="field" style="margin:0; min-width:200px;">
+              <label>நிதியாண்டு (ஏப்ரல் – மார்ச்)</label>
+              <select id="vmFy" onchange="loadVoucherMissing(this.value)"></select>
+            </div>
+            <button class="btn-secondary" onclick="loadVoucherMissing(document.getElementById('vmFy').value)">🔄 புதுப்பி</button>
+          </div>
+          <div id="vmStatus" class="status"></div>
+          <div id="vmStats" style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:18px;"></div>
+          <div id="vmTableWrap" style="display:none;">
+            <div class="data-table-wrap">
+              <table class="data-table">
+                <thead><tr>
+                  <th class="ctr">#</th><th>இதழ்</th><th class="ctr">Quarter</th><th class="ctr">Set No</th>
+                  <th>Invoice No</th><th class="num">தொகை (₹)</th><th class="ctr">செலுத்திய தேதி</th><th>Transaction No</th>
+                </tr></thead>
+                <tbody id="vmBody"></tbody>
+              </table>
+            </div>
+            <div style="font-size:13px; color:var(--muted); margin-top:12px; line-height:1.7;">
+              எண் பதிவு செய்ய: <b>"வவுச்சர் உருவாக்கு"</b>-ல் அந்த <b>Set No</b>-ஐத் தேர்வு செய்யவும்; அல்லது தனிப்பட்ட பதிவுக்கு <b>பதிவுத் திருத்தம்</b>-ல் Voucher No உள்ளிடவும்.<br>
+              ⚠ குறியிட்டவை: தொகை பதிவாகியுள்ளது ஆனால் செலுத்திய தேதி இல்லை — நிதியாண்டு Quarter அடிப்படையில் கணக்கிடப்பட்டுள்ளது.
+            </div>
           </div>
         </div>
       </div>
@@ -2156,16 +2199,16 @@
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
     async function mailResetRun(dry) {
-      const from = document.getElementById('mrFrom').value, to = document.getElementById('mrTo').value;
+      const from = document.getElementById('mrFrom').value, to = document.getElementById('mrTo').value, fy = document.getElementById('mrFy').value;
       const box = document.getElementById('mrResult');
-      if (!dry && !confirm('Voucher ' + from + ' முதல் ' + to + ' வரை "மெயில் அனுப்பப்பட்டது" நிலையை நீக்கவா?\n(மெயில் எதுவும் தானாக அனுப்பப்படாது.)')) return;
+      if (!dry && !confirm('நிதியாண்டு ' + fy + ' — Voucher ' + from + ' முதல் ' + to + ' வரை "மெயில் அனுப்பப்பட்டது" நிலையை நீக்கவா?\n(மெயில் எதுவும் தானாக அனுப்பப்படாது.)')) return;
       box.innerHTML = '⏳ ...';
       try {
-        const r = await fetch('/api/admin/mail-reset-range', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from: from, to: to, dryRun: dry }) });
+        const r = await fetch('/api/admin/mail-reset-range', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ from: from, to: to, fy: fy, dryRun: dry }) });
         const d = await r.json();
         if (!d.success) { box.innerHTML = '<div style="color:#a32020;">❌ ' + (d.message || 'பிழை') + '</div>'; return; }
         let h = '<div style="margin-bottom:10px; font-weight:600; color:' + (dry ? '#1a3d7c' : '#1a6630') + ';">' +
-          (dry ? '🔍 பார்வை: ' : '✅ முடிந்தது: ') + 'Voucher ' + d.from + '–' + d.to + ' → மொத்தம் ' + d.total + ' பதிவுகள்; மெயில் அனுப்பப்பட்டவை ' + d.alreadySent +
+          (dry ? '🔍 பார்வை: ' : '✅ முடிந்தது: ') + 'நிதியாண்டு ' + d.fy + ' · Voucher ' + d.from + '–' + d.to + ' → மொத்தம் ' + d.total + ' பதிவுகள்; மெயில் அனுப்பப்பட்டவை ' + d.alreadySent +
           (dry ? '' : '; மீட்டமைக்கப்பட்டவை ' + d.reset) + '</div>';
         if (!dry) h += '<div style="margin-bottom:10px;">இப்போது <b>"Publisher-க்கு மெயில் அனுப்பு"</b> திரைக்குச் சென்று மீண்டும் அனுப்பவும்.</div>';
         h += '<div style="max-height:360px; overflow:auto;"><table style="width:100%; border-collapse:collapse; font-size:13px;"><tr style="background:#0f2347; color:#fff;"><th style="padding:6px;">Voucher</th><th style="padding:6px; text-align:left;">இதழ்</th><th style="padding:6px;">Quarter</th><th style="padding:6px;">மெயில்</th></tr>';
@@ -3544,11 +3587,58 @@
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
 
+    function showVoucherMissing() {
+      hideVoucherPanels();
+      document.getElementById('voucherMissingPanel').style.display = 'block';
+      loadVoucherMissing('');
+    }
+    function _vmEsc(v) { return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    async function loadVoucherMissing(fy) {
+      const st = document.getElementById('vmStatus');
+      st.className = 'status show loading'; st.innerHTML = '<span class="spinner dark"></span> தரவு ஏற்றப்படுகிறது...';
+      document.getElementById('vmTableWrap').style.display = 'none';
+      try {
+        const r = await fetch('/api/vouchers/missing' + (fy ? ('?fy=' + encodeURIComponent(fy)) : ''));
+        const d = await r.json();
+        if (!d.success) { st.className = 'status show error'; st.innerHTML = '❌ ' + _vmEsc(d.message || 'பிழை'); return; }
+        const sel = document.getElementById('vmFy');
+        sel.innerHTML = (d.fys || []).map(x => '<option value="' + x.value + '"' + (x.value === d.fy ? ' selected' : '') + '>' + x.label + '</option>').join('');
+        const tile = (label, val, color) => '<div style="background:#fff; border:1.5px solid var(--border); border-radius:12px; padding:14px 16px;">' +
+          '<div style="font-size:12px; color:var(--muted);">' + label + '</div><div style="font-size:24px; font-weight:700; color:' + color + ';">' + val + '</div></div>';
+        document.getElementById('vmStats').innerHTML =
+          tile('தொகை வழங்கப்பட்டவை (' + d.fyLabel + ')', d.totalPaid, 'var(--navy)') +
+          tile('Voucher No உள்ளவை', d.withVoucher, '#1a6630') +
+          tile('Voucher No இல்லாதவை', d.missing, d.missing ? '#a32020' : '#1a6630') +
+          tile('இல்லாதவற்றின் தொகை (₹)', _fmtAmt(d.missingAmount), 'var(--navy)');
+        if (!d.missing) {
+          st.className = 'status show success'; st.innerHTML = '✅ நிதியாண்டு ' + d.fyLabel + ': தொகை வழங்கப்பட்ட அனைத்துக்கும் Voucher No உள்ளது.';
+          return;
+        }
+        st.className = 'status show error'; st.innerHTML = '⚠ நிதியாண்டு ' + d.fyLabel + ': ' + d.missing + ' payments-க்கு Voucher No இல்லை.';
+        document.getElementById('vmBody').innerHTML = d.rows.map((x, i) =>
+          '<tr><td class="ctr">' + (i + 1) + '</td><td>' + _vmEsc(x.magazine) + '</td><td class="ctr">' + _vmEsc(x.quarter) + '</td>' +
+          '<td class="ctr">' + (_vmEsc(x.setNo) || '—') + '</td><td>' + (_vmEsc(x.invoiceNo) || '—') + '</td>' +
+          '<td class="num">' + _fmtAmt(x.paidAmt) + '</td><td class="ctr">' + (x.noDate ? '⚠ —' : _vmEsc(x.paymentDate)) + '</td>' +
+          '<td style="font-family:monospace;">' + (_vmEsc(x.transactionNo) || '—') + '</td></tr>').join('');
+        document.getElementById('vmTableWrap').style.display = 'block';
+      } catch (e) { st.className = 'status show error'; st.innerHTML = '❌ ' + _vmEsc(e); }
+    }
+    (function () {   // மற்ற Voucher பட்டன்களை அழுத்தும்போது இந்த panel மறைய
+      ['showVoucherCreate', 'showVoucherList', 'showPaymentAdvice', 'showPaymentVoucherCreation'].forEach(n => {
+        const f = window[n]; if (typeof f !== 'function') return;
+        window[n] = function () {
+          const vm = document.getElementById('voucherMissingPanel'); if (vm) vm.style.display = 'none';
+          return f.apply(this, arguments);
+        };
+      });
+    })();
+
     function hideVoucherPanels() {
       document.getElementById('voucherCreatePanel').style.display   = 'none';
       document.getElementById('voucherListPanel').style.display     = 'none';
       document.getElementById('paymentAdvicePanel').style.display   = 'none';
       document.getElementById('paymentVoucherPanel').style.display  = 'none';
+      const vm = document.getElementById('voucherMissingPanel'); if (vm) vm.style.display = 'none';
     }
 
     async function showVoucherCreate() {
