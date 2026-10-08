@@ -570,6 +570,27 @@
       .cc-btn { flex: 1 1 auto; width: 100%; }
     }
 
+    /* ─── இன்வாய்ஸ் பதிவு: வங்கி விவரச் சரிபார்ப்பு card ─── */
+    .bk-card { max-width: 600px; }
+    .bk-mag { text-align:center; font-size:15px; font-weight:700; color:var(--navy); margin-bottom:12px; }
+    .bk-mag small { display:block; font-size:12px; font-weight:500; color:var(--muted); }
+    .bk-list { display:flex; flex-direction:column; gap:10px; }
+    .bk-item { background:#f7f9fd; border:1.5px solid var(--border); border-radius:12px; padding:10px 14px; }
+    .bk-item span { display:block; font-size:12.5px; font-weight:600; color:var(--muted); }
+    .bk-item b { display:block; font-size:22px; line-height:1.35; color:var(--navy); margin-top:2px; word-break:break-word; letter-spacing:.3px; }
+    .bk-item.mail b { font-size:19px; letter-spacing:0; }
+    .bk-item.acc b, .bk-item.ifsc b { font-size:26px; letter-spacing:1.5px; font-family:'Courier New',monospace; }
+    .bk-item.missing { border-color:#e0a39b; background:#fdf1ef; }
+    .bk-item.missing b { color:#c0392b; font-size:17px; letter-spacing:0; font-family:inherit; }
+    .bk-ask { margin-top:14px; text-align:center; font-size:15px; font-weight:700; }
+    .bk-edit-note { margin-bottom:10px; padding:8px 12px; border-radius:10px; background:#fff7e0; color:#7a6220; font-size:13px; line-height:1.5; }
+    .bk-input { width:100%; box-sizing:border-box; padding:10px 12px; border:1.5px solid var(--border); border-radius:10px; font:600 17px 'Noto Sans Tamil',sans-serif; color:var(--navy); margin-top:4px; }
+    .bk-input:focus { outline:3px solid var(--accent2); outline-offset:0; }
+    .bk-field { margin-bottom:10px; }
+    .bk-field label { font-size:12.5px; font-weight:600; color:var(--muted); }
+    .bk-err { margin-top:8px; color:#c0392b; font-size:13.5px; font-weight:600; text-align:center; }
+    .bk-ok  { margin-bottom:10px; padding:8px 12px; border-radius:10px; background:#e8f6ec; color:#1e6b3a; font-size:13.5px; font-weight:600; text-align:center; }
+
     .cc-field-label { margin-top: 16px; font-size: 12.5px; font-weight: 600; color: var(--muted); text-align: center; }
     .cc-stepper { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 6px; }
     .cc-step {
@@ -2727,6 +2748,136 @@
       }, coveragePayload());
     }
 
+    // ─── இன்வாய்ஸ் பதிவுக்கு முன் வங்கி விவரச் சரிபார்ப்பு card ───
+    // முடிவு: true = விவரம் சரி, பதிவைத் தொடரலாம்; false = ரத்து / பிழை
+    // "தவறு — Edit" → புலங்கள் திருத்தக்கூடியவை; "Save" → Vendor Master-ல் (magazines table) சேமிப்பு;
+    // சேமித்தபின் மீண்டும் (திருத்த முடியாத) பார்வை — அங்கே "ஆம், சரி" அழுத்தினால் மட்டுமே இன்வாய்ஸ் பதிவாகும்.
+    async function showBankVerifyCard(magName) {
+      let bank;
+      try {
+        const res = await fetch('/api/vendor-bank?name=' + encodeURIComponent(magName));
+        if (res.status === 401) { location.href = '/login'; return false; }
+        bank = await res.json();
+        if (!bank.success) throw new Error(bank.message || 'வங்கி விவரம் கிடைக்கவில்லை');
+      } catch (e) {
+        setStatus('status', 'error', '❌ வங்கி விவரத்தைப் பெற முடியவில்லை: ' + e.message);
+        return false;
+      }
+      return new Promise(resolve => {
+        const ov = document.createElement('div');
+        ov.className = 'cc-overlay';
+        ov.setAttribute('role', 'alertdialog');
+        ov.setAttribute('aria-modal', 'true');
+        ov.innerHTML =
+          '<div class="cc-card bk-card">' +
+            '<div class="cc-head"><div class="cc-icon">🏦</div><div>' +
+              '<div class="cc-title">Vendor / வங்கி விவரத்தைச் சரிபார்க்கவும்</div>' +
+              '<div class="cc-sub">இன்வாய்ஸ் பதிவுக்கு முன் இந்த விவரங்கள் சரியா?</div>' +
+            '</div></div>' +
+            '<div class="cc-body"></div><div class="cc-actions"></div>' +
+          '</div>';
+        const body = ov.querySelector('.cc-body');
+        const actions = ov.querySelector('.cc-actions');
+        let done = false, notice = '';
+        function close(val) {
+          if (done) return; done = true;
+          document.removeEventListener('keydown', onKey, true);
+          ov.classList.remove('show');
+          setTimeout(() => ov.remove(), 200);
+          resolve(val);
+        }
+        function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); } }  // தவறுதலாக மூடாது
+
+        const rows = [
+          ['vendor', 'Vendor பெயர் (Vendor Name)', 'vendorName', ''],
+          ['payee',  'பெறுநர் பெயர் (Payee Name)', 'payeeName', ''],
+          ['bank',   'வங்கி (Bank)',               'bankName', ''],
+          ['branch', 'கிளை (Branch)',              'bankPlace', ''],
+          ['acc',    'கணக்கு எண் (Account Number)', 'bankAccountNumber', 'acc'],
+          ['ifsc',   'IFSC Code',                  'ifscCode', 'ifsc'],
+          ['email',  'Email',                      'emailId', 'mail']
+        ];
+        function btn(label, style, fn) {
+          const el = document.createElement('button');
+          el.type = 'button'; el.className = 'cc-btn ' + style; el.textContent = label; el.onclick = fn;
+          actions.appendChild(el); return el;
+        }
+        function head() {
+          return '<div class="bk-mag">' + _ccEsc(bank.name) +
+            (bank.code ? '<small>Vendor Code: ' + _ccEsc(bank.code) + '</small>' : '') + '</div>';
+        }
+
+        function renderView() {
+          actions.innerHTML = '';
+          const anyMissing = rows.some(r => !String(bank[r[2]] || '').trim());
+          body.innerHTML = (notice ? '<div class="bk-ok">' + _ccEsc(notice) + '</div>' : '') + head() +
+            '<div class="bk-list">' + rows.map(r => {
+              const v = String(bank[r[2]] || '').trim();
+              return '<div class="bk-item ' + r[3] + (v ? '' : ' missing') + '"><span>' + r[1] + '</span><b>' +
+                (v ? _ccEsc(v) : '⚠️ பதிவு இல்லை') + '</b></div>';
+            }).join('') + '</div>' +
+            (anyMissing ? '<div class="bk-edit-note" style="margin-top:12px;">⚠️ சில விவரங்கள் பதிவில் இல்லை. \"தவறு — Edit\" மூலம் சேர்க்கலாம்.</div>' : '') +
+            '<div class="bk-ask">இந்த விவரங்கள் சரியா? இன்வாய்ஸ் பதிவு செய்யலாமா?</div>';
+          btn('✖ ரத்து', 'ghost', () => close(false));
+          btn('✏️ தவறு — Edit', 'ghost', () => { notice = ''; renderEdit(''); });
+          const ok = btn('✅ ஆம், சரி — இன்வாய்ஸ் பதிவு செய்', 'primary', () => close(true));
+          ok.focus();
+        }
+
+        function renderEdit(err) {
+          actions.innerHTML = '';
+          body.innerHTML = head() +
+            '<div class="bk-edit-note">✏️ திருத்தவும். \"Save\" அழுத்தினால் Vendor / Bank Master-லும் இதே விவரம் சேமிக்கப்படும் — இந்த இதழின் எதிர்கால இன்வாய்ஸ்கள், Mail-களுக்கும் இதுவே பொருந்தும்.</div>' +
+            rows.map(r =>
+              '<div class="bk-field"><label for="bk_' + r[0] + '">' + r[1] + '</label>' +
+              '<input class="bk-input" id="bk_' + r[0] + '" type="text" autocomplete="off" value="' + _ccEsc(bank[r[2]] || '') + '"></div>'
+            ).join('') + '<div class="bk-err" id="bk_err">' + _ccEsc(err || '') + '</div>';
+          const get = id => body.querySelector('#bk_' + id).value.trim();
+          const ifscEl = body.querySelector('#bk_ifsc');
+          ifscEl.addEventListener('input', () => { ifscEl.value = ifscEl.value.toUpperCase(); });
+          btn('↩ மாற்றம் வேண்டாம்', 'ghost', () => renderView());
+          const save = btn('💾 Save', 'primary', async () => {
+            const errBox = body.querySelector('#bk_err');
+            const ifsc = get('ifsc').toUpperCase();
+            if (ifsc && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(ifsc)) {
+              errBox.textContent = '❌ IFSC Code சரியான வடிவில் இல்லை (11 எழுத்துகள்; எ.கா. SBIN0001234).';
+              return;
+            }
+            const em = get('email');
+            if (em && em.split(/[,;\s]+/).filter(Boolean).some(a => !/^[A-Za-z0-9._%+\-']+@[A-Za-z0-9\-]+(\.[A-Za-z0-9\-]+)+$/.test(a.replace(/^<|>$/g, '')))) {
+              errBox.textContent = '❌ Email முகவரி சரியான வடிவில் இல்லை (பல முகவரிகள் எனில் காற்புள்ளியால் பிரிக்கவும்).';
+              return;
+            }
+            save.disabled = true; save.textContent = 'சேமிக்கப்படுகிறது...';
+            try {
+              const res = await fetch('/api/vendor-bank/update', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  name: bank.name, payeeName: get('payee'), bankName: get('bank'),
+                  bankPlace: get('branch'), bankAccountNumber: get('acc'), ifscCode: ifsc,
+                  vendorName: get('vendor'), emailId: get('email')
+                })
+              });
+              if (res.status === 401) { location.href = '/login'; return; }
+              const out = await res.json();
+              if (!out.success) throw new Error(out.message || 'சேமிக்க முடியவில்லை');
+              bank = Object.assign(bank, out);
+              notice = '✅ வங்கி விவரம் Master-ல் சேமிக்கப்பட்டது. இப்போது சரிபார்த்து உறுதி செய்யவும்.';
+              renderView();
+            } catch (e) {
+              save.disabled = false; save.textContent = '💾 Save';
+              errBox.textContent = '❌ ' + e.message;
+            }
+          });
+        }
+
+        document.addEventListener('keydown', onKey, true);
+        document.body.appendChild(ov);
+        renderView();
+        requestAnimationFrame(() => ov.classList.add('show'));
+      });
+    }
+
     // ─── Submit Invoice ───
     async function submitPayment() {
       const btn = document.getElementById('invoiceBtn');
@@ -2760,7 +2911,10 @@
       };
       Object.assign(currentPayload, coveragePayload());
       // cov.part (Update) அல்லது புதிய Part — server இறுதி Part எண்ணை முடிவு செய்யும்
+      // பதிவுக்கு முன் வங்கி விவரச் சரிபார்ப்பு (தேவையெனில் திருத்தி Master-லும் சேமிக்கலாம்)
+      const bankOk = await showBankVerifyCard(magName);
       hideLoading(btn);
+      if (!bankOk) return;
       proceedToAdd(currentPayload, cov.part !== null);
     }
 

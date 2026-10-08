@@ -3068,6 +3068,98 @@ def api_admin_update_vendor():
         conn.close()
 
 
+# --------------------------------------------------------------------------- #
+# இன்வாய்ஸ் பதிவின்போது வங்கி விவரச் சரிபார்ப்பு card — படிக்க / திருத்த
+# (/api/admin/* அல்ல; எனவே Section பயனரும் பயன்படுத்தலாம். சேமிப்பு Vendor Master-ல்
+#  உள்ள அதே magazines table-ல்தான்; ஆனால் வங்கி விவரப் புலங்கள் 5 மட்டுமே மாறும் —
+#  Vendor பெயர் / Vendor Code / Email மாறாது.)
+# --------------------------------------------------------------------------- #
+def _vendor_bank_json(r):
+    return {
+        "name": r["name"],
+        "vendorName": r["vendor_name"] or "",
+        "code": r["tnpfts_code"] or "",
+        "payeeName": r["payee_name"] or "",
+        "bankAccountNumber": r["bank_account_number"] or "",
+        "bankName": r["bank_name"] or "",
+        "bankPlace": r["bank_place"] or "",
+        "ifscCode": r["ifsc_code"] or "",
+        "emailId": r["email_id"] or "",
+    }
+
+
+@app.route("/api/vendor-bank")
+def api_vendor_bank_get():
+    name = request.args.get("name", "").strip()
+    if not name:
+        return jsonify({"success": False, "message": "இதழ் பெயர் அவசியம்."}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT name, vendor_name, tnpfts_code, bank_account_number, bank_name,
+                          bank_place, ifsc_code, payee_name, email_id
+                   FROM magazines WHERE name=%s""",
+                (name,),
+            )
+            r = cur.fetchone()
+        if not r:
+            return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை"}), 404
+        out = _vendor_bank_json(r)
+        out["success"] = True
+        return jsonify(out)
+    finally:
+        conn.close()
+
+
+@app.route("/api/vendor-bank/update", methods=["POST"])
+def api_vendor_bank_update():
+    data = request.get_json(force=True)
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"success": False, "message": "இதழ் பெயர் அவசியம்."}), 400
+    payee = (data.get("payeeName") or "").strip()
+    acc = (data.get("bankAccountNumber") or "").strip()
+    bank = (data.get("bankName") or "").strip()
+    place = (data.get("bankPlace") or "").strip()
+    ifsc = (data.get("ifscCode") or "").strip().upper()
+    vendor = (data.get("vendorName") or "").strip()
+    email = (data.get("emailId") or "").strip()
+    if email:
+        _ok_mail, _bad_mail = parse_email_list(email)
+        if _bad_mail or not _ok_mail:
+            return jsonify({"success": False,
+                            "message": "தவறான Email முகவரி: " + ", ".join(_bad_mail or [email])}), 400
+    if ifsc and not re.fullmatch(r"[A-Z]{4}0[A-Z0-9]{6}", ifsc):
+        return jsonify({"success": False,
+                        "message": "IFSC Code சரியான வடிவில் இல்லை (11 எழுத்துகள்; எ.கா. SBIN0001234)."}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE magazines SET vendor_name=%s, payee_name=%s, bank_account_number=%s,
+                          bank_name=%s, bank_place=%s, ifsc_code=%s, email_id=%s
+                   WHERE name=%s
+                   RETURNING name, vendor_name, tnpfts_code, bank_account_number, bank_name,
+                             bank_place, ifsc_code, payee_name, email_id""",
+                (vendor, payee, acc, bank, place, ifsc, email, name),
+            )
+            r = cur.fetchone()
+            if not r:
+                conn.rollback()
+                return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை"}), 404
+            conn.commit()
+        out = _vendor_bank_json(r)
+        out["success"] = True
+        out["message"] = f"'{name}' வங்கி விவரம் சேமிக்கப்பட்டது."
+        return jsonify(out)
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @app.route("/api/admin/import-vendors", methods=["POST"])
 def api_admin_import_vendors():
     """CSV text (Excel Export) படித்து magazines-ல் Vendor/Bank விவரங்களை bulk UPSERT."""
