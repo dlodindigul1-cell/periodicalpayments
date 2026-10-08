@@ -133,6 +133,54 @@
     .menu-info h3 { font-size: 16px; font-weight: 700; color: var(--navy); line-height: 1.3; }
     .menu-info span { font-size: 13px; color: var(--muted); margin-top: 3px; display: block; }
 
+    /* ───── HOME: PENDING INVOICE TICKER ───── */
+    .main:has(> #welcomeScreen:not([style*="none"])) { max-width: 1440px; }
+    .home-split { display: flex; gap: 22px; align-items: stretch; padding-bottom: 40px; }
+    .home-left { flex: 1 1 auto; min-width: 0; }
+    .home-left .menu-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); padding-bottom: 0; }
+    .pend-box {
+      flex: 0 0 310px; width: 310px; align-self: stretch;
+      background: var(--card); border: 2px solid var(--border); border-radius: var(--radius);
+      box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden;
+    }
+    .pend-head {
+      background: linear-gradient(135deg, var(--navy), var(--blue)); color: #fff;
+      padding: 14px 16px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    }
+    .pend-head h4 { font-size: 15px; font-weight: 700; line-height: 1.3; }
+    .pend-count {
+      background: var(--accent); color: var(--navy); font-weight: 800; font-size: 13px;
+      min-width: 28px; text-align: center; padding: 3px 9px; border-radius: 20px;
+    }
+    .pend-viewport { position: relative; flex: 1 1 auto; min-height: 240px; overflow: hidden; background: #fbfcfe; }
+    .pend-track { position: absolute; left: 0; right: 0; top: 0; will-change: transform; }
+    .pend-track.run { animation: pendScroll var(--pend-dur, 30s) linear infinite; }
+    .pend-viewport:hover .pend-track.run, .pend-viewport:active .pend-track.run { animation-play-state: paused; }
+    @keyframes pendScroll { from { transform: translateY(var(--pend-start, 0px)); } to { transform: translateY(var(--pend-end, -50%)); } }
+    .pend-q {
+      background: #f3ecd2; color: #6b5514; font-size: 12px; font-weight: 800; letter-spacing: .5px;
+      padding: 7px 14px; border-top: 1px solid #e6d9a6; border-bottom: 1px solid #e6d9a6;
+    }
+    .pend-item { padding: 9px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 10px; }
+    .pend-item .pi-name { font-size: 13px; font-weight: 700; color: var(--navy); line-height: 1.35; }
+    .pend-item .pi-sub { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+    .pend-item .pi-amt { font-size: 13px; font-weight: 700; color: #a32020; white-space: nowrap; align-self: center; }
+    .pend-empty { padding: 40px 16px; text-align: center; color: var(--success-fg); font-weight: 700; font-size: 14px; }
+    .pend-foot {
+      padding: 10px 16px; border-top: 2px solid var(--border); background: #fff;
+      display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; color: var(--navy);
+    }
+    @media (max-width: 1100px) {
+      .home-split { flex-direction: column; }
+      .pend-box { flex: none; width: 100%; }
+      .pend-viewport { min-height: 300px; max-height: 340px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .pend-track.run { animation: none; }
+      .pend-viewport { overflow-y: auto; }
+      .pend-track { position: static; }
+    }
+
     /* ───── CONTENT AREA ───── */
     .content { display: none; }
 
@@ -648,6 +696,8 @@
         <h2>நீங்கள் என்ன செய்ய விரும்புகிறீர்கள்?</h2>
         <p>கீழே உள்ள ஏதாவது ஒன்றை தேர்ந்தெடுக்கவும்</p>
       </div>
+      <div class="home-split">
+      <div class="home-left">
       <div class="menu-grid">
         <div class="menu-card" onclick="showInvoiceForm()">
           <div class="menu-icon">📋</div>
@@ -722,6 +772,19 @@
           </div>
         </div>
       </div>
+      </div><!-- /home-left -->
+
+      <aside class="pend-box" id="pendBox">
+        <div class="pend-head">
+          <h4>⏳ தொகை வழங்கப்பட வேண்டிய<br>Pending Invoices</h4>
+          <span class="pend-count" id="pendCount">–</span>
+        </div>
+        <div class="pend-viewport" id="pendViewport">
+          <div class="pend-track" id="pendTrack"><div class="pend-empty" style="color:var(--muted);">ஏற்றப்படுகிறது...</div></div>
+        </div>
+        <div class="pend-foot"><span>மொத்த நிலுவை</span><span id="pendTotal">₹ 0</span></div>
+      </aside>
+      </div><!-- /home-split -->
     </div>
 
     <!-- ════════════════════ INVOICE FORM ════════════════════ -->
@@ -6332,6 +6395,68 @@ window.QSel = (function () {
 
 <script>
 /* உள் நுழைந்த பயனர் — பெயர், வெளியேறு பட்டன்; Master Data admin-க்கு மட்டும் */
+
+// ───── முகப்பு: தொகை வழங்கப்பட வேண்டிய Pending Invoice scrolling box ─────
+function _pendEsc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function loadPendingTicker() {
+  const track = document.getElementById('pendTrack');
+  if (!track) return;
+  try {
+    const r = await fetch('/api/reports/unpaid');
+    if (r.status === 401) return;
+    const d = await r.json();
+    if (!d.success) throw new Error(d.message || 'error');
+    const rows = d.rows || [];
+    document.getElementById('pendCount').textContent = rows.length;
+    document.getElementById('pendTotal').textContent = '₹ ' + _fmtAmt(d.total || 0);
+    track.classList.remove('run');
+    track.style.removeProperty('--pend-dur');
+    if (!rows.length) {
+      track.innerHTML = '<div class="pend-empty">✅ நிலுவை எதுவும் இல்லை</div>';
+      return;
+    }
+    const groups = {};
+    rows.forEach(x => { (groups[x.quarter || '—'] = groups[x.quarter || '—'] || []).push(x); });
+    let html = '';
+    Object.keys(groups).sort().forEach(q => {
+      const list = groups[q];
+      const sum = list.reduce((a, x) => a + (x.requestedAmt || 0), 0);
+      html += '<div class="pend-q">' + _pendEsc(q.replace('-Q', ' Q')) + ' · ' + list.length + ' · ₹ ' + _fmtAmt(sum) + '</div>';
+      list.forEach(x => {
+        const sub = [x.invoiceNo ? 'Inv: ' + x.invoiceNo : '', x.invoiceDate || ''].filter(Boolean).join(' · ');
+        html += '<div class="pend-item"><div><div class="pi-name">' + _pendEsc(x.magazine) + '</div>' +
+                '<div class="pi-sub">' + _pendEsc(sub) + '</div></div>' +
+                '<div class="pi-amt">₹ ' + _fmtAmt(x.requestedAmt) + '</div></div>';
+      });
+    });
+    track.innerHTML = html;
+    const vp = document.getElementById('pendViewport');
+    const h = track.scrollHeight, vh = vp.clientHeight;
+    if (h > vh) {
+      // தொடர்ச்சியான சுழற்சிக்கு பட்டியலை இரட்டிப்பாக்கு; கீழிருந்து மேலே நகரும்
+      track.innerHTML = html + html;
+      track.style.setProperty('--pend-start', '0px');
+      track.style.setProperty('--pend-end', (-h) + 'px');
+      track.style.setProperty('--pend-dur', Math.max(12, Math.round(h / 28)) + 's');
+      void track.offsetWidth;
+      track.classList.add('run');
+    }
+  } catch (e) {
+    track.innerHTML = '<div class="pend-empty" style="color:#a32020;">பட்டியலை ஏற்ற இயலவில்லை</div>';
+  }
+}
+(function () {
+  const _b = window.backToWelcome;
+  if (typeof _b === 'function') window.backToWelcome = function () { const x = _b.apply(this, arguments); loadPendingTicker(); return x; };
+  window.addEventListener('DOMContentLoaded', loadPendingTicker);
+  setInterval(() => {
+    const w = document.getElementById('welcomeScreen');
+    if (w && w.style.display !== 'none' && !document.hidden) loadPendingTicker();
+  }, 5 * 60 * 1000);
+})();
+
 async function loadMeAndApplyRole() {
   try {
     const r = await fetch('/api/me');
