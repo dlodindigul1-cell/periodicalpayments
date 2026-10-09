@@ -4543,6 +4543,15 @@
         h += '<tr class="grp-total"><td colspan="4" style="text-align:right;">GRAND TOTAL</td>' +
              '<td class="num">' + _pm(d.totalRequested) + '</td><td class="num">' + _pm(d.totalPaid) + '</td><td colspan="2"></td></tr>';
       }
+      if ((d.txnSummary || []).length) {
+        h += '<tr class="grp-head"><td colspan="8">BANK TRANSACTION SUMMARY (ஒரே Transaction எண் — ஒன்றுக்கு மேற்பட்ட இதழ்கள்)</td></tr>';
+        d.txnSummary.forEach(e => {
+          h += '<tr class="grp-total"><td colspan="2" class="ctr">' + _pe(e.paidDate || '—') + '</td>' +
+               '<td colspan="2" class="ctr">' + _pe(e.transactionNo) + '</td>' +
+               '<td style="text-align:right;">TOTAL</td>' +
+               '<td class="num">' + _pm(e.totalPaid) + '</td><td colspan="2"></td></tr>';
+        });
+      }
       document.getElementById('paidDetailTableBody').innerHTML = h;
       card.style.display = 'block';
     }

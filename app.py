@@ -5629,11 +5629,33 @@ def build_paid_report(cur, magazine, quarters):
             n += 1
             x["sno"] = n
             x.pop("invoiceDateRaw", None)
+    # Bank Transaction சுருக்கம்: ஒரே Transaction No-வில் ஒன்றுக்கு மேற்பட்ட இதழ்/வரிகள் இருந்தால் மட்டும்
+    # → தேதி | Transaction No | மொத்தத் தொகை (அட்டவணையின் கடைசியில் காட்டப்படும்)
+    tx = {}
+    for g in out:
+        for x in g["rows"]:
+            t = (x["transactionNo"] or "").strip()
+            if not t:
+                continue
+            e = tx.setdefault(t.upper(), {"transactionNo": t, "count": 0, "totalPaid": 0.0, "_dates": {}})
+            e["count"] += 1
+            e["totalPaid"] += x["paidAmt"]
+            if x["paidDate"]:
+                e["_dates"][x["paidDate"]] = x["paidDate"]
+    txn_summary = []
+    for e in tx.values():
+        if e["count"] > 1:
+            e["paidDate"] = ", ".join(e.pop("_dates").values())
+            txn_summary.append(e)
+        else:
+            e.pop("_dates", None)
+    txn_summary.sort(key=lambda e: (e["paidDate"], e["transactionNo"]))
     return {
         "magazine": magazine, "vendorCode": (m["tnpfts_code"] or "").strip(), "vendorName": vendor,
         "vendorMagazines": names, "quarters": ql, "groups": out, "count": n,
         "totalRequested": sum(g["totalRequested"] for g in out),
         "totalPaid": sum(g["totalPaid"] for g in out),
+        "txnSummary": txn_summary,
     }
 
 
@@ -5651,6 +5673,11 @@ def paid_report_csv(rep):
         w.writerow([x["sno"], g["displayLabel"], x["magazine"], x["invoiceNo"], x["invoiceDate"],
                     "%.2f" % x["requestedAmt"], "%.2f" % x["paidAmt"], x["paidDate"], x["transactionNo"]])
     w.writerow(["", "", "", "TOTAL", "", "%.2f" % rep["totalRequested"], "%.2f" % rep["totalPaid"], "", ""])
+    if rep.get("txnSummary"):
+        w.writerow([])
+        w.writerow(["", "", "BANK TRANSACTION SUMMARY", "PAID DATE", "BANK TRANSACTION NUMBER", "", "TOTAL AMOUNT", "", ""])
+        for e in rep["txnSummary"]:
+            w.writerow(["", "", "", e["paidDate"], e["transactionNo"], "", "%.2f" % e["totalPaid"], "", ""])
     return ("\ufeff" + buf.getvalue()).encode("utf-8")
 
 
@@ -5700,6 +5727,19 @@ def paid_report_xlsx(rep):
     if n:
         ws.write_formula(tr, 5, "=SUM(F%d:F%d)" % (r0 + 1, r0 + n), tot_n, rep["totalRequested"])
         ws.write_formula(tr, 6, "=SUM(G%d:G%d)" % (r0 + 1, r0 + n), tot_n, rep["totalPaid"])
+    ts = rep.get("txnSummary") or []
+    if ts:
+        sr = tr + 2
+        for c in range(9):
+            ws.write(sr, c, "", tot_b)
+        ws.write(sr, 2, "BANK TRANSACTION SUMMARY", tot_b)
+        ws.write(sr, 3, "PAID DATE", tot_b)
+        ws.write(sr, 4, "BANK TRANSACTION NO", tot_b)
+        ws.write(sr, 6, "TOTAL AMOUNT", tot_b)
+        for j, e in enumerate(ts, 1):
+            ws.write_string(sr + j, 3, e["paidDate"], ctr)
+            ws.write_string(sr + j, 4, e["transactionNo"], txt)
+            ws.write_number(sr + j, 6, e["totalPaid"], num)
     ws.freeze_panes(5, 0)
     ws.set_landscape()
     ws.set_paper(9)
@@ -5793,6 +5833,16 @@ def _paid_report_pdf_combined(pdf, rep, para):
         gt.cell(indian_grouping(rep["totalRequested"]), align="R", style=tot_style)
         gt.cell(indian_grouping(rep["totalPaid"]), align="R", style=tot_style)
         gt.cell("", colspan=2, style=tot_style)
+        for k, e in enumerate(rep.get("txnSummary") or []):
+            if k == 0:
+                sh = table.row()
+                sh.cell("BANK TRANSACTION SUMMARY (same transaction number)", colspan=8, align="L", style=band_style)
+            sr_ = table.row()
+            sr_.cell(e["paidDate"], colspan=2, align="C", style=tot_style)
+            sr_.cell(e["transactionNo"], colspan=2, align="C", style=tot_style)
+            sr_.cell("TOTAL", align="R", style=tot_style)
+            sr_.cell(indian_grouping(e["totalPaid"]), align="R", style=tot_style)
+            sr_.cell("", colspan=2, style=tot_style)
 
     # கையொப்பம் — கடைசிப் பக்கத்தில் மட்டும் (அட்டவணைக்குக் கீழே இடம் போதாவிட்டால் புதிய பக்கம்)
     pdf.ln(12)
