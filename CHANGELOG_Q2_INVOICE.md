@@ -63,3 +63,11 @@
 - "✏️ தவறு — Edit" → அதே card-ல் புலங்கள் திருத்தக்கூடியவையாக மாறும். "💾 Save" → Vendor Master-ல் சேமிப்பதுபோலவே `magazines` table-ல் (vendor_name, payee_name, bank_account_number, bank_name, bank_place, ifsc_code, email_id) சேமிக்கப்படும்; பின் மீண்டும் திருத்த முடியாத பார்வை வந்து, "ஆம், சரி" அழுத்திய பின்பே இன்வாய்ஸ் பதிவாகும்.
 - புதிய API (admin அல்லாத பயனரும் பயன்படுத்தலாம்): `GET /api/vendor-bank?name=`, `POST /api/vendor-bank/update`. இது மேற்கண்ட 7 புலங்களை மட்டுமே மாற்றும் — Vendor Code மாறாது. IFSC வடிவம் (4 எழுத்து + 0 + 6), Email வடிவம் (பல முகவரிகள் காற்புள்ளியால்) சோதிக்கப்படும்.
 - ஏற்கனவே பதிவான இன்வாய்ஸ்கள் / வவுச்சர்கள் மாறாது; Master மாறுவதால் இனி உருவாகும் PDF / Mail-ல் புதிய வங்கி விவரம் வரும்.
+
+# Master — Excel மூலம் பல Quarter சேர்த்தல் (2026-10-25)
+- Master Data → இதழ் Master-ல் புதிய card: "📊 Excel மூலம் பல Quarter-களுக்கு இதழ்கள் சேர்".
+- Excel (Magazine Name, Periodicity, Total Subscription, Single Issue Rate, Discount, Single Issue After Discount) → Preview (DB மாறாது) → உறுதிப்படுத்தல் → ஒரே transaction-ல் சேமிப்பு.
+- Master-ல் உள்ள இதழ்: தேர்ந்த Quarter-கள் (2026-2027-Q2..Q4) Excel விலையுடன் சேரும்; மொழி மாறாது; பதிவுள்ள 🔒 Quarter-கள் தொடப்படாது (தனி டிக் செய்தால் மட்டும் மாறும்).
+- புதிய இதழ்: magazines-ல் சேர்ந்து, தேர்ந்த Quarter-களுக்கு மட்டும் பதிவாகும்.
+- பெயர் ஒத்த இதழ்கள் (எழுத்து வேறுபாடு): "இணை / புதிதாகச் சேர் / தவிர்" என நீங்களே தேர்வு.
+- API: `POST /api/admin/bulk-quarters/preview`, `POST /api/admin/bulk-quarters/apply` (Admin மட்டும்). requirements.txt-ல் `openpyxl==3.1.5` சேர்க்கப்பட்டது.

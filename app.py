@@ -2391,6 +2391,226 @@ def api_admin_add_quarter():
         conn.close()
 
 
+# --------------------------------------------------------------------------- #
+# Excel (DespatchfinalReport.xlsx) மூலம் பல Quarter-களுக்கு இதழ்கள் Master சேர்த்தல்
+#   படி 1: /api/admin/bulk-quarters/preview  — Excel படித்து ஒப்பிடும் (DB மாறாது)
+#   படி 2: /api/admin/bulk-quarters/apply    — உறுதிசெய்த பின் ஒரே transaction-ல் சேமிக்கும்
+# --------------------------------------------------------------------------- #
+import difflib
+import unicodedata
+
+_BULK_Q_RE = re.compile(r"^\d{4}-\d{4}-Q[1-4]$")
+_BULK_XL_HEADERS = {
+    "name": ("magazine name", "magazine", "இதழ் பெயர்"),
+    "periodicity": ("periodicity",),
+    "libs": ("total subscription", "subscription", "no of libraries", "no. of libraries"),
+    "price": ("single issue rate", "price"),
+    "discount": ("discount",),
+    "issue_price": ("single issue after discount", "after discount", "issue price"),
+}
+
+
+def _bulk_norm(s):
+    s = unicodedata.normalize("NFC", str(s or ""))
+    return re.sub(r"\s+", " ", s).strip().casefold()
+
+
+def _bulk_read_excel(file_bytes):
+    """Excel-ல் உள்ள இதழ் வரிகளைப் படிக்கும் -> (rows, warnings)."""
+    import openpyxl  # requirements.txt-ல் openpyxl தேவை
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    ws = wb.worksheets[0]
+    all_rows = list(ws.iter_rows(values_only=True))
+    col, hdr_idx = {}, None
+    for i, r in enumerate(all_rows[:15]):
+        cells = [_bulk_norm(c) for c in r]
+        found = {}
+        for key, alts in _BULK_XL_HEADERS.items():
+            for j, c in enumerate(cells):
+                if c in alts:
+                    found[key] = j
+                    break
+        if "name" in found and "price" in found:
+            col, hdr_idx = found, i
+            break
+    if hdr_idx is None:
+        raise ValueError("Excel-ல் தலைப்பு வரி (Magazine Name, Single Issue Rate...) கிடைக்கவில்லை.")
+    need = [k for k in ("name", "periodicity", "libs", "price", "discount", "issue_price") if k not in col]
+    if need:
+        raise ValueError("Excel-ல் இந்த columns இல்லை: " + ", ".join(need))
+
+    rows, warnings, seen = [], [], {}
+    for r in all_rows[hdr_idx + 1:]:
+        name = re.sub(r"\s+", " ", str(r[col["name"]] or "")).strip()
+        if not name:
+            continue
+        item = {
+            "name": name,
+            "periodicity": str(r[col["periodicity"]] or "").strip(),
+            "libs": q_int(r[col["libs"]]),
+            "price": q_num(r[col["price"]]),
+            "discount": q_num(r[col["discount"]]),
+            "issuePrice": q_num(r[col["issue_price"]]),
+        }
+        key = _bulk_norm(name)
+        if key in seen:
+            warnings.append(f"'{name}' Excel-ல் இரு முறை உள்ளது — முதல் வரி மட்டும் எடுக்கப்பட்டது.")
+            continue
+        seen[key] = True
+        rows.append(item)
+    return rows, warnings
+
+
+@app.route("/api/admin/bulk-quarters/preview", methods=["POST"])
+def api_admin_bulk_quarters_preview():
+    f = request.files.get("file")
+    quarters = [q.strip() for q in (request.form.get("quarters") or "").split(",") if q.strip()]
+    if not f:
+        return jsonify({"success": False, "message": "Excel கோப்பைத் தேர்ந்தெடுக்கவும்."}), 400
+    if not quarters or any(not _BULK_Q_RE.match(q) for q in quarters):
+        return jsonify({"success": False, "message": "Quarter தேர்வு தவறு (எ.கா. 2026-2027-Q2)."}), 400
+    try:
+        xl_rows, warnings = _bulk_read_excel(f.read())
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"success": False, "message": "Excel படிக்க முடியவில்லை: " + str(e)}), 400
+
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, periodicity FROM magazines")
+            mags = cur.fetchall()
+            by_norm = {_bulk_norm(m["name"]): m for m in mags}
+            cur.execute(
+                "SELECT magazine_id, quarter, price, discount, issue_price, no_of_libraries "
+                "FROM magazine_quarters WHERE quarter = ANY(%s)", (quarters,))
+            have = {}
+            for r in cur.fetchall():
+                have.setdefault(r["magazine_id"], {})[r["quarter"]] = {
+                    "price": float(r["price"] or 0), "discount": float(r["discount"] or 0),
+                    "issuePrice": float(r["issue_price"] or 0), "libs": int(r["no_of_libraries"] or 0)}
+            cur.execute("SELECT DISTINCT language FROM magazines WHERE language IS NOT NULL AND language<>''")
+            languages = sorted(r["language"] for r in cur.fetchall())
+    finally:
+        conn.close()
+
+    norm_keys = list(by_norm.keys())
+    items = []
+    for it in xl_rows:
+        key = _bulk_norm(it["name"])
+        m = by_norm.get(key)
+        row = dict(it)
+        if m:
+            row["status"] = "existing"
+            row["target"] = m["name"]
+            row["oldPeriodicity"] = m["periodicity"] or ""
+            row["haveQuarters"] = have.get(m["id"], {})
+            row["similar"] = []
+        else:
+            close = difflib.get_close_matches(key, norm_keys, n=2, cutoff=0.82)
+            row["status"] = "similar" if close else "new"
+            row["target"] = ""
+            row["similar"] = [by_norm[c]["name"] for c in close]
+            row["haveQuarters"] = {}
+            has_ta = any("\u0b80" <= ch <= "\u0bff" for ch in it["name"])
+            row["isTamil"] = has_ta
+        items.append(row)
+
+    excel_norms = {_bulk_norm(i["name"]) for i in xl_rows}
+    not_in_excel = sorted(m["name"] for m in mags if _bulk_norm(m["name"]) not in excel_norms)
+    return jsonify({"success": True, "items": items, "warnings": warnings,
+                    "languages": languages, "notInExcel": not_in_excel})
+
+
+@app.route("/api/admin/bulk-quarters/apply", methods=["POST"])
+def api_admin_bulk_quarters_apply():
+    data = request.get_json(force=True) or {}
+    quarters = [str(q).strip() for q in (data.get("quarters") or []) if str(q).strip()]
+    items = data.get("items") or []
+    overwrite = bool(data.get("overwrite"))
+    update_periodicity = bool(data.get("updatePeriodicity"))
+    if not quarters or any(not _BULK_Q_RE.match(q) for q in quarters):
+        return jsonify({"success": False, "message": "Quarter தேர்வு தவறு."}), 400
+    if not items:
+        return jsonify({"success": False, "message": "சேர்க்க இதழ்கள் எதுவும் இல்லை."}), 400
+
+    stats = {"existingMags": 0, "newMags": 0, "qAdded": 0, "qUpdated": 0, "qSkipped": 0,
+             "periodicityUpdated": 0}
+    problems = []
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            for it in items:
+                action = it.get("action")
+                excel_name = str(it.get("name") or "").strip()
+                if action == "skip" or not excel_name:
+                    continue
+                price = q_num(it.get("price"))
+                discount = q_num(it.get("discount"))
+                issue_price = q_num(it.get("issuePrice"))
+                libs = q_int(it.get("libs"))
+                periodicity = str(it.get("periodicity") or "").strip()
+
+                if action == "existing":
+                    target = str(it.get("target") or "").strip()
+                    cur.execute("SELECT id, periodicity FROM magazines WHERE name=%s", (target,))
+                    m = cur.fetchone()
+                    if not m:
+                        problems.append(f"'{target}' Master-ல் கிடைக்கவில்லை.")
+                        continue
+                    mid = m["id"]
+                    stats["existingMags"] += 1
+                    if update_periodicity and periodicity and (m["periodicity"] or "") != periodicity:
+                        cur.execute("UPDATE magazines SET periodicity=%s WHERE id=%s", (periodicity, mid))
+                        stats["periodicityUpdated"] += 1
+                elif action == "new":
+                    cur.execute("SELECT id FROM magazines WHERE name=%s", (excel_name,))
+                    if cur.fetchone():
+                        problems.append(f"'{excel_name}' ஏற்கனவே உள்ளது — புதிதாகச் சேர்க்கப்படவில்லை.")
+                        continue
+                    language = str(it.get("language") or "").strip()
+                    cur.execute(
+                        "INSERT INTO magazines (name, language, periodicity) VALUES (%s,%s,%s) RETURNING id",
+                        (excel_name, language, periodicity))
+                    mid = cur.fetchone()["id"]
+                    stats["newMags"] += 1
+                else:
+                    continue
+
+                for q in quarters:
+                    cur.execute("SELECT 1 FROM magazine_quarters WHERE magazine_id=%s AND quarter=%s", (mid, q))
+                    exists = cur.fetchone()
+                    if exists and not overwrite:
+                        stats["qSkipped"] += 1
+                        continue
+                    if exists:
+                        cur.execute(
+                            "UPDATE magazine_quarters SET price=%s, discount=%s, issue_price=%s, "
+                            "no_of_libraries=%s WHERE magazine_id=%s AND quarter=%s",
+                            (price, discount, issue_price, libs, mid, q))
+                        stats["qUpdated"] += 1
+                    else:
+                        cur.execute(
+                            "INSERT INTO magazine_quarters (magazine_id, quarter, price, discount, "
+                            "issue_price, no_of_libraries) VALUES (%s,%s,%s,%s,%s,%s)",
+                            (mid, q, price, discount, issue_price, libs))
+                        stats["qAdded"] += 1
+            conn.commit()
+        msg = (f"{stats['existingMags']} பழைய இதழ்கள், {stats['newMags']} புதிய இதழ்கள் — "
+               f"{stats['qAdded']} Quarter பதிவுகள் சேர்க்கப்பட்டன")
+        if stats["qUpdated"]:
+            msg += f", {stats['qUpdated']} மாற்றப்பட்டன"
+        if stats["qSkipped"]:
+            msg += f", {stats['qSkipped']} ஏற்கனவே இருந்ததால் தொடப்படவில்லை"
+        if stats["periodicityUpdated"]:
+            msg += f"; {stats['periodicityUpdated']} இதழ்களின் Periodicity புதுப்பிக்கப்பட்டது"
+        return jsonify({"success": True, "message": msg + ".", "stats": stats, "problems": problems})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": "சேமிக்க முடியவில்லை (எதுவும் மாறவில்லை): " + str(e)}), 500
+    finally:
+        conn.close()
+
+
 @app.route("/api/admin/import-magazines", methods=["POST"])
 def api_admin_import_magazines():
     """CSV text (Google Sheet Export) படித்து magazines + magazine_quarters-ல் bulk UPSERT."""

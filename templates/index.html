@@ -5161,6 +5161,34 @@ function _pdfHelper(fnName, targetId) {
       <!-- ══════════ MAGAZINE MASTER PANEL ══════════ -->
       <div id="mastersMagazinePanel" class="master-panel" style="display:none;">
 
+        <div class="card" style="border:2px solid var(--blue);">
+          <div class="card-title">📊 Excel மூலம் பல Quarter-களுக்கு இதழ்கள் சேர் (Despatch Report)</div>
+          <p style="font-size:13px; color:var(--muted); margin-bottom:10px;">
+            Excel columns: Magazine Name, Periodicity, Total Subscription, Single Issue Rate, Discount, Single Issue After Discount.
+            முதலில் <b>சரிபார்ப்பு (Preview)</b> மட்டும் வரும் — DB-யில் எதுவும் மாறாது. Master-ல் உள்ள இதழ்களுக்குத் தேர்ந்த Quarter-கள் சேரும்;
+            புதிய இதழ்கள் இந்த Quarter-களுக்கு மட்டும் சேரும். ஏற்கனவே பதிவுள்ள (🔒) Quarter-கள் தொடப்படாது.
+          </p>
+          <div class="field-row">
+            <div class="field">
+              <label>Excel கோப்பு (.xlsx) <span class="req">*</span></label>
+              <input type="file" id="bqFile" accept=".xlsx">
+            </div>
+            <div class="field">
+              <label>Quarter(கள்) <span class="req">*</span></label>
+              <div id="bqQuarterChecks" style="display:flex; gap:16px; flex-wrap:wrap; margin-top:6px;">
+                <label style="font-weight:400;"><input type="checkbox" value="2026-2027-Q2" checked> 2026-2027-Q2</label>
+                <label style="font-weight:400;"><input type="checkbox" value="2026-2027-Q3" checked> 2026-2027-Q3</label>
+                <label style="font-weight:400;"><input type="checkbox" value="2026-2027-Q4" checked> 2026-2027-Q4</label>
+              </div>
+            </div>
+          </div>
+          <div class="btn-row" style="margin-top:12px;">
+            <button class="btn-primary" id="bqPreviewBtn" onclick="bqPreview()">🔍 சரிபார் (Preview)</button>
+          </div>
+          <div id="bqStatus" class="status"></div>
+          <div id="bqPreviewWrap" style="display:none; margin-top:12px;"></div>
+        </div>
+
         <div class="card">
           <div class="card-title">📥 CSV மூலம் இதழ்கள் Import (Google Sheet Export)</div>
           <p style="font-size:13px; color:var(--muted); margin-bottom:10px;">
@@ -5810,6 +5838,159 @@ function _pdfHelper(fnName, targetId) {
         }
       } catch (e) {
         setStatus('deleteTxnStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+      hideLoading(btn);
+    }
+
+    // ─── Magazine Master: Excel மூலம் பல Quarter சேர்த்தல் ───
+    let _bq = { items: [], quarters: [], languages: [], names: [] };
+
+    function _bqQuarters() {
+      return Array.from(document.querySelectorAll('#bqQuarterChecks input:checked')).map(c => c.value);
+    }
+    function _bqGuessLanguage(isTamil, languages) {
+      const hit = (words) => languages.find(l => words.some(w => l.toLowerCase().includes(w)));
+      return (isTamil ? hit(['தமிழ்', 'tamil']) : hit(['english', 'ஆங்கிலம்'])) || '';
+    }
+
+    async function bqPreview() {
+      const file = document.getElementById('bqFile').files[0];
+      const quarters = _bqQuarters();
+      if (!file) { setStatus('bqStatus', 'error', '❌ Excel கோப்பைத் தேர்ந்தெடுக்கவும்.'); return; }
+      if (!quarters.length) { setStatus('bqStatus', 'error', '❌ குறைந்தது ஒரு Quarter-ஐ டிக் செய்யவும்.'); return; }
+      const btn = document.getElementById('bqPreviewBtn');
+      showLoading(btn, 'சரிபார்க்கிறது...');
+      setStatus('bqStatus', 'loading', '<span class="spinner dark"></span> Excel படிக்கப்படுகிறது...');
+      try {
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('quarters', quarters.join(','));
+        const res = await fetch('/api/admin/bulk-quarters/preview', { method: 'POST', body: fd });
+        const r = await res.json();
+        if (!r.success) { setStatus('bqStatus', 'error', '❌ ' + r.message); hideLoading(btn); return; }
+        _bq = { items: r.items, quarters, languages: r.languages || [] };
+        clearStatus('bqStatus');
+        bqRender(r);
+      } catch (e) {
+        setStatus('bqStatus', 'error', '❌ பிழை: ' + e.message);
+      }
+      hideLoading(btn);
+    }
+
+    function bqRender(r) {
+      const items = _bq.items;
+      const nExist = items.filter(i => i.status === 'existing').length;
+      const nNew = items.filter(i => i.status === 'new').length;
+      const nSim = items.filter(i => i.status === 'similar').length;
+      const nPerDiff = items.filter(i => i.status === 'existing' && i.periodicity && i.oldPeriodicity !== i.periodicity).length;
+      const nHave = items.filter(i => i.status === 'existing' && Object.keys(i.haveQuarters || {}).length).length;
+
+      let rows = '';
+      items.forEach((it, i) => {
+        let state = '', extra = '';
+        if (it.status === 'existing') {
+          state = '<span style="color:#1b7a3a;font-weight:600;">✔ Master-ல் உள்ளது</span>';
+          const hq = Object.keys(it.haveQuarters || {});
+          if (hq.length) extra += '<div style="font-size:11px;color:#b45309;">🔒 ஏற்கனவே பதிவு: ' + hq.map(q => _ccEsc(q.slice(-2))).join(', ') + '</div>';
+          if (it.periodicity && it.oldPeriodicity !== it.periodicity)
+            extra += '<div style="font-size:11px;color:#b45309;">Periodicity: ' + _ccEsc(it.oldPeriodicity || '-') + ' → ' + _ccEsc(it.periodicity) + '</div>';
+        } else if (it.status === 'similar') {
+          let opts = '<option value="skip">⏭ தவிர் (முடிவு செய்யவில்லை)</option>';
+          it.similar.forEach((s, k) => { opts += '<option value="existing:' + k + '">இதனுடன் இணை → ' + _ccEsc(s) + '</option>'; });
+          opts += '<option value="new">➕ புதிய இதழாகச் சேர்</option>';
+          state = '<span style="color:#b45309;font-weight:600;">⚠ ஒத்த பெயர் உள்ளது</span><br><select id="bqAct' + i + '" style="max-width:260px;font-size:12px;">' + opts + '</select>';
+        } else {
+          state = '<span style="color:#1d4ed8;font-weight:600;">🆕 புதிய இதழ்</span>';
+        }
+        if (it.status === 'new' || it.status === 'similar') {
+          const g = _bqGuessLanguage(it.isTamil, _bq.languages);
+          let lo = '<option value="">(மொழி இல்லை)</option>' + _bq.languages.map(l => '<option value="' + _ccEsc(l) + '"' + (l === g ? ' selected' : '') + '>' + _ccEsc(l) + '</option>').join('');
+          extra += '<div style="font-size:11px;margin-top:3px;">மொழி: <select id="bqLang' + i + '" style="font-size:12px;">' + lo + '</select></div>';
+        }
+        rows += '<tr>' +
+          '<td class="ctr"><input type="checkbox" id="bqInc' + i + '" checked></td>' +
+          '<td>' + _ccEsc(it.name) + '</td>' +
+          '<td>' + _ccEsc(it.periodicity) + '</td>' +
+          '<td class="num-cell">' + it.libs + '</td>' +
+          '<td class="num-cell">' + it.price + '</td>' +
+          '<td class="num-cell">' + it.discount + '</td>' +
+          '<td class="num-cell">' + it.issuePrice + '</td>' +
+          '<td>' + state + extra + '</td></tr>';
+      });
+
+      let notes = '';
+      if (r.warnings && r.warnings.length) notes += '<div style="font-size:12px;color:#b45309;margin-top:6px;">' + r.warnings.map(_ccEsc).join('<br>') + '</div>';
+      if (r.notInExcel && r.notInExcel.length)
+        notes += '<details style="margin-top:8px;font-size:12px;"><summary>Master-ல் உள்ளது ஆனால் Excel-ல் இல்லாத ' + r.notInExcel.length + ' இதழ்கள் (இவற்றுக்கு இந்த Quarter-கள் சேராது)</summary>' +
+          r.notInExcel.map(_ccEsc).join(', ') + '</details>';
+
+      document.getElementById('bqPreviewWrap').style.display = '';
+      document.getElementById('bqPreviewWrap').innerHTML =
+        '<div style="font-size:14px;margin-bottom:8px;"><b>Excel: ' + items.length + ' இதழ்கள்</b> — Master-ல் உள்ளவை <b>' + nExist +
+        '</b> · புதியவை <b>' + nNew + '</b> · ஒத்த பெயர் (நீங்கள் தேர்வு செய்ய) <b>' + nSim + '</b></div>' +
+        '<div class="data-table-wrap" style="max-height:420px;"><table class="data-table"><thead><tr>' +
+        '<th class="ctr">✓</th><th>இதழ் (Excel)</th><th>Periodicity</th><th class="num-cell">Libraries</th><th class="num-cell">Price</th>' +
+        '<th class="num-cell">Disc %</th><th class="num-cell">Issue Price</th><th>நிலை</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+        notes +
+        '<div style="margin-top:10px;font-size:13px;">' +
+        '<label style="font-weight:400;display:block;"><input type="checkbox" id="bqUpdPer" ' + (nPerDiff ? 'checked' : '') + '> Periodicity மாறுபடும் ' + nPerDiff + ' பழைய இதழ்களுக்கு Excel-படி புதுப்பி</label>' +
+        '<label style="font-weight:400;display:block;"><input type="checkbox" id="bqOverwrite"> ஏற்கனவே பதிவுள்ள (🔒) Quarter-களையும் Excel விலைக்கு மாற்று ' +
+        (nHave ? '<span style="color:#b45309;">(' + nHave + ' இதழ்களுக்குப் பதிவு உள்ளது — பொதுவாக இதைத் தொடாதீர்கள்)</span>' : '') + '</label></div>' +
+        '<div class="btn-row" style="margin-top:12px;"><button class="btn-primary" id="bqApplyBtn" onclick="bqApply()">✅ பதிவு செய்</button></div>' +
+        '<div id="bqApplyStatus" class="status"></div>';
+    }
+
+    async function bqApply() {
+      const out = [];
+      let undecided = 0;
+      _bq.items.forEach((it, i) => {
+        if (!document.getElementById('bqInc' + i).checked) return;
+        const base = { name: it.name, periodicity: it.periodicity, libs: it.libs, price: it.price, discount: it.discount, issuePrice: it.issuePrice };
+        const langEl = document.getElementById('bqLang' + i);
+        if (it.status === 'existing') {
+          out.push({ ...base, action: 'existing', target: it.target });
+        } else if (it.status === 'new') {
+          out.push({ ...base, action: 'new', language: langEl ? langEl.value : '' });
+        } else {
+          const v = document.getElementById('bqAct' + i).value;
+          if (v === 'new') out.push({ ...base, action: 'new', language: langEl ? langEl.value : '' });
+          else if (v.startsWith('existing:')) out.push({ ...base, action: 'existing', target: it.similar[parseInt(v.split(':')[1], 10)] });
+          else undecided++;
+        }
+      });
+      if (!out.length) { setStatus('bqApplyStatus', 'error', '❌ சேர்க்க இதழ்கள் எதுவும் தேர்ந்தெடுக்கப்படவில்லை.'); return; }
+      const nNew = out.filter(o => o.action === 'new').length;
+      const overwrite = document.getElementById('bqOverwrite').checked;
+      const ok = await showConfirmCard({
+        icon: '📊', title: 'Excel தரவை Master-ல் பதிவு செய்யலாமா?', subtitle: _bq.quarters.join(', '),
+        html: '<div style="font-size:14px;line-height:1.7;">' +
+          'பழைய இதழ்கள்: <b>' + (out.length - nNew) + '</b><br>புதிய இதழ்கள்: <b>' + nNew + '</b><br>' +
+          'Quarter-கள்: <b>' + _bq.quarters.length + '</b> (ஒவ்வொரு இதழுக்கும்)' +
+          (undecided ? '<br><span style="color:#b45309;">முடிவு செய்யாமல் தவிர்க்கப்படுபவை: ' + undecided + '</span>' : '') +
+          (overwrite ? '<br><span style="color:#b91c1c;">⚠ பதிவுள்ள Quarter-களின் விலையும் மாற்றப்படும்.</span>' : '<br>பதிவுள்ள Quarter-கள் தொடப்படாது.') +
+          '</div>'
+      });
+      if (ok !== true) return;
+      const btn = document.getElementById('bqApplyBtn');
+      showLoading(btn, 'சேமிக்கிறது...');
+      try {
+        const res = await fetch('/api/admin/bulk-quarters/apply', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            quarters: _bq.quarters, items: out, overwrite,
+            updatePeriodicity: document.getElementById('bqUpdPer').checked
+          })
+        });
+        const r = await res.json();
+        if (r.success) {
+          setStatus('bqApplyStatus', 'success', '✅ ' + r.message +
+            (r.problems && r.problems.length ? '<br><small>' + r.problems.map(_ccEsc).join('<br>') + '</small>' : ''));
+          loadMasterMagazinesList();
+        } else {
+          setStatus('bqApplyStatus', 'error', '❌ ' + r.message);
+        }
+      } catch (e) {
+        setStatus('bqApplyStatus', 'error', '❌ பிழை: ' + e.message);
       }
       hideLoading(btn);
     }
