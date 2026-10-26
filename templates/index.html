@@ -689,6 +689,17 @@
       -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
       box-shadow: 0 1px 6px rgba(15,35,71,0.08);
     }
+
+    /* ── மொழி தேர்வு (தமிழ் / English) ── */
+    .lang-bar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 16px; padding:10px 16px; background:#f3f7ff; border:1.5px solid var(--border); border-radius:10px; }
+    .lang-bar .lb-title { font-weight:700; color:var(--navy); font-size:14px; }
+    .lang-bar .lang-hint { margin-top:0; }
+    .lang-chips { display:flex; gap:8px; flex-wrap:wrap; }
+    .lang-chip { padding:8px 20px; border:1.5px solid var(--border); border-radius:999px; background:#fff; color:var(--text); font-weight:600; font-size:14px; cursor:pointer; font-family:inherit; }
+    .lang-chip:hover { border-color:var(--blue); }
+    .lang-chip.on { background:var(--navy); border-color:var(--navy); color:#fff; }
+    .lang-chips.disabled .lang-chip { opacity:.45; cursor:not-allowed; pointer-events:none; }
+    .lang-hint { font-size:12px; color:var(--muted); margin-top:5px; }
   </style>
 </head>
 <body>
@@ -831,8 +842,13 @@
             <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
           </select>
         </div>
+        <div class="field" id="invLangField">
+          <label>2. மொழி (தமிழ் / English) <span class="req">*</span></label>
+          <div class="lang-chips disabled" data-lang-screen="invoiceForm" data-required="1"></div>
+          <div class="lang-hint">Quarter தேர்ந்தெடுத்தவுடன் மொழியைத் தேர்ந்தெடுக்கவும்; அதன் பின்னரே அந்த மொழிக்குரிய இதழ்கள் பட்டியலில் வரும்.</div>
+        </div>
         <div class="field">
-          <label>2. பருவ இதழ் பெயர் <span class="req">*</span></label>
+          <label>3. பருவ இதழ் பெயர் <span class="req">*</span></label>
           <select id="magazine" onchange="onMagazineChangeInvoiceForm()" disabled>
             <option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>
           </select>
@@ -845,7 +861,7 @@
           </div>
         </div>
         <div class="field">
-          <label>3. QTR Issues <span class="req">*</span></label>
+          <label>4. QTR Issues <span class="req">*</span></label>
           <input type="number" id="qtrIssues" placeholder="கிளிக் செய்து உள்ளிடவும்" readonly onclick="reopenQtrIssuesCard()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();reopenQtrIssuesCard();}" disabled>
           <div style="font-size:12px; color:var(--muted); margin-top:4px;">
             QTR Issues-ஐ Card வழியாக மட்டுமே பதிவு செய்ய முடியும். இதழைத் தேர்ந்தெடுத்ததும் Card தானாகத் திறக்கும்; மாற்ற இந்தப் பெட்டியைக் கிளிக் செய்யவும்.
@@ -946,12 +962,17 @@
         <div class="field-row">
           <div class="field">
             <label>1. Quarter <span class="req">*</span></label>
-            <select id="quarterSelect" onchange="loadMagazinesForQuarter()" class="qsel-dyn" data-qsrc="addable">
+            <select id="quarterSelect" onchange="onQuarterChangePayment()" class="qsel-dyn" data-qsrc="addable">
               <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
             </select>
           </div>
+          <div class="field" id="payLangField">
+            <label>2. மொழி (தமிழ் / English) <span class="req">*</span></label>
+            <div class="lang-chips disabled" data-lang-screen="paymentForm" data-required="1"></div>
+            <div class="lang-hint">Quarter தேர்ந்தெடுத்த பின் மொழியைத் தேர்ந்தெடுக்கவும்.</div>
+          </div>
           <div class="field" id="magazineSection" style="display:none;">
-            <label>2. பருவ இதழ் <span class="req">*</span></label>
+            <label>3. பருவ இதழ் <span class="req">*</span></label>
             <select id="magazineSelect" onchange="loadNonSupplyData()">
               <option value="">-- இதழைத் தேர்ந்தெடுக்கவும் --</option>
             </select>
@@ -984,11 +1005,11 @@
         </div>
         <div class="field-row">
           <div class="field">
-            <label>3. Non Supply Copies</label>
+            <label>4. Non Supply Copies</label>
             <input type="number" id="nonSupplyInput" value="0" oninput="calculateNetPayable()">
           </div>
           <div class="field">
-            <label>4. Net Payable (தானாக கணக்கிடப்படும்)</label>
+            <label>5. Net Payable (தானாக கணக்கிடப்படும்)</label>
             <input type="text" id="netPayableDisplay" readonly placeholder="₹ 0.00">
           </div>
         </div>
@@ -2072,6 +2093,7 @@
 
       // 🔥 Quarter-first flow — Quarter தேர்ந்தெடுக்கும் வரை இதழ் dropdown disabled
       document.getElementById('quarter').value = '';
+      LangSel.reset('invoiceForm'); LangSel.enable('invoiceForm', false);
       const magSel = document.getElementById('magazine');
       magSel.innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
       magSel.disabled = true;
@@ -2095,12 +2117,31 @@
       resetCoverageState();
       resetQtrIssuesAndLock();
 
+      LangSel.reset('invoiceForm');          // Quarter மாறினால் மொழியை மீண்டும் தேர்ந்தெடுக்க வேண்டும்
       if (!quarter) {
+        LangSel.enable('invoiceForm', false);
         magSel.innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
         magSel.disabled = true;
         return;
       }
 
+      LangSel.enable('invoiceForm', true);
+      magSel.innerHTML = '<option value="">-- முதலில் மொழியைத் தேர்ந்தெடுக்கவும் --</option>';
+      magSel.disabled = true;
+    }
+
+    // 🌐 மொழி தேர்ந்தெடுத்ததும் — அந்த மொழிக்குரிய இதழ்களை மட்டும் ஏற்று
+    function onLanguageChangeInvoiceForm() {
+      const quarter = document.getElementById('quarter').value;
+      const magSel = document.getElementById('magazine');
+      if (!quarter || !LangSel.get('invoiceForm')) return;
+      magSel.value = '';
+      const _ib = document.getElementById('invoiceBtn'); if (_ib) _ib.disabled = false;
+      document.getElementById('existingInvoiceCard').style.display = 'none';
+      document.getElementById('appendBtn').style.display = 'none';
+      isDuplicateExists = false;
+      resetCoverageState();
+      resetQtrIssuesAndLock();
       magSel.disabled = false;
       loadAllData(quarter);
     }
@@ -2285,6 +2326,7 @@
       document.getElementById('paymentForm').style.display = 'block';
       // Reset
       document.getElementById('quarterSelect').value = "";
+      LangSel.reset('paymentForm'); LangSel.enable('paymentForm', false);
       document.getElementById('magazineSection').style.display = 'none';
       document.getElementById('paymentDetailsCard').style.display = 'none';
       document.getElementById('paymentExtraCard').style.display = 'none';
@@ -2975,6 +3017,7 @@
           ['invoiceNo','invoiceDate','requestedAmt','qtrIssues'].forEach(id => document.getElementById(id).value = '');
           _reqAuto = null;
           document.getElementById('quarter').value = '';
+          LangSel.reset('invoiceForm'); LangSel.enable('invoiceForm', false);
           document.getElementById('magazine').innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
           document.getElementById('magazine').disabled = true;
           document.getElementById('qtrIssues').disabled = true;
@@ -3076,15 +3119,32 @@
       _skipGroupPopupOnce = true; _wantPart = part;
       try {
         document.getElementById('quarterSelect').value = quarter;
+        await LangSel.ensureFor('paymentForm', magazine);
         await loadMagazinesForQuarter();
         document.getElementById('magazineSelect').value = magazine;
         await loadNonSupplyData();
       } finally { _skipGroupPopupOnce = false; _wantPart = null; }
     }
 
+    // Quarter மாறினால் — மொழியை மீண்டும் தேர்ந்தெடுக்க வேண்டும்; அதுவரை இதழ் பட்டியல் வராது
+    function onQuarterChangePayment() {
+      const quarter = document.getElementById('quarterSelect').value;
+      LangSel.reset('paymentForm');
+      LangSel.enable('paymentForm', !!quarter);
+      document.getElementById('magazineSection').style.display = 'none';
+      document.getElementById('paymentDetailsCard').style.display = 'none';
+      document.getElementById('paymentExtraCard').style.display = 'none';
+      document.getElementById('paymentBtn').style.display = 'none';
+      document.getElementById('alreadyPaidBanner').style.display = 'none';
+      renderPartPanel(false);
+      if (quarter) setStatus('paymentStatus', 'loading', 'ℹ️ இப்போது மொழியைத் தேர்ந்தெடுக்கவும் (தமிழ் / English).');
+      else clearStatus('paymentStatus');
+    }
+
     async function loadMagazinesForQuarter() {
       const quarter = document.getElementById('quarterSelect').value;
       if (!quarter) return;
+      if (!LangSel.get('paymentForm')) return;   // மொழி தேர்வு கட்டாயம்
       currentQuarter = quarter;
 
       // Warning banner மறைக்கவும்
@@ -3387,6 +3447,7 @@
           const _savedMag = magazine, _savedQtr = quarter;
           // Form reset
           document.getElementById('quarterSelect').value = '';
+          LangSel.reset('paymentForm'); LangSel.enable('paymentForm', false);
           document.getElementById('magazineSection').style.display = 'none';
           document.getElementById('paymentDetailsCard').style.display = 'none';
           document.getElementById('paymentExtraCard').style.display = 'none';
@@ -3443,6 +3504,7 @@
       _skipGroupPopupOnce = true;
       try {
         document.getElementById('quarterSelect').value = quarter;
+        await LangSel.ensureFor('paymentForm', magazine);
         await loadMagazinesForQuarter();
         document.getElementById('magazineSelect').value = magazine;
         _wantPart = part || 1;
@@ -7181,6 +7243,159 @@ async function loadMeAndApplyRole() {
   };
   loadMeAndApplyRole();
 })();
+</script>
+
+
+<script>
+/* ═══════════════════════════════════════════════════════════════
+   🌐 மொழி தேர்வு (தமிழ் / English)
+   - இன்வாய்ஸ் பதிவு, தொகை வழங்கல்: Quarter-க்குப் பின் மொழி தேர்வு கட்டாயம்; பின்னரே இதழ் பட்டியல்.
+   - அறிக்கைகள் உள்ளிட்ட மற்ற திரைகள்: அனைத்தும் / தமிழ் / English.
+   - தேர்ந்த மொழி, திரையில் தெரியும் போது நடக்கும் எல்லா GET /api/… அழைப்புகளுக்கும்
+     (பதிவிறக்கங்கள் உட்பட) ?language=ta|en ஆகத் தானாகச் சேரும்; server வடிகட்டும்.
+   ═══════════════════════════════════════════════════════════════ */
+const LangSel = (function () {
+  const st = {};
+  const HANDLERS = {
+    invoiceForm: 'onLanguageChangeInvoiceForm',
+    paymentForm: 'loadMagazinesForQuarter',
+    reportsDashboard: '_langReports',
+    pendingInvoiceScreen: '_langPending',
+    bankDashboard: 'loadBankDetails',
+    voucherDashboard: '_langVoucher',
+    amountMismatchScreen: 'loadAmountMismatch',
+    paidDetailsScreen: 'loadPaidMagazines',
+    transactionForm: 'loadTransactionEntries',
+    sendEmailForm: 'loadEmailReadyPayments'
+  };
+  const REQUIRED = ['invoiceForm', 'paymentForm'];
+  const OPTIONAL = Object.keys(HANDLERS).filter(k => REQUIRED.indexOf(k) < 0);
+
+  function classify(language, name) {
+    const v = String(language || '').trim().toLowerCase();
+    if (v) {
+      if (v.includes('tamil') || v.includes('தமிழ்') || v === 'ta') return 'ta';
+      if (v.includes('english') || v.includes('ஆங்கில') || v === 'en') return 'en';
+    }
+    return /[\u0B80-\u0BFF]/.test(name || '') ? 'ta' : 'en';
+  }
+  const boxes = id => document.querySelectorAll('.lang-chips[data-lang-screen="' + id + '"]');
+  function render(id) {
+    const v = st[id] || '';
+    boxes(id).forEach(b => b.querySelectorAll('.lang-chip').forEach(c => c.classList.toggle('on', c.dataset.v === v)));
+  }
+  const get = id => st[id] || '';
+  function enable(id, on) { boxes(id).forEach(b => b.classList.toggle('disabled', !on)); }
+  function reset(id) { st[id] = ''; render(id); }
+  function set(id, v, fire) {
+    st[id] = v || ''; render(id);
+    if (fire) {
+      const fn = window[HANDLERS[id]];
+      if (typeof fn === 'function') { try { fn(); } catch (e) { console.error(e); } }
+    }
+  }
+  function visibleScreen() {
+    const els = document.querySelectorAll('.content');
+    for (const el of els) if (el.style.display === 'block') return el.id;
+    return '';
+  }
+  function current() { const id = visibleScreen(); return id ? get(id) : ''; }
+
+  // இதழுக்குரிய மொழியைத் தானாக அமை (இதழ் + Quarter நேரடியாகத் திறக்கும் போது)
+  async function ensureFor(id, magazine) {
+    let lang = '';
+    try {
+      const r = await fetch('/api/magazines');
+      const d = await r.json();
+      const m = (d && d.master || {})[magazine];
+      lang = classify(m && m.language, magazine);
+    } catch (e) { lang = classify('', magazine); }
+    st[id] = lang; render(id); enable(id, true);
+  }
+
+  function build() {
+    // கட்டாயத் தேர்வு (இன்வாய்ஸ் பதிவு / தொகை வழங்கல்)
+    document.querySelectorAll('.lang-chips[data-required]').forEach(b => {
+      if (!b.children.length) b.innerHTML =
+        '<button type="button" class="lang-chip" data-v="ta">தமிழ்</button>' +
+        '<button type="button" class="lang-chip" data-v="en">English</button>';
+    });
+    // விருப்பத் தேர்வு (அறிக்கைகள் உள்ளிட்ட மற்ற திரைகள்)
+    OPTIONAL.forEach(id => {
+      const scr = document.getElementById(id);
+      if (!scr || scr.querySelector('.lang-bar')) return;
+      const bar = document.createElement('div');
+      bar.className = 'lang-bar';
+      bar.innerHTML = '<span class="lb-title">🌐 மொழி:</span>' +
+        '<div class="lang-chips" data-lang-screen="' + id + '" data-optional="1">' +
+        '<button type="button" class="lang-chip" data-v="">அனைத்தும்</button>' +
+        '<button type="button" class="lang-chip" data-v="ta">தமிழ்</button>' +
+        '<button type="button" class="lang-chip" data-v="en">English</button></div>' +
+        '<span class="lang-hint">தேர்ந்த மொழிக்குரிய இதழ்கள் மட்டும் காட்டப்படும்</span>';
+      const hdr = scr.querySelector('.page-header');
+      if (hdr) hdr.insertAdjacentElement('afterend', bar); else scr.insertBefore(bar, scr.children[1] || null);
+    });
+    REQUIRED.concat(OPTIONAL).forEach(render);
+  }
+
+  document.addEventListener('click', e => {
+    const c = e.target.closest && e.target.closest('.lang-chip');
+    if (!c) return;
+    const box = c.closest('.lang-chips');
+    if (!box || box.classList.contains('disabled')) return;
+    set(box.dataset.langScreen, c.dataset.v, true);
+  });
+
+  // GET /api/… அழைப்புகளுக்குத் தானாக language சேர்
+  const _fetch = window.fetch.bind(window);
+  window.fetch = function (input, init) {
+    try {
+      const method = String((init && init.method) || 'GET').toUpperCase();
+      if (method === 'GET' && typeof input === 'string' && input.indexOf('/api/') === 0 && input.indexOf('language=') < 0) {
+        const lang = current();
+        if (lang) input += (input.indexOf('?') < 0 ? '?' : '&') + 'language=' + lang;
+      }
+    } catch (e) {}
+    return _fetch(input, init);
+  };
+  // பதிவிறக்க இணைப்புகளுக்கும் (PDF / Excel / CSV)
+  const _aClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () {
+    try {
+      const h = this.getAttribute('href');
+      if (h && h.indexOf('/api/') === 0 && h.indexOf('language=') < 0) {
+        const lang = current();
+        if (lang) this.setAttribute('href', h + (h.indexOf('?') < 0 ? '?' : '&') + 'language=' + lang);
+      }
+    } catch (e) {}
+    return _aClick.apply(this, arguments);
+  };
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', build); else build();
+  return { get, set, reset, enable, current, ensureFor, classify };
+})();
+
+// ── மொழி மாறும்போது அந்தத் திரையை மீண்டும் ஏற்றும் செயல்கள் ──
+document.addEventListener('click', e => {           // கடைசியாகத் திறந்த அறிக்கை
+  const b = e.target.closest && e.target.closest('.report-btn');
+  if (b) window._lastReportBtn = b;
+}, true);
+window._langReports = function () {
+  const b = window._lastReportBtn;
+  if (b && document.body.contains(b)) b.click();
+};
+window._langPending = function () {
+  const c = document.getElementById('pendingTableContainer');
+  if (c && c.innerHTML.trim()) loadPendingInvoices();
+};
+window._langVoucher = function () {
+  const vis = id => { const e = document.getElementById(id); return !!e && e.style.display === 'block'; };
+  if (vis('voucherListPanel')) loadAllVouchers();
+  else if (vis('voucherMissingPanel')) loadVoucherMissing('');
+  else if (vis('voucherCreatePanel')) { if (QSel.csv('voucherCreateQuarterBox')) onVoucherCreateQuarterChange(); }
+  else if (vis('paymentAdvicePanel')) { if (QSel.csv('adviceQuarterBox')) onAdviceQuarterChange(); }
+  else if (vis('paymentVoucherPanel')) { if (QSel.csv('voucherPrintQuarterBox')) onVoucherPrintQuarterChange(); }
+};
 </script>
 
 </body>

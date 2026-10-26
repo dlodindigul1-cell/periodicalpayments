@@ -26,7 +26,7 @@ from functools import wraps
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
-from flask import Flask, jsonify, redirect, render_template, render_template_string, request, Response, send_file, session
+from flask import Flask, has_request_context, jsonify, redirect, render_template, render_template_string, request, Response, send_file, session
 from werkzeug.security import check_password_hash, generate_password_hash
 from xhtml2pdf import pisa
 
@@ -658,6 +658,74 @@ def get_quarters_arg():
     """?quarter=Q1&quarter=Q2 அல்லது ?quarter=Q1,Q2 (அல்லது ?quarters=...) -> ["Q1","Q2"].  காலி = அனைத்தும்."""
     vals = request.args.getlist("quarter") + request.args.getlist("quarters")
     return _qlist(vals)
+
+
+# --------------------------------------------------------------------------- #
+# மொழி (தமிழ் / English) வடிகட்டி — இதழின் மொழிக்கு ஏற்ப (magazines.language)
+#   ?language=ta | en  (காலி = அனைத்தும்)
+#   magazines.language காலியாக / அடையாளம் தெரியாததாக இருந்தால் இதழ் பெயரில் தமிழ் எழுத்து இருந்தால்
+#   தமிழ், இல்லையெனில் English எனக் கொள்ளப்படும்.
+# --------------------------------------------------------------------------- #
+_TAMIL_CHARS = re.compile(r"[\u0B80-\u0BFF]")
+
+
+def classify_lang(language, name=""):
+    """'ta' | 'en'"""
+    v = (language or "").strip().lower()
+    if v:
+        if "tamil" in v or "தமிழ்" in v or v in ("ta", "tam"):
+            return "ta"
+        if "english" in v or "ஆங்கில" in v or v in ("en", "eng"):
+            return "en"
+    return "ta" if _TAMIL_CHARS.search(name or "") else "en"
+
+
+def norm_lang_arg(v):
+    v = (v or "").strip().lower()
+    if v in ("ta", "tamil", "தமிழ்"):
+        return "ta"
+    if v in ("en", "english", "ஆங்கிலம்"):
+        return "en"
+    return ""
+
+
+def req_language():
+    """தற்போதைய request-ல் தேர்ந்த மொழி: 'ta' | 'en' | '' (அனைத்தும்)."""
+    if not has_request_context():
+        return ""
+    return norm_lang_arg(request.args.get("language") or request.args.get("lang"))
+
+
+def magazine_lang_map(cur):
+    cur.execute("SELECT name, language FROM magazines")
+    return {r["name"]: classify_lang(r["language"], r["name"]) for r in cur.fetchall()}
+
+
+def lang_rows(cur, rows, key="magazine"):
+    """rows-ல் தேர்ந்த மொழிக்குரிய இதழ்களின் வரிசைகள் மட்டும் (மொழி தேர்வு இல்லையெனில் மாற்றமில்லை)."""
+    lang = req_language()
+    if not lang:
+        return rows
+    lmap = magazine_lang_map(cur)
+    return [r for r in rows if lmap.get(r[key], classify_lang("", r[key] or "")) == lang]
+
+
+def lang_list(cur, names):
+    """இதழ் பெயர்ப் பட்டியலை மொழிக்கு ஏற்ப வடிகட்டு."""
+    lang = req_language()
+    if not lang:
+        return names
+    lmap = magazine_lang_map(cur)
+    return [n for n in names if lmap.get(n, classify_lang("", n or "")) == lang]
+
+
+def lang_name_list(cur):
+    """தேர்ந்த மொழிக்குரிய இதழ் பெயர்கள் (SQL ANY(%s)-க்கு); மொழி தேர்வு இல்லையெனில் None."""
+    lang = req_language()
+    if not lang:
+        return None
+    return [n for n, l in magazine_lang_map(cur).items() if l == lang]
+
 
 
 def quarter_label(q):
@@ -1327,6 +1395,10 @@ def api_magazines():
                         "discount": 0.0,
                     }
 
+        _lang = req_language()
+        if _lang:
+            magazines = [m for m in magazines if classify_lang((master.get(m) or {}).get("language"), m) == _lang]
+            master = {m: master[m] for m in magazines}
         return jsonify({"success": True, "magazines": sorted(magazines), "master": master})
     finally:
         conn.close()
@@ -1527,7 +1599,7 @@ def api_by_quarter():
                 "WHERE quarter=%s ORDER BY magazine, part",
                 (quarter,),
             )
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
             cur.execute("SELECT name, periodicity FROM magazines")
             ticks = {x["name"] for x in cur.fetchall() if uses_month_tick(x["periodicity"])}
 
@@ -1710,7 +1782,7 @@ def api_magazines_for_quarter():
                 "SELECT DISTINCT magazine FROM payments WHERE quarter=%s ORDER BY magazine",
                 (quarter,),
             )
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
         return jsonify({"success": True, "magazines": [r["magazine"] for r in rows]})
     finally:
         conn.close()
@@ -1949,7 +2021,7 @@ def api_paid_list():
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM payments WHERE paid_amt > 0 ORDER BY id")
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
 
         result = []
         for r in rows:
@@ -1996,7 +2068,7 @@ def api_get_transactions():
                 sql += " AND p.quarter = ANY(%s)"
                 params = (quarter,)
             cur.execute(sql, params)
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
             blockers = fetch_group_blockers(cur, quarter)
 
         groups = {}
@@ -3259,7 +3331,7 @@ def api_admin_vendors_list():
                           bank_place, ifsc_code, payee_name, email_id
                    FROM magazines ORDER BY name"""
             )
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall(), "name")
         return jsonify(
             {
                 "success": True,
@@ -3522,6 +3594,7 @@ def api_report_quarter_summary():
     conn = get_conn()
     try:
         with conn.cursor() as cur:
+            _ln = lang_name_list(cur)
             cur.execute(
                 """
                 SELECT quarter, COUNT(DISTINCT magazine) AS magazines,
@@ -3530,8 +3603,10 @@ def api_report_quarter_summary():
                        COALESCE(SUM(paid_amt),0) AS paid
                 FROM payments
                 WHERE quarter IS NOT NULL AND quarter <> ''
+                """ + ("AND magazine = ANY(%s)" if _ln is not None else "") + """
                 GROUP BY quarter ORDER BY quarter
-                """
+                """,
+                ((_ln,) if _ln is not None else None),
             )
             rows = cur.fetchall()
         result = [
@@ -3568,7 +3643,7 @@ def api_report_magazine_wise():
                 # பொருத்திப் பார்க்கிறோம் — invoice பதிவே செய்யாத இதழுக்கு payments
                 # அட்டவணையில் வரிசையே இருக்காது என்பதால், payments அட்டவணையை மட்டும்
                 # வைத்து invoice வராதவற்றை கண்டுபிடிக்க முடியாது.
-                expected_magazines = sorted(get_direct_master_magazines_for_quarter(cur, quarter))  # டிக் செய்த இதழ்கள் மட்டும்
+                expected_magazines = lang_list(cur, sorted(get_direct_master_magazines_for_quarter(cur, quarter)))  # டிக் செய்த இதழ்கள் மட்டும்
 
                 cur.execute(
                     "SELECT * FROM payments WHERE quarter=%s ORDER BY sno NULLS LAST, magazine",
@@ -3612,7 +3687,7 @@ def api_report_magazine_wise():
             # quarter தேர்வு செய்யாதபோது — எல்லா quarter-களின் payments பதிவுகளையும்
             # invoice உள்ளதா/இல்லையா என்பதன் அடிப்படையில் காட்டுகிறோம் (பழைய நடத்தை).
             cur.execute("SELECT * FROM payments ORDER BY quarter, sno NULLS LAST, magazine")
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
 
         received, not_received = [], []
         for r in rows:
@@ -3649,7 +3724,7 @@ def api_report_payment_status():
                 )
             else:
                 cur.execute("SELECT * FROM payments WHERE payment_date IS NOT NULL ORDER BY payment_date")
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
         result = [
             {
                 "serial": i,
@@ -3682,7 +3757,7 @@ def api_report_unpaid():
                 args.append(quarters)
             sql += " ORDER BY quarter, magazine, part"
             cur.execute(sql, args)
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
         result = [
             {
                 "serial": i,
@@ -3710,7 +3785,7 @@ def api_report_voucher_register():
                 "SELECT v.*, p.voucher_no AS pay_voucher_no, p.months AS pay_months FROM vouchers v "
                 "LEFT JOIN payments p ON p.magazine=v.magazine AND p.quarter=v.quarter AND p.part=v.part ORDER BY v.id"
             )
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
         result = [
             {
                 "serial": i,
@@ -3740,7 +3815,7 @@ def api_report_email_status():
             cur.execute(
                 "SELECT * FROM payments WHERE mail_sent=TRUE OR (pdf_url IS NOT NULL AND pdf_url<>'') ORDER BY quarter, magazine"
             )
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
         result = [
             {
                 "serial": i,
@@ -3770,7 +3845,7 @@ def api_amount_mismatch():
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT * FROM payments ORDER BY quarter, magazine")
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
         result = []
         for r in rows:
             magazine = (r["magazine"] or "").strip()
@@ -3859,7 +3934,7 @@ def api_pending_invoices():
 
             pending = []
             for quarter in quarters:
-                master_magazines = sorted(get_direct_master_magazines_for_quarter(cur, quarter))  # டிக் செய்த இதழ்கள் மட்டும்
+                master_magazines = lang_list(cur, sorted(get_direct_master_magazines_for_quarter(cur, quarter)))  # டிக் செய்த இதழ்கள் மட்டும்
                 cur.execute(
                     "SELECT magazine, part, months, quarter FROM payments "
                     "WHERE quarter=%s AND invoice_no IS NOT NULL AND invoice_no<>''",
@@ -3947,16 +4022,16 @@ def api_voucher_set_numbers():
         with conn.cursor() as cur:
             if ql:
                 cur.execute(
-                    "SELECT DISTINCT bill_set_no, quarter FROM payments "
+                    "SELECT DISTINCT bill_set_no, quarter, magazine FROM payments "
                     "WHERE bill_set_no IS NOT NULL AND bill_set_no<>'' AND quarter = ANY(%s)",
                     (ql,),
                 )
             else:
                 cur.execute(
-                    "SELECT DISTINCT bill_set_no, quarter FROM payments "
+                    "SELECT DISTINCT bill_set_no, quarter, magazine FROM payments "
                     "WHERE bill_set_no IS NOT NULL AND bill_set_no<>''"
                 )
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
         set_map = {}
         for r in rows:
             s = r["bill_set_no"]
@@ -4000,7 +4075,7 @@ def api_vouchers_by_set():
                 sql += " AND p.quarter = ANY(%s)"
                 params.append(ql)
             cur.execute(sql, tuple(params))
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
 
         items = []
         for r in rows:
@@ -4080,7 +4155,7 @@ def api_vouchers_missing():
                 f"transaction_no, voucher_no FROM payments WHERE {paid_cond} AND {fy_sql()} = %s",
                 (fy,),
             )
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
         missing = [r for r in rows if not (r["voucher_no"] or "").strip()]
         missing.sort(key=lambda r: (r["payment_date"] is None, r["payment_date"] or date.max,
                                     (r["magazine"] or "").lower()))
@@ -4115,7 +4190,7 @@ def api_all_vouchers():
                 "SELECT voucher_no, magazine, part, months, paid_amt, quarter, bill_set_no FROM payments "
                 "WHERE voucher_no IS NOT NULL AND voucher_no<>''"
             )
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
 
         def sort_key(r):
             v = r["voucher_no"] or ""
@@ -4216,7 +4291,7 @@ def get_payment_advice_data(cur, set_no, quarter):
         """,
         (set_no, ql),
     )
-    prows = cur.fetchall()
+    prows = lang_rows(cur, cur.fetchall())
 
     if not prows:
         return {"success": False, "message": "இந்த Quarter / Set-ல் பதிவுகள் இல்லை"}
@@ -4876,7 +4951,7 @@ def api_mail_ready():
                 sql += " AND p.quarter = ANY(%s)"
                 params = (quarter,)
             cur.execute(sql, params)
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
             blockers = fetch_group_blockers(cur, quarter or None)
 
         groups = {}
@@ -5126,7 +5201,7 @@ def api_export_sheet_csv():
                 sql += " WHERE quarter = ANY(%s)"
                 params = (quarters,)
             cur.execute(sql, params)
-            rows = cur.fetchall()
+            rows = lang_rows(cur, cur.fetchall())
     finally:
         conn.close()
 
@@ -5217,7 +5292,7 @@ def fetch_payment_export_rows(cur, quarters=None, host_url=""):
         sql += " WHERE quarter = ANY(%s)"
         params = (quarters,)
     cur.execute(sql, params)
-    rows = cur.fetchall()
+    rows = lang_rows(cur, cur.fetchall())
     rows.sort(key=lambda r: ((r["magazine"] or "").strip().lower(), r["quarter"] or "", r["part"] or 1))
     base = (host_url or "").rstrip("/")
     out = []
@@ -5459,7 +5534,7 @@ def fetch_fy_report(cur, fy, quarters):
     cur.execute(
         "SELECT * FROM payments WHERE payment_date BETWEEN %s AND %s AND COALESCE(paid_amt,0) > 0",
         (start, end))
-    db_rows = [r for r in cur.fetchall() if not qs or _paid_q_of(r["payment_date"]) in qs]
+    db_rows = [r for r in lang_rows(cur, cur.fetchall()) if not qs or _paid_q_of(r["payment_date"]) in qs]
     db_rows.sort(key=lambda r: (r["payment_date"], (r["magazine"] or "").strip().lower(), r["part"] or 1))
     rows = []
     for n, r in enumerate(db_rows, 1):

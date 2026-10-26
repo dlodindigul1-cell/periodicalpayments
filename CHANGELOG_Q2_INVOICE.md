@@ -99,3 +99,16 @@
 - இன்வாய்ஸ் பதிவு, தொகை வழங்கல், வவுச்சர், Payment Advice, Bank Txn, Mail+PDF, Pending Reminder, அறிக்கைகள், தொகை வித்தியாசம், தொகை வழங்கப்பட்ட விவரம் — அனைத்திலும் தேர்ந்த Quarter-கள் மட்டும்; "அனைத்தும்" = தேர்ந்த Quarter-கள் மட்டும்; முகப்பு Pending ticker-உம் அதே.
 - Master-ன் சொந்தக் கருவிகள் (இதழ் Master Quarter டிக், தவறான பதிவு நீக்கு, Payment Details export) முழுப் பட்டியலையே காட்டும்.
 - தரவு எதுவும் நீக்கப்படாது — மறைக்கப்படுவது மட்டுமே.
+
+# 🌐 மொழி தேர்வு — தமிழ் / English (2026-10-26)
+
+## Implemented
+- **இன்வாய்ஸ் பதிவு**: Quarter தேர்ந்தெடுத்த பின் "2. மொழி" தேர்வு (தமிழ் / English) கட்டாயம். மொழி தேர்ந்த பின்னரே இதழ் பட்டியல் திறக்கும்; அதில் அந்த மொழிக்குரிய இதழ்கள் மட்டும். Quarter மாற்றினால் மொழியை மீண்டும் தேர்ந்தெடுக்க வேண்டும்.
+- **தொகை வழங்கல்**: அதே முறை — Quarter → மொழி → இதழ் (அந்த மொழிக்குரியவை மட்டும்). வேறு திரையிலிருந்து இதழை நேரடியாகத் திறந்தால் (Group popup போன்றவை) இதழின் மொழி தானாக அமையும்.
+- **மற்ற அனைத்துத் திரைகள்** (அறிக்கைகள் 1–8 + CSV, Pending Invoice Reminder, Bank Account விவரங்கள், வவுச்சர் / Payment Advice / Payment Voucher, Bank Transaction, Mail + PDF, தொகை வித்தியாசம், தொகை வழங்கப்பட்ட விவரம்): தலைப்புக்குக் கீழே "🌐 மொழி: அனைத்தும் / தமிழ் / English". மொழி மாறியதும் திறந்துள்ள அறிக்கை / பட்டியல் தானாக மீண்டும் ஏற்றப்படும்; PDF / Excel / CSV பதிவிறக்கங்களிலும் அதே வடிகட்டி.
+- Server: `?language=ta|en` (காலி = அனைத்தும்) — `/api/magazines`, `payments/by-quarter`, `payments/magazines-for-quarter`, `payments/paid`, `payments/transactions`, `reports/*` (quarter-summary, magazine-wise, payment-status, unpaid, voucher-register, email-status, amount-mismatch, financial-year), `reminders/pending-invoices`, `vouchers/*`, `payment-advice`, `payment-voucher` (+pdf), `mail/ready`, `export/sheet-csv`, `export/payments`, `admin/vendors-list`.
+
+## Important
+- இதழின் மொழி = Master-ல் உள்ள `LANGUAGE` புலம் ("Tamil"/"தமிழ்" → தமிழ்; "English"/"ஆங்கிலம்" → English). அது காலியாக இருந்தால் இதழ் பெயரில் தமிழ் எழுத்து இருந்தால் தமிழ், இல்லையெனில் English.
+- Master Data திரைகள் மற்றும் முகப்புப் பக்க Pending ticker-ல் மொழி வடிகட்டி இல்லை (எப்போதும் அனைத்தும்).
+- DB / schema மாற்றம் இல்லை; பதிவான தரவு எதுவும் மாறாது.
