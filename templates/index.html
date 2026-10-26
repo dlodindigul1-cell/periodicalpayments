@@ -5344,7 +5344,15 @@ function _pdfHelper(fnName, targetId) {
           <div class="field-row">
             <div class="field">
               <label>இதழ் பெயர் <span class="req">*</span></label>
-              <input type="text" id="masterVendorMagName">
+              <div style="position:relative;">
+                <input type="text" id="masterVendorMagName" autocomplete="off" style="width:100%;"
+                  placeholder="4 எழுத்துகள் தட்டச்சு செய்தால் பட்டியல் வரும்"
+                  oninput="vendorNameSuggest()" onkeydown="vendorNameKey(event)"
+                  onblur="setTimeout(hideVendorNameBox,150)">
+                <div id="masterVendorNameBox" style="display:none; position:absolute; left:0; right:0; top:100%; z-index:50;
+                  background:var(--card,#fff); border:1px solid var(--border,#ccc); border-radius:8px; max-height:260px;
+                  overflow-y:auto; box-shadow:0 6px 18px rgba(0,0,0,.15);"></div>
+              </div>
             </div>
             <div class="field">
               <label>Vendor பெயர்</label>
@@ -6527,6 +6535,7 @@ function _pdfHelper(fnName, targetId) {
     let _vendorEditing = false;
     function clearVendorMasterForm() {
       _vendorEditing = false;
+      if (typeof hideVendorNameBox === 'function') hideVendorNameBox();
       document.getElementById('masterVendorFormTitle').textContent = '➕ புதிய Vendor / Bank விவரம் சேர்';
       ['masterVendorMagName','masterVendorName','masterVendorCode','masterVendorPayeeName',
        'masterVendorBankAccount','masterVendorIfsc','masterVendorBankName','masterVendorBankPlace',
@@ -6561,6 +6570,7 @@ function _pdfHelper(fnName, targetId) {
     async function saveVendorMaster() {
       const name = document.getElementById('masterVendorMagName').value.trim();
       if (!name) { setStatus('masterVendorFormStatus', 'error', '❌ இதழ் பெயர் அவசியம்.'); return; }
+      if (!(await confirmUnknownMagazineName(name))) return;
       const btn = document.getElementById('masterVendorSaveBtn');
       showLoading(btn, 'சேமிக்கப்படுகிறது...');
       setStatus('masterVendorFormStatus', 'loading', '<span class="spinner dark"></span> சேமிக்கப்படுகிறது...');
@@ -6629,6 +6639,87 @@ function _pdfHelper(fnName, targetId) {
           '</td>' +
         '</tr>'
       )).join('');
+    }
+
+    // ─── Vendor Master: இதழ் பெயர் — 4 எழுத்துகளுக்குப் பின் பட்டியலில் இருந்து தேர்வு ───
+    let _nmList = [], _nmIdx = -1;
+    const _nameKey = t => String(t || '').normalize('NFC').replace(/\s+/g, '').toLowerCase();
+    function _graphemeCount(t) {
+      try { return Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(t)).length; }
+      catch (e) { return Array.from(t).length; }
+    }
+    function hideVendorNameBox() {
+      const b = document.getElementById('masterVendorNameBox');
+      if (b) b.style.display = 'none';
+      _nmIdx = -1;
+    }
+    function _renderVendorNameBox() {
+      const box = document.getElementById('masterVendorNameBox');
+      if (!_nmList.length) {
+        box.innerHTML = '<div style="padding:9px 12px;font-size:13px;color:#b45309;">⚠ Master-ல் பொருந்தும் இதழ் இல்லை — புதிய இதழாகச் சேமிக்கப்படும்</div>';
+      } else {
+        box.innerHTML = _nmList.map((r, i) =>
+          '<div data-i="' + i + '" style="padding:8px 12px;cursor:pointer;font-size:14px;border-bottom:1px solid #eee;' +
+          (i === _nmIdx ? 'background:#dbeafe;' : '') + '" onmousedown="event.preventDefault();pickVendorName(' + i + ')">' +
+          _ccEsc(r.name) + (r.code ? ' <span style="font-size:11px;color:var(--muted);">· ' + _ccEsc(r.code) + '</span>' : '') + '</div>').join('');
+      }
+      box.style.display = 'block';
+    }
+    async function vendorNameSuggest() {
+      const el = document.getElementById('masterVendorMagName');
+      const q = el.value.trim();
+      if (_graphemeCount(q) < 4) { hideVendorNameBox(); return; }
+      if (!allMasterVendors.length) await loadMasterVendorsList();
+      if (el.value.trim() !== q) return;          // இடையில் தட்டச்சு மாறியிருந்தால் புதியதே செயல்படும்
+      const k = _nameKey(q);
+      _nmList = allMasterVendors.filter(r => _nameKey(r.name).includes(k)).slice(0, 10);
+      _nmIdx = -1;
+      _renderVendorNameBox();
+    }
+    function vendorNameKey(e) {
+      const box = document.getElementById('masterVendorNameBox');
+      if (!box || box.style.display === 'none') return;
+      if (e.key === 'Escape') { hideVendorNameBox(); return; }
+      if (!_nmList.length) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); _nmIdx = (_nmIdx + 1) % _nmList.length; _renderVendorNameBox(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); _nmIdx = (_nmIdx - 1 + _nmList.length) % _nmList.length; _renderVendorNameBox(); }
+      else if (e.key === 'Enter' && _nmIdx >= 0) { e.preventDefault(); pickVendorName(_nmIdx); }
+    }
+    function pickVendorName(i) {
+      const r = _nmList[i];
+      if (!r) return;
+      document.getElementById('masterVendorMagName').value = r.name;
+      hideVendorNameBox();
+      // மற்ற புலங்கள் காலியாக இருந்து, இந்த இதழுக்கு ஏற்கனவே Vendor விவரம் இருந்தால் நிரப்பு
+      const others = _VENDOR_FILL_FIELDS.map(([, id]) => id).concat(['masterVendorCode']);
+      const blank = others.every(id => !document.getElementById(id).value.trim());
+      const has = r.code || _VENDOR_FILL_FIELDS.some(([k]) => r[k]);
+      if (blank && has) {
+        _VENDOR_FILL_FIELDS.forEach(([k, id]) => { document.getElementById(id).value = r[k] || ''; });
+        document.getElementById('masterVendorCode').value = r.code || '';
+        setStatus('masterVendorFormStatus', 'success', 'ℹ️ <b>' + _ccEsc(r.name) + '</b> இதழுக்கு ஏற்கனவே உள்ள Vendor விவரம் நிரப்பப்பட்டது — தேவையெனில் திருத்தவும்.');
+      }
+    }
+    // சேமிக்கும் முன்: Master-ல் இல்லாத பெயர் என்றால் எச்சரிக்கை (எழுத்துப்பிழையால் இரட்டை இதழ் உருவாகாமல் தடுக்க)
+    async function confirmUnknownMagazineName(name) {
+      if (!allMasterVendors.length) await loadMasterVendorsList();
+      const k = _nameKey(name);
+      if (allMasterVendors.some(r => _nameKey(r.name) === k)) return true;
+      const head = _nameKey(name).slice(0, 3);
+      const similar = allMasterVendors.filter(r => {
+        const rk = _nameKey(r.name);
+        return rk.includes(head) || k.includes(rk);
+      }).slice(0, 6);
+      const ok = await showConfirmCard({
+        icon: '⚠️', title: 'இந்த இதழ் பெயர் Master-ல் இல்லை', subtitle: name,
+        html: '<div style="font-size:14px;line-height:1.7;">சேமித்தால் இது <b>புதிய இதழாக</b> உருவாகும். எழுத்துப்பிழை இருந்தால் பெயரைத் திருத்தவும்.' +
+          (similar.length ? '<br><br>ஒத்த பெயர்கள்:<br>• ' + similar.map(r => _ccEsc(r.name)).join('<br>• ') : '') + '</div>',
+        buttons: [
+          { label: '✏️ பெயரைத் திருத்து', value: false, style: 'ghost' },
+          { label: '➕ புதிய இதழாகச் சேமி', value: true, style: 'primary' }
+        ]
+      });
+      return ok === true;
     }
 
     // ─── Vendor Master: ஏற்கனவே பதிவான Vendor Code → விவரம் தானாக நிரப்பு ───
