@@ -71,3 +71,9 @@
 - புதிய இதழ்: magazines-ல் சேர்ந்து, தேர்ந்த Quarter-களுக்கு மட்டும் பதிவாகும்.
 - பெயர் ஒத்த இதழ்கள் (எழுத்து வேறுபாடு): "இணை / புதிதாகச் சேர் / தவிர்" என நீங்களே தேர்வு.
 - API: `POST /api/admin/bulk-quarters/preview`, `POST /api/admin/bulk-quarters/apply` (Admin மட்டும்). requirements.txt-ல் `openpyxl==3.1.5` சேர்க்கப்பட்டது.
+
+# Vendor / Bank Master — Vendor Code மூலம் விவரம் தானாக நிரப்பு (2026-10-25)
+- "புதிய Vendor / Bank விவரம் சேர்" படிவத்தில் Vendor Code-ஐ உள்ளிட்டு வெளியே வந்தால் / Enter / "🔍 Code மூலம் நிரப்பு" அழுத்தினால், அதே Code உள்ள இதழின் Vendor பெயர், Payee, Bank A/C, IFSC, Bank பெயர், Place, Email நிரம்பும் (இதழ் பெயர் மாறாது).
+- Vendor Code புலத்தில் ஏற்கனவே பதிவான Code-களின் பட்டியல் (Vendor பெயருடன்) dropdown ஆக வரும்.
+- திருத்தும்போது / படிவத்தில் வேறு மதிப்பு இருந்தால் மாற்றும் முன் உறுதிப்படுத்தல். ஒரே Code-ல் வெவ்வேறு A/C இருந்தால் எச்சரிக்கை.
+- Server மாற்றம் இல்லை (`/api/admin/vendors-list` தரவே பயன்பாடு).

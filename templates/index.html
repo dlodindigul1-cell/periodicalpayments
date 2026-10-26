@@ -5354,7 +5354,14 @@ function _pdfHelper(fnName, targetId) {
           <div class="field-row">
             <div class="field">
               <label>Vendor Code (TNPFTS)</label>
-              <input type="text" id="masterVendorCode">
+              <div style="display:flex; gap:8px;">
+                <input type="text" id="masterVendorCode" list="masterVendorCodeList" autocomplete="off"
+                  style="flex:1;" onchange="fillVendorFromCode(true)"
+                  onkeydown="if(event.key==='Enter'){event.preventDefault();fillVendorFromCode(false);}">
+                <button type="button" class="btn-secondary" style="white-space:nowrap;" onclick="fillVendorFromCode(false)">🔍 Code மூலம் நிரப்பு</button>
+              </div>
+              <datalist id="masterVendorCodeList"></datalist>
+              <div style="font-size:12px;color:var(--muted);margin-top:4px;">ஏற்கனவே பதிவான Code-ஐ உள்ளிட்டால்/தேர்ந்தால் அதன் Vendor &amp; Bank விவரம் இந்த இதழுக்கும் நிரம்பும்.</div>
             </div>
             <div class="field">
               <label>Payee பெயர்</label>
@@ -6517,7 +6524,9 @@ function _pdfHelper(fnName, targetId) {
     }
 
     // ─── Vendor Master: Add / Edit Form ───
+    let _vendorEditing = false;
     function clearVendorMasterForm() {
+      _vendorEditing = false;
       document.getElementById('masterVendorFormTitle').textContent = '➕ புதிய Vendor / Bank விவரம் சேர்';
       ['masterVendorMagName','masterVendorName','masterVendorCode','masterVendorPayeeName',
        'masterVendorBankAccount','masterVendorIfsc','masterVendorBankName','masterVendorBankPlace',
@@ -6528,6 +6537,7 @@ function _pdfHelper(fnName, targetId) {
 
     async function editMasterVendor(name) {
       clearVendorMasterForm();
+      _vendorEditing = true;
       document.getElementById('masterVendorFormTitle').textContent = '✏️ Vendor விவரம் திருத்து — ' + name;
       window.scrollTo({ top: 0, behavior: 'smooth' });
       try {
@@ -6592,6 +6602,7 @@ function _pdfHelper(fnName, targetId) {
         const result = await res.json();
         if (!result.success) { tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:#c0392b;">பிழை ஏற்பட்டது</td></tr>'; return; }
         allMasterVendors = result.rows || [];
+        refreshVendorCodeList();
         renderMasterVendorsTable(allMasterVendors);
       } catch (e) {
         tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:#c0392b;">பிழை: ' + e.message + '</td></tr>';
@@ -6618,6 +6629,73 @@ function _pdfHelper(fnName, targetId) {
           '</td>' +
         '</tr>'
       )).join('');
+    }
+
+    // ─── Vendor Master: ஏற்கனவே பதிவான Vendor Code → விவரம் தானாக நிரப்பு ───
+    const _VENDOR_FILL_FIELDS = [
+      ['vendorName', 'masterVendorName'], ['payeeName', 'masterVendorPayeeName'],
+      ['bankAccountNumber', 'masterVendorBankAccount'], ['ifscCode', 'masterVendorIfsc'],
+      ['bankName', 'masterVendorBankName'], ['bankPlace', 'masterVendorBankPlace'],
+      ['emailId', 'masterVendorEmail']
+    ];
+    const _vendorKey = c => String(c || '').trim().toUpperCase();
+    const _vendorFilled = r => _VENDOR_FILL_FIELDS.filter(([k]) => r[k]).length;
+
+    function refreshVendorCodeList() {
+      const dl = document.getElementById('masterVendorCodeList');
+      if (!dl) return;
+      const seen = new Map();
+      (allMasterVendors || []).forEach(r => {
+        const k = _vendorKey(r.code);
+        if (!k) return;
+        const cur = seen.get(k);
+        if (!cur) seen.set(k, { code: r.code.trim(), label: r.vendorName || r.payeeName || r.name, n: 1 });
+        else cur.n++;
+      });
+      dl.innerHTML = Array.from(seen.values()).sort((a, b) => a.code.localeCompare(b.code)).map(v =>
+        '<option value="' + _ccEsc(v.code) + '">' + _ccEsc(v.label + (v.n > 1 ? ' (' + v.n + ' இதழ்கள்)' : '')) + '</option>').join('');
+    }
+
+    async function fillVendorFromCode(auto) {
+      const code = document.getElementById('masterVendorCode').value.trim();
+      if (!code) {
+        if (!auto) setStatus('masterVendorFormStatus', 'error', '❌ முதலில் Vendor Code-ஐ உள்ளிடவும்.');
+        return;
+      }
+      if (!allMasterVendors.length) await loadMasterVendorsList();
+      const curName = document.getElementById('masterVendorMagName').value.trim().toLowerCase();
+      const matches = allMasterVendors.filter(r =>
+        _vendorKey(r.code) === _vendorKey(code) && r.name.trim().toLowerCase() !== curName);
+      if (!matches.length) {
+        setStatus('masterVendorFormStatus', 'loading',
+          'ℹ️ Vendor Code <b>' + _ccEsc(code) + '</b> Master-ல் வேறு இதழுக்கு இல்லை — புதிய Vendor-ஆகச் சேமிக்கப்படும். விவரங்களைக் கையால் உள்ளிடவும்.');
+        return;
+      }
+      matches.sort((a, b) => _vendorFilled(b) - _vendorFilled(a));
+      const src = matches[0];
+
+      // திருத்தும் நிலையில் / ஏற்கனவே வேறு மதிப்பு இருந்தால் — மாற்றும் முன் உறுதிப்படுத்து
+      const differs = _VENDOR_FILL_FIELDS.filter(([k, id]) => {
+        const v = document.getElementById(id).value.trim();
+        return v && v !== (src[k] || '');
+      });
+      if (differs.length) {
+        const ok = await showConfirmCard({
+          icon: '🔗', title: 'இந்த Vendor Code-ன் விவரத்தை நிரப்பவா?', subtitle: code,
+          html: '<div style="font-size:14px;line-height:1.7;">படிவத்தில் உள்ள ' + differs.length +
+            ' புலங்களின் மதிப்பு, <b>' + _ccEsc(src.name) + '</b> இதழின் விவரத்தால் மாற்றப்படும்.</div>'
+        });
+        if (ok !== true) return;
+      }
+      _VENDOR_FILL_FIELDS.forEach(([k, id]) => { document.getElementById(id).value = src[k] || ''; });
+
+      const accounts = new Set(matches.map(r => (r.bankAccountNumber || '').trim()).filter(Boolean));
+      let msg = '✅ Vendor Code <b>' + _ccEsc(code) + '</b> — <b>' + _ccEsc(src.name) + '</b> இதழில் உள்ள Vendor / Bank விவரம் நிரப்பப்பட்டது' +
+        (matches.length > 1 ? ' (இந்த Code-ல் ' + matches.length + ' இதழ்கள் உள்ளன)' : '') +
+        '. இதழ் பெயரைச் சரிபார்த்து <b>💾 சேமி</b> அழுத்தவும்.';
+      if (accounts.size > 1)
+        msg += '<br>⚠️ இந்த Code-ல் வெவ்வேறு Bank A/C எண்கள் (' + accounts.size + ') உள்ளன — நிரப்பப்பட்டதைச் சரிபார்க்கவும்.';
+      setStatus('masterVendorFormStatus', 'success', msg);
     }
 
     function filterMasterVendorsTable() {
