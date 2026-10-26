@@ -2220,9 +2220,12 @@
     }
 
     // periodicity அடிப்படையிலான இயல்புநிலை QTR Issues
+    // பெயர் பொருத்தம்: எழுத்து வேறுபாடு / இடைவெளி / புள்ளி / '-' பாராது (Fortnightly, fortnightly, FORT NIGHTLY, Fortnightly. எல்லாம் ஒன்றே)
+    const QTR_DEFAULTS = { monthly:3, fortnightly:6, fortnight:6, weekly:12, twiceweekly:12, bimonthly:2,
+                           yearly:1, quarterly:1, semiannually:1, triweekly:28 };
+    function _periodicityKey(p) { return String(p || '').toLowerCase().replace(/[^a-z]/g, ''); }
     function _qtrDefaultFor(m) {
-      const map = { Monthly:3, Fortnightly:6, Weekly:12, Bimonthly:5, Yearly:1, Quarterly:1, Semiannually:1, Triweekly:28 };
-      return map[(m.periodicity || '').trim()] || 0;
+      return QTR_DEFAULTS[_periodicityKey(m.periodicity)] || 0;
     }
 
     function reopenQtrIssuesCard() {
@@ -2583,7 +2586,6 @@
       document.getElementById('pC').textContent = m.issuePrice || 0;
       document.getElementById('pD').textContent = m.noOfLibraries || 0;
       document.getElementById('pH').textContent = 0;
-      const periodicityMap = { Monthly:3, Fortnightly:6, Weekly:12, Bimonthly:5, Yearly:1, Quarterly:1, Semiannually:1, Triweekly:28 };
       const qtrInput = document.getElementById('qtrIssues');
       const periodicity = (m.periodicity || '').trim();
       // QTR Issues மதிப்பு Card வழியாக மட்டுமே பதிவாகும் (இங்கே தானாக நிரப்பப்படுவதில்லை)

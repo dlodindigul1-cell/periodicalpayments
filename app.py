@@ -209,7 +209,12 @@ def ensure_quarter_backfill():
 _QUARTER_MONTHS = {"Q1": ("Apr", "May", "Jun"), "Q2": ("Jul", "Aug", "Sep"),
                    "Q3": ("Oct", "Nov", "Dec"), "Q4": ("Jan", "Feb", "Mar")}
 # மாத வாரியாகப் பிரித்து அனுப்ப அர்த்தமுள்ள இதழ் வகைகள்
-MONTH_TICK_PERIODICITIES = {"monthly", "fortnightly", "weekly", "triweekly"}
+# (பெயர் ஒப்பீடு: எழுத்து வேறுபாடு / இடைவெளி / புள்ளி / '-' பாராது — _periodicity_key)
+MONTH_TICK_PERIODICITIES = {"monthly", "fortnightly", "fortnight", "weekly", "twiceweekly", "triweekly"}
+
+
+def _periodicity_key(p):
+    return re.sub(r"[^a-z]", "", (p or "").lower())
 
 
 def quarter_month_names(quarter):
@@ -218,7 +223,7 @@ def quarter_month_names(quarter):
 
 
 def uses_month_tick(periodicity):
-    return (periodicity or "").strip().lower() in MONTH_TICK_PERIODICITIES
+    return _periodicity_key(periodicity) in MONTH_TICK_PERIODICITIES
 
 
 def parse_months(v):
@@ -6584,7 +6589,7 @@ def api_fx_to_part():
                 return jsonify({"success": False, "message": "'%s' Master-ல் இல்லை." % to}), 400
             if not uses_month_tick(m["periodicity"]):
                 return jsonify({"success": False, "message":
-                                "'%s' மாத வாரியாகப் பிரித்து அனுப்பும் வகை இதழ் அல்ல (Monthly / Fortnightly / Weekly / Triweekly மட்டும்)." % to}), 400
+                                "'%s' மாத வாரியாகப் பிரித்து அனுப்பும் வகை இதழ் அல்ல (Monthly / Fortnightly / Weekly / Twice Weekly / Triweekly மட்டும்)." % to}), 400
             cur.execute("SELECT id, part, months FROM payments WHERE magazine=%s AND quarter=%s AND id<>%s ORDER BY part",
                         (to, q, pid))
             others = cur.fetchall()
