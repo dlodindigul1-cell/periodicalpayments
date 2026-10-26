@@ -5115,6 +5115,13 @@ function _pdfHelper(fnName, targetId) {
             <div style="font-size:13px; color:var(--muted); margin-top:3px;">பழைய Payment தரவு — இதழ் பெயர், Invoice, தொகை, Txn No திருத்து</div>
           </div>
         </div>
+        <div class="menu-card" onclick="showMastersFyView()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
+          <div style="font-size:36px;">📅</div>
+          <div>
+            <div style="font-size:16px; font-weight:700; color:var(--navy);">Financial Year View (Dashboard)</div>
+            <div style="font-size:13px; color:var(--muted); margin-top:3px;">எல்லாத் திரைகளிலும் எந்த Quarter-கள் காட்டப்பட வேண்டும் என்று தேர்வு செய்</div>
+          </div>
+        </div>
         <div class="menu-card" onclick="showMastersUsers()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
           <div style="font-size:36px;">🔐</div>
           <div>
@@ -5166,6 +5173,29 @@ function _pdfHelper(fnName, targetId) {
           </div>
         </div>
         <div class="btn-row">
+          <button class="btn-secondary" onclick="showMastersDashboard()">← Master Data-க்கு</button>
+        </div>
+      </div>
+
+      <!-- ══════════ FINANCIAL YEAR VIEW PANEL ══════════ -->
+      <div id="mastersFyViewPanel" class="master-panel" style="display:none;">
+        <div class="card">
+          <div class="card-title">📅 Financial Year View (Dashboard)</div>
+          <p style="font-size:13px; color:var(--muted); margin:0 0 6px; line-height:1.7;">
+            இங்கே தேர்ந்தெடுக்கும் Quarter-கள் மட்டுமே இன்வாய்ஸ் பதிவு, தொகை வழங்கல், வவுச்சர், Payment Advice, Bank Transaction,
+            Mail + PDF, Pending Reminder, அறிக்கைகள், தொகை வித்தியாசம், தொகை வழங்கப்பட்ட விவரம் ஆகிய அனைத்துத் திரைகளிலும் தெரியும்.
+            பல Quarter / பல நிதியாண்டுகளைத் தேர்ந்தெடுக்கலாம். தரவு எதுவும் நீக்கப்படாது — மறைக்கப்படுவது மட்டுமே.
+          </p>
+          <div id="fyViewCurrent" style="font-size:13px; font-weight:600; color:var(--navy); margin-bottom:10px;"></div>
+          <div id="fyViewBody"></div>
+          <div class="btn-row" style="margin-top:14px;">
+            <button class="btn-secondary" onclick="fyViewSelectAll(true)">☑ அனைத்தையும் தேர்</button>
+            <button class="btn-secondary" onclick="fyViewSelectAll(false)">☐ அனைத்தையும் நீக்கு</button>
+            <button class="btn-primary" id="fyViewSaveBtn" onclick="saveFyView()">💾 சேமி</button>
+          </div>
+          <div id="fyViewStatus" class="status"></div>
+        </div>
+        <div style="margin-top:8px;">
           <button class="btn-secondary" onclick="showMastersDashboard()">← Master Data-க்கு</button>
         </div>
       </div>
@@ -5477,7 +5507,7 @@ function _pdfHelper(fnName, targetId) {
           <div class="field-row">
             <div class="field">
               <label>Quarter (ஒன்று அல்லது பல டிக் செய்யலாம்)</label>
-              <div class="qsel" id="payExportQuarter" data-onchange="loadPaymentExport"></div>
+              <div class="qsel" id="payExportQuarter" data-full="1" data-onchange="loadPaymentExport"></div>
             </div>
             <div class="field">
               <label>தேடு (இதழ் / Invoice / Transaction / Voucher)</label>
@@ -5517,7 +5547,7 @@ function _pdfHelper(fnName, targetId) {
           <div class="field-row">
             <div class="field">
               <label>Quarter தேர்ந்தெடுக்கவும் <span class="req">*</span></label>
-              <select id="deleteTxnQuarter" onchange="loadDeleteTxnMagazines()" class="qsel-dyn" data-qsrc="existing">
+              <select id="deleteTxnQuarter" onchange="loadDeleteTxnMagazines()" class="qsel-dyn" data-qsrc="existing-all">
                 <option value="">-- காலாண்டைத் தேர்ந்தெடுக்கவும் --</option>
               </select>
             </div>
@@ -5594,6 +5624,7 @@ function _pdfHelper(fnName, targetId) {
       document.getElementById('mastersPaymentsPanel').style.display = 'none';
       document.getElementById('mastersUsersPanel').style.display = 'none';
       document.getElementById('mastersFixPanel').style.display = 'none';
+      const _fy = document.getElementById('mastersFyViewPanel'); if (_fy) _fy.style.display = 'none';
     }
 
     // ─── பயனர் கணக்கு (admin மட்டும்) ───
@@ -6593,6 +6624,88 @@ function _pdfHelper(fnName, targetId) {
       hideLoading(btn);
     }
 
+    // ─── Master: Financial Year View (Dashboard) — எந்த Quarter-கள் காட்டப்பட வேண்டும் ───
+    let _fyvAll = [], _fyvSel = new Set();
+    const _fyvLbl = q => String(q || '').replace('-Q', ' Q');
+    async function showMastersFyView() {
+      hideMasterPanels();
+      document.getElementById('mastersFyViewPanel').style.display = 'block';
+      clearStatus('fyViewStatus');
+      document.getElementById('fyViewBody').innerHTML = '<span class="spinner dark"></span> ஏற்றப்படுகிறது...';
+      try {
+        const d = await (await fetch('/api/quarters')).json();
+        if (!d.success) throw new Error(d.message || 'பிழை');
+        _fyvAll = (d.allAddable || d.addable || []).slice().sort();
+        _fyvSel = new Set(d.restricted ? d.visible : _fyvAll);
+        renderFyView(d.restricted, d.visible || []);
+      } catch (e) {
+        document.getElementById('fyViewBody').innerHTML = '<div style="color:#c0392b;">பிழை: ' + _ccEsc(e.message) + '</div>';
+      }
+    }
+    function renderFyView(restricted, visible) {
+      const cur = document.getElementById('fyViewCurrent');
+      cur.textContent = restricted ? 'தற்போது காட்டப்படுபவை: ' + visible.map(_fyvLbl).join(', ') : 'தற்போது: அனைத்து Quarter-களும் காட்டப்படுகின்றன (கட்டுப்பாடு இல்லை).';
+      const years = {};
+      _fyvAll.forEach(q => { const y = q.slice(0, 9); (years[y] = years[y] || []).push(q); });
+      document.getElementById('fyViewBody').innerHTML = Object.keys(years).sort().map(y => {
+        const qs = years[y];
+        const allOn = qs.every(q => _fyvSel.has(q));
+        return '<div style="border:1px solid var(--border,#d6dbe6);border-radius:10px;padding:10px 14px;margin-bottom:10px;">' +
+          '<label style="font-weight:700;color:var(--navy);display:block;margin-bottom:6px;"><input type="checkbox" data-fyy="' + y + '" ' + (allOn ? 'checked' : '') +
+          ' onchange="fyViewToggleYear(this)"> ' + y + ' — முழு நிதியாண்டு</label>' +
+          '<div style="display:flex;gap:18px;flex-wrap:wrap;">' + qs.map(q =>
+            '<label style="font-weight:500;"><input type="checkbox" data-fyq="' + q + '" ' + (_fyvSel.has(q) ? 'checked' : '') +
+            ' onchange="fyViewToggleQ(this)"> ' + _fyvLbl(q) + '</label>').join('') + '</div></div>';
+      }).join('');
+    }
+    function fyViewToggleQ(cb) {
+      if (cb.checked) _fyvSel.add(cb.dataset.fyq); else _fyvSel.delete(cb.dataset.fyq);
+      const y = cb.dataset.fyq.slice(0, 9);
+      const yc = document.querySelector('input[data-fyy="' + y + '"]');
+      if (yc) yc.checked = _fyvAll.filter(q => q.startsWith(y)).every(q => _fyvSel.has(q));
+    }
+    function fyViewToggleYear(cb) {
+      _fyvAll.filter(q => q.startsWith(cb.dataset.fyy)).forEach(q => { cb.checked ? _fyvSel.add(q) : _fyvSel.delete(q); });
+      document.querySelectorAll('input[data-fyq^="' + cb.dataset.fyy + '"]').forEach(c => { c.checked = cb.checked; });
+    }
+    function fyViewSelectAll(on) {
+      _fyvSel = new Set(on ? _fyvAll : []);
+      renderFyView(QSel.info().restricted, QSel.info().visible);
+    }
+    async function saveFyView() {
+      const chosen = _fyvAll.filter(q => _fyvSel.has(q));
+      if (!chosen.length) {
+        setStatus('fyViewStatus', 'error', '❌ குறைந்தது ஒரு Quarter-ஐத் தேர்ந்தெடுக்கவும்; அல்லது "அனைத்தையும் தேர்" என்று சேமித்தால் கட்டுப்பாடு நீங்கும்.');
+        return;
+      }
+      const everything = chosen.length === _fyvAll.length;
+      const ok = await showConfirmCard({
+        icon: '📅', title: 'Financial Year View-ஐச் சேமிக்கலாமா?',
+        subtitle: everything ? 'அனைத்து Quarter-களும்' : chosen.length + ' Quarter-கள்',
+        html: '<div style="font-size:14px;line-height:1.7;">' + (everything
+          ? 'எல்லாத் திரைகளிலும் அனைத்து Quarter-களும் காட்டப்படும்.'
+          : 'இனி எல்லாப் பயனர்களுக்கும் எல்லாத் திரைகளிலும் இவை மட்டுமே தெரியும்:<br><b>' + chosen.map(_fyvLbl).join(', ') + '</b><br>மற்றவை மறைக்கப்படும் (தரவு நீக்கப்படாது).') + '</div>'
+      });
+      if (ok !== true) return;
+      const btn = document.getElementById('fyViewSaveBtn');
+      showLoading(btn, 'சேமிக்கிறது...');
+      try {
+        const res = await fetch('/api/admin/visible-quarters', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(everything ? { all: true } : { quarters: chosen })
+        });
+        const r = await res.json();
+        if (r.success) {
+          setStatus('fyViewStatus', 'success', '✅ ' + _ccEsc(r.message));
+          await QSel.reload();
+          renderFyView(everything ? false : true, everything ? [] : chosen);
+        } else setStatus('fyViewStatus', 'error', '❌ ' + _ccEsc(r.message));
+      } catch (e) {
+        setStatus('fyViewStatus', 'error', '❌ பிழை: ' + _ccEsc(e.message));
+      }
+      hideLoading(btn);
+    }
+
     // ─── Vendor Master: Add / Edit Form ───
     let _vendorEditing = false;
     function clearVendorMasterForm() {
@@ -6869,7 +6982,11 @@ function _pdfHelper(fnName, targetId) {
 window.QSel = (function () {
   const FALLBACK = ['2025-2026-Q4','2026-2027-Q1','2026-2027-Q2','2026-2027-Q3','2026-2027-Q4'];
   let quarters = FALLBACK.slice(), addable = FALLBACK.slice();
+  let allQ = FALLBACK.slice(), allAddable = FALLBACK.slice(), restricted = false, visibleList = [];
   const st = {};
+  // data-full="1" உள்ள பெட்டிகள் (Master கருவிகள்) Financial Year View கட்டுப்பாட்டைப் பொருட்படுத்தாது
+  const isFull = id => { const e = document.getElementById(id); return !!(e && e.dataset.full); };
+  const pool = id => isFull(id) ? allQ : quarters;
   const lbl = q => String(q || '').replace('-Q', ' Q');
   const esc = v => String(v).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
 
@@ -6877,7 +6994,7 @@ window.QSel = (function () {
     const el = document.getElementById(id), s = st[id];
     if (!el || !s) return;
     let h = el.dataset.noall ? '' : '<label class="qs-item qs-all' + (s.all ? ' on' : '') + '"><input type="checkbox" data-q=""' + (s.all ? ' checked' : '') + '> அனைத்தும்</label>';
-    quarters.forEach(q => {
+    pool(id).forEach(q => {
       const on = s.sel.has(q);
       h += '<label class="qs-item' + (on ? ' on' : '') + '"><input type="checkbox" data-q="' + esc(q) + '"' + (on ? ' checked' : '') + '> ' + esc(lbl(q)) + '</label>';
     });
@@ -6908,14 +7025,17 @@ window.QSel = (function () {
     renderBox(id);
   }
 
-  const get = id => (st[id] && !st[id].all) ? Array.from(st[id].sel).sort() : [];
+  const rawGet = id => (st[id] && !st[id].all) ? Array.from(st[id].sel).sort() : [];
+  // "அனைத்தும்" + Financial Year View கட்டுப்பாடு → தேர்ந்த Quarter-கள் மட்டும் (மறைக்கப்பட்டவை வராது)
+  const get = id => { const r = rawGet(id); return (!r.length && restricted && !isFull(id)) ? quarters.slice() : r; };
   const csv = id => get(id).join(',');
-  const label = id => get(id).map(lbl).join(', ');
+  const label = id => rawGet(id).map(lbl).join(', ');
+  const visibleCsv = () => restricted ? quarters.join(',') : '';
   function reset(id) { if (st[id]) { st[id].all = true; st[id].sel.clear(); renderBox(id); } }
 
   function fillSelects() {
     document.querySelectorAll('select.qsel-dyn').forEach(sel => {
-      const src = sel.dataset.qsrc === 'addable' ? addable : quarters;
+      const src = sel.dataset.qsrc === 'addable' ? addable : (sel.dataset.qsrc === 'existing-all' ? allQ : quarters);
       const cur = sel.value;
       const first = sel.options[0] ? sel.options[0].outerHTML : '';
       sel.innerHTML = first + src.map(q => '<option value="' + esc(q) + '">' + esc(lbl(q)) + '</option>').join('');
@@ -6926,7 +7046,7 @@ window.QSel = (function () {
     const box = document.getElementById('masterMagQuarterChecks');
     if (!box) return;
     const on = new Set(Array.from(box.querySelectorAll('input:checked')).map(c => c.value));
-    box.innerHTML = addable.map(q =>
+    box.innerHTML = allAddable.map(q =>
       '<label style="font-weight:500;"><input type="checkbox" value="' + esc(q) + '"' + (on.has(q) ? ' checked' : '') + '> ' + esc(lbl(q)) + '</label>').join('');
     if (typeof window.applyMasterQuarterLocks === 'function') window.applyMasterQuarterLocks();
   }
@@ -6936,13 +7056,17 @@ window.QSel = (function () {
     if (busy) return busy;
     busy = fetch('/api/quarters').then(r => r.json()).then(d => {
       if (d && d.success) {
-        quarters = d.quarters && d.quarters.length ? d.quarters : quarters;
-        addable = d.addable && d.addable.length ? d.addable : quarters;
+        quarters = Array.isArray(d.quarters) ? d.quarters : quarters;
+        addable = Array.isArray(d.addable) ? d.addable : quarters;
+        allQ = Array.isArray(d.allQuarters) && d.allQuarters.length ? d.allQuarters : quarters;
+        allAddable = Array.isArray(d.allAddable) && d.allAddable.length ? d.allAddable : addable;
+        restricted = !!d.restricted;
+        visibleList = d.visible || [];
       }
     }).catch(() => {}).then(() => {
       Object.keys(st).forEach(id => {
         const s = st[id];
-        s.sel = new Set(Array.from(s.sel).filter(q => quarters.includes(q)));
+        s.sel = new Set(Array.from(s.sel).filter(q => pool(id).includes(q)));
         if (!s.sel.size) s.all = true;
         renderBox(id);
       });
@@ -6964,7 +7088,8 @@ window.QSel = (function () {
     if (typeof f === 'function') window[n] = function () { reload(); return f.apply(this, arguments); };
   });
 
-  return { mount, get, csv, label, reload, reset };
+  return { mount, get, csv, label, reload, reset, visibleCsv,
+           info: () => ({ allQ, allAddable, restricted, visible: visibleList.slice() }) };
 })();
 </script>
 
@@ -6979,7 +7104,9 @@ async function loadPendingTicker() {
   const track = document.getElementById('pendTrack');
   if (!track) return;
   try {
-    const r = await fetch('/api/reports/unpaid');
+    try { await QSel.reload(); } catch (e) {}
+    const _vq = QSel.visibleCsv();
+    const r = await fetch('/api/reports/unpaid' + (_vq ? '?quarter=' + encodeURIComponent(_vq) : ''));
     if (r.status === 401) return;
     const d = await r.json();
     if (!d.success) throw new Error(d.message || 'error');

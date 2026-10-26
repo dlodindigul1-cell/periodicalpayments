@@ -2201,18 +2201,77 @@ def next_quarters(last, n=4):
     return out
 
 
+_VISIBLE_Q_KEY = "visible_quarters"
+
+
+def _ensure_settings_table(cur):
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS app_settings ("
+        "key TEXT PRIMARY KEY, value TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+    )
+
+
+def get_visible_quarters(cur):
+    """Master → Financial Year View: தேர்ந்த Quarter-களின் பட்டியல்; None = கட்டுப்பாடு இல்லை (அனைத்தும்)."""
+    _ensure_settings_table(cur)
+    cur.execute("SELECT value FROM app_settings WHERE key=%s", (_VISIBLE_Q_KEY,))
+    row = cur.fetchone()
+    vals = [v.strip() for v in ((row or {}).get("value") or "").split(",") if v.strip()]
+    return vals or None
+
+
 @app.route("/api/quarters")
 def api_quarters():
     """quarters = DB-யில் உள்ள Quarter-கள் (வடிகட்டிகளுக்கு);
-    addable = quarters + அடுத்த 4 (புதிய Quarter உருவாக்க / Invoice பதிவுக்கு)."""
+    addable = quarters + அடுத்த 4 (புதிய Quarter உருவாக்க / Invoice பதிவுக்கு).
+    Master → Financial Year View தேர்வு இருந்தால் quarters / addable அவற்றுக்குள் மட்டும் வரும்;
+    allQuarters / allAddable எப்போதும் முழுப் பட்டியல் (Master-ன் சொந்தக் கருவிகளுக்கு)."""
     conn = get_conn()
     try:
         with conn.cursor() as cur:
             qs = all_known_quarters(cur)
+            vis = get_visible_quarters(cur)
+            conn.commit()
     finally:
         conn.close()
-    addable = sorted(set(qs) | set(next_quarters(qs[-1] if qs else "")))
-    return jsonify({"success": True, "quarters": qs, "addable": addable})
+    addable_all = sorted(set(qs) | set(next_quarters(qs[-1] if qs else "")))
+    if vis:
+        vset = set(vis)
+        shown, addable = [q for q in qs if q in vset], [q for q in addable_all if q in vset]
+    else:
+        shown, addable = qs, addable_all
+    return jsonify({"success": True, "quarters": shown, "addable": addable,
+                    "allQuarters": qs, "allAddable": addable_all,
+                    "restricted": bool(vis), "visible": vis or []})
+
+
+@app.route("/api/admin/visible-quarters", methods=["POST"])
+def api_admin_visible_quarters():
+    """Financial Year View சேமி. body: {quarters:[...]} அல்லது {all:true} (கட்டுப்பாடு நீக்கு)."""
+    data = request.get_json(force=True) or {}
+    quarters = sorted({str(q).strip() for q in (data.get("quarters") or []) if str(q).strip()})
+    clear = bool(data.get("all")) or not quarters
+    if not clear and any(not re.fullmatch(r"\d{4}-\d{4}-Q[1-4]", q) for q in quarters):
+        return jsonify({"success": False, "message": "Quarter வடிவம் தவறு."}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            _ensure_settings_table(cur)
+            if clear:
+                cur.execute("DELETE FROM app_settings WHERE key=%s", (_VISIBLE_Q_KEY,))
+            else:
+                cur.execute(
+                    "INSERT INTO app_settings (key, value) VALUES (%s,%s) "
+                    "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()",
+                    (_VISIBLE_Q_KEY, ",".join(quarters)))
+            conn.commit()
+        msg = "அனைத்து Quarter-களும் காட்டப்படும்." if clear else "இனி காட்டப்படும் Quarter-கள்: " + ", ".join(quarters)
+        return jsonify({"success": True, "message": msg, "visible": [] if clear else quarters})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
 
 
 # --------------------------------------------------------------------------- #
