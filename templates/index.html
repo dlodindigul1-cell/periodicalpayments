@@ -869,8 +869,8 @@
           </div>
         </div>
         <div class="field">
-          <label>Requested Amount (₹) <span style="font-weight:400; color:var(--muted); font-size:12px;">— Invoice-ல் உள்ள எந்த தொகையும் இங்கே பதிவு செய்யலாம்</span></label>
-          <input type="number" id="requestedAmt" step="0.01" placeholder="0.00" disabled>
+          <label>Requested Amount (₹) <span style="font-weight:400; color:var(--muted); font-size:12px;">— QTR Issues-ன்படி தானாக நிரம்பும்; Invoice-ல் வேறு தொகை இருந்தால் மாற்றலாம்</span></label>
+          <input type="number" id="requestedAmt" step="0.01" placeholder="0.00" disabled oninput="_reqAuto = null; document.getElementById('pM').textContent = this.value || '—';">
         </div>
       </div>
 
@@ -2143,7 +2143,25 @@
       openQtrIssuesCard();
     }
 
+    // Requested Amount — QTR Issues card-ல் உறுதிசெய்த மொத்த தொகையால் தானாக நிரப்ப
+    // (கையால் மாற்றிய / ஏற்கனவே சேமித்த தொகையை மேலெழுதாது)
+    let _reqAuto = null;
+    function autoFillRequestedAmt(total) {
+      const el = document.getElementById('requestedAmt');
+      const cur = el.value.trim();
+      const val = (Math.round(total * 100) / 100).toFixed(2);
+      if (cur === '' || (_reqAuto !== null && Number(cur) === Number(_reqAuto))) {
+        el.value = val;
+        _reqAuto = val;
+        return true;
+      }
+      return false;
+    }
+
     function resetQtrIssuesAndLock() {
+      const _rq = document.getElementById('requestedAmt');
+      if (_reqAuto !== null && Number(_rq.value) === Number(_reqAuto)) _rq.value = '';   // தானாக நிரம்பிய பழைய தொகை மட்டும் நீக்கு
+      _reqAuto = null;
       document.getElementById('qtrIssues').value = '';
       document.getElementById('qtrIssues').disabled = true;
       document.getElementById('pE').textContent = '—';
@@ -2247,9 +2265,13 @@
       if (res) {
         // சரி → QTR Issues உரிய இடத்தில் பதிவு; Invoice விவரங்கள் திறக்கும்
         qtrInput.value = res;
+        const _total = issuePrice * libraries * res;
+        const _filled = autoFillRequestedAmt(_total);
         loadMagazineDetails();
         unlockInvoiceFields();
-        setStatus('status', 'success', '✅ QTR Issues ' + res + ' பதிவானது — மொத்த தொகை ₹' + (issuePrice * libraries * res).toFixed(2) + '. இப்போது Invoice விவரங்களை நிரப்பலாம்.');
+        setStatus('status', 'success', '✅ QTR Issues ' + res + ' பதிவானது — மொத்த தொகை ₹' + _total.toFixed(2) + '.' +
+          (_filled ? ' Requested Amount தானாக நிரப்பப்பட்டது (Invoice-ல் வேறு தொகை இருந்தால் மாற்றலாம்).' : '') +
+          ' இப்போது Invoice விவரங்களை நிரப்பலாம்.');
       } else if (!(parseInt(qtrInput.value) > 0)) {
         // ஏற்கனவே பதிவு இல்லாமல் ரத்து செய்தால்
         lockInvoiceFields();
@@ -2705,6 +2727,7 @@
       cov = { full: true, months: [1, 2, 3], part: null };
       isDuplicateExists = false;
       ['invoiceNo', 'invoiceDate', 'requestedAmt', 'qtrIssues'].forEach(id => { document.getElementById(id).value = ''; });
+      _reqAuto = null;
       lockInvoiceFields();
       refreshModeUI();
       const ok = await askCoverage();
@@ -2723,6 +2746,7 @@
       document.getElementById('invoiceNo').value = p.invoiceNo || '';
       document.getElementById('invoiceDate').value = p.invoiceDateISO || '';
       document.getElementById('requestedAmt').value = p.requestedAmt || '';
+      _reqAuto = null;
       document.getElementById('qtrIssues').value = p.qtrIssues || '';
       refreshModeUI();
       loadMagazineDetails();
@@ -2949,6 +2973,7 @@
             ? '✅ Update வெற்றி! Row ' + result.row + ' புதுப்பிக்கப்பட்டது' + partTxt + '.' + extra
             : '✅ வெற்றி! Row ' + result.row + ' இல் பதிவு — ' + payload.magazine + ' / ' + payload.quarter + partTxt + '.' + extra);
           ['invoiceNo','invoiceDate','requestedAmt','qtrIssues'].forEach(id => document.getElementById(id).value = '');
+          _reqAuto = null;
           document.getElementById('quarter').value = '';
           document.getElementById('magazine').innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
           document.getElementById('magazine').disabled = true;
