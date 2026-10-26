@@ -3016,19 +3016,25 @@
           setStatus('status', 'success', isUpdate
             ? '✅ Update வெற்றி! Row ' + result.row + ' புதுப்பிக்கப்பட்டது' + partTxt + '.' + extra
             : '✅ வெற்றி! Row ' + result.row + ' இல் பதிவு — ' + payload.magazine + ' / ' + payload.quarter + partTxt + '.' + extra);
+          const _okHtml = document.getElementById('status').innerHTML;
           ['invoiceNo','invoiceDate','requestedAmt','qtrIssues'].forEach(id => document.getElementById(id).value = '');
           _reqAuto = null;
-          document.getElementById('quarter').value = '';
-          LangSel.reset('invoiceForm'); LangSel.enable('invoiceForm', false);
-          document.getElementById('magazine').innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
-          document.getElementById('magazine').disabled = true;
+          // Quarter மற்றும் மொழி அப்படியே இருக்கும் — இதழ் மட்டும் மீண்டும் தேர்ந்தெடுக்கப்படும்
+          document.getElementById('magazine').value = '';
           document.getElementById('qtrIssues').disabled = true;
           lockInvoiceFields();
           document.getElementById('existingInvoiceCard').style.display = 'none';
           document.getElementById('appendBtn').style.display = 'none';
           document.getElementById('invoiceBtn').innerHTML = '✅ இன்வாய்ஸ் பதிவு செய்';
+          document.getElementById('invoiceBtn').disabled = false;
           isDuplicateExists = false;
           resetCoverageState();
+          const _keepQ = document.getElementById('quarter').value;
+          if (_keepQ && LangSel.get('invoiceForm')) {
+            document.getElementById('magazine').disabled = false;
+            await loadAllData(_keepQ);                 // இதழ் பட்டியலைப் புதுப்பி
+            setStatus('status', 'success', _okHtml);   // வெற்றிச் செய்தி மறையாமல் இருக்க
+          }
         } else throw new Error(result.message);
       } catch(e) {
         setStatus('status', 'error', '❌ பிழை: ' + e.message);
@@ -3447,10 +3453,8 @@
           const _nextPart = _otherUnpaid.length ? _otherUnpaid[0].part : null;
           setStatus('paymentStatus', 'success', '✅ வெற்றி! ' + result.message);
           const _savedMag = magazine, _savedQtr = quarter;
-          // Form reset
-          document.getElementById('quarterSelect').value = '';
-          LangSel.reset('paymentForm'); LangSel.enable('paymentForm', false);
-          document.getElementById('magazineSection').style.display = 'none';
+          // Form reset — Quarter மற்றும் மொழி அப்படியே இருக்கும்; இதழ் மட்டும் மீண்டும் தேர்ந்தெடுக்கப்படும்
+          document.getElementById('magazineSelect').value = '';
           document.getElementById('paymentDetailsCard').style.display = 'none';
           document.getElementById('paymentExtraCard').style.display = 'none';
           document.getElementById('paymentBtn').style.display = 'none';
@@ -3462,10 +3466,13 @@
           document.getElementById('billSetNo').value = '';
           currentMagazineData = {};
           renderPartPanel(false); currentPartsInfo = null; currentPart = 1;
+          // இதழ் பட்டியலைப் புதுப்பி (சேமித்த இதழ் 'வழங்கப்பட்டவை' பிரிவுக்குச் செல்லும்)
+          if (document.getElementById('quarterSelect').value && LangSel.get('paymentForm')) await loadMagazinesForQuarter();
+          setStatus('paymentStatus', 'success', '✅ வெற்றி! ' + result.message);
           // குழுவில் மீதமுள்ள இதழ்கள் — பட்டியல் + ஒரே கிளிக்கில் அடுத்ததற்குச் செல்ல
           await showRemainingGroupCard(_savedMag, _savedQtr);
           // இதே இதழில் தொகை வழங்காத அடுத்த Part இருந்தால் அதைத் திறக்க
-          if (_nextPart && !document.getElementById('quarterSelect').value) {
+          if (_nextPart && !document.getElementById('magazineSelect').value) {
             await _openPart(_savedQtr, _savedMag, _nextPart);
             setStatus('paymentStatus', 'success', '✅ வெற்றி! ' + result.message + ' — இப்போது Part ' + _nextPart + ' திறக்கப்பட்டுள்ளது.');
           }
