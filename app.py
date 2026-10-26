@@ -2576,10 +2576,11 @@ def api_admin_bulk_quarters_apply():
                 else:
                     continue
 
+                ow_set = {str(x).strip() for x in (it.get("overwriteQuarters") or [])} & set(quarters)
                 for q in quarters:
                     cur.execute("SELECT 1 FROM magazine_quarters WHERE magazine_id=%s AND quarter=%s", (mid, q))
                     exists = cur.fetchone()
-                    if exists and not overwrite:
+                    if exists and not (overwrite or q in ow_set):
                         stats["qSkipped"] += 1
                         continue
                     if exists:
