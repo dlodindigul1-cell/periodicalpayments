@@ -608,6 +608,13 @@
     }
     .cc-qty::-webkit-outer-spin-button, .cc-qty::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     .cc-qty:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 4px rgba(200,168,75,.25); }
+    .cc-per { display:block; margin:6px auto 0; padding:8px 12px; font-size:15px; font-weight:600; border:1.5px solid #cfd6e4; border-radius:10px; background:#fff; color:var(--navy); min-width:210px; text-align:center; }
+    .cc-per.changed { border-color:#d97706; background:#fffbeb; }
+    .cc-opt { display:block; margin:8px 0; font-size:14px; cursor:pointer; line-height:1.5; }
+    .cc-qlist { display:flex; flex-wrap:wrap; gap:6px 14px; margin:8px 0; max-height:190px; overflow:auto; padding:8px 10px; border:1px solid #e3e8f2; border-radius:10px; background:#fafbfe; }
+    .cc-qrow { font-size:13px; cursor:pointer; white-space:nowrap; }
+    .cc-qrow small { color: var(--muted); }
+    .cc-mini { font-size:12px; padding:4px 10px; margin-right:6px; border:1px solid #cfd6e4; border-radius:8px; background:#fff; cursor:pointer; }
     .cc-note { margin-top: 8px; font-size: 12px; color: var(--muted); text-align: center; line-height: 1.5; }
     .mc-chips { display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin:14px 0 6px; }
     .mc-chip { display:flex; flex-direction:column; align-items:center; gap:4px; min-width:92px; padding:12px 14px; border:2px solid #cfd8e6; border-radius:12px; background:#fff; cursor:pointer; font-weight:700; color:var(--navy); }
@@ -2223,9 +2230,66 @@
     // பெயர் பொருத்தம்: எழுத்து வேறுபாடு / இடைவெளி / புள்ளி / '-' பாராது (Fortnightly, fortnightly, FORT NIGHTLY, Fortnightly. எல்லாம் ஒன்றே)
     const QTR_DEFAULTS = { monthly:3, fortnightly:6, fortnight:6, weekly:12, twiceweekly:12, bimonthly:2,
                            yearly:1, quarterly:1, semiannually:1, triweekly:28 };
+    const PERIODICITY_OPTIONS = ['Weekly', 'Twice Weekly', 'Fortnightly', 'Monthly', 'Bimonthly', 'Quarterly', 'Semiannually', 'Yearly', 'Triweekly'];
+    let _perOverride = {};   // 'இதழ்|Quarter' -> இந்த இன்வாய்ஸுக்கு மட்டும் தேர்ந்த Periodicity (Master மாறாது)
     function _periodicityKey(p) { return String(p || '').toLowerCase().replace(/[^a-z]/g, ''); }
     function _qtrDefaultFor(m) {
       return QTR_DEFAULTS[_periodicityKey(m.periodicity)] || 0;
+    }
+
+    // Periodicity மாற்றினால் — இதழ் Master-லும் மாற்றவா, எந்தெந்த Quarter-க்கு என்று கேட்கும்
+    async function askMasterPeriodicity(magName, oldPer, newPer, invQuarter) {
+      let info = null;
+      try { const r = await fetch('/api/magazine-periodicity?name=' + encodeURIComponent(magName)); info = await r.json(); } catch (e) { info = null; }
+      if (!info || !info.success || !info.isAdmin || !(info.quarters || []).length) return { proceed: true, appliedToCurrent: false };
+      const rows = info.quarters.map(q =>
+        '<label class="cc-qrow"><input type="checkbox" class="ccQ" value="' + _ccEsc(q.quarter) + '"' + (q.quarter >= invQuarter ? ' checked' : '') + '> ' +
+        _ccEsc(q.quarter) + ' <small>(' + _ccEsc(q.periodicity || '—') + ')</small></label>').join('');
+      const out = await showConfirmCard({
+        icon: '🔁', title: 'Periodicity மாற்றம்', subtitle: magName, wide: true,
+        html:
+          '<div class="cc-msg">Periodicity <b>' + _ccEsc(oldPer || '—') + '</b> → <b>' + _ccEsc(newPer) + '</b> என மாற்றினீர்கள். இதழ் Master-லும் மாற்ற வேண்டுமா?</div>' +
+          '<label class="cc-opt"><input type="radio" name="ccMasterOpt" value="no" checked> இல்லை — இந்த இன்வாய்ஸுக்கு மட்டும் (Master மாறாது)</label>' +
+          '<label class="cc-opt"><input type="radio" name="ccMasterOpt" value="yes"> ஆம் — இதழ் Master-லும் மாற்று</label>' +
+          '<div id="ccQBox" style="display:none;">' +
+            '<div class="cc-field-label" style="text-align:left;margin-top:8px;">எந்தெந்த Quarter-க்கு மாற்ற வேண்டும்? (தேர்ந்தவற்றுக்கு மட்டும்; மற்றவை பழையபடியே)</div>' +
+            '<div class="cc-qlist">' + rows + '</div>' +
+            '<button type="button" class="cc-mini" id="ccQFrom">இந்த Quarter முதல்</button>' +
+            '<button type="button" class="cc-mini" id="ccQOnly">இந்த Quarter மட்டும்</button>' +
+            '<button type="button" class="cc-mini" id="ccQAll">அனைத்தும்</button>' +
+          '</div>',
+        buttons: [ { label: 'ரத்து', value: false, style: 'ghost' }, { label: '✅ தொடர்', value: true, style: 'primary' } ],
+        onMount: function (ov) {
+          const box = ov.querySelector('#ccQBox'), ok = ov.querySelector('.cc-btn.primary');
+          const checks = () => Array.from(ov.querySelectorAll('.ccQ'));
+          const yes = () => ov.querySelector('input[name="ccMasterOpt"]:checked').value === 'yes';
+          const refresh = () => { box.style.display = yes() ? 'block' : 'none'; ok.disabled = yes() && !checks().some(c => c.checked); };
+          ov.querySelectorAll('input[name="ccMasterOpt"]').forEach(r => r.addEventListener('change', refresh));
+          checks().forEach(c => c.addEventListener('change', refresh));
+          ov.querySelector('#ccQFrom').onclick = () => { checks().forEach(c => { c.checked = c.value >= invQuarter; }); refresh(); };
+          ov.querySelector('#ccQOnly').onclick = () => { checks().forEach(c => { c.checked = c.value === invQuarter; }); refresh(); };
+          ov.querySelector('#ccQAll').onclick  = () => { checks().forEach(c => { c.checked = true; }); refresh(); };
+          refresh();
+        },
+        resolveWith: function (val, ov) {
+          if (val !== true) return null;
+          return { yes: ov.querySelector('input[name="ccMasterOpt"]:checked').value === 'yes',
+                   sel: Array.from(ov.querySelectorAll('.ccQ:checked')).map(c => c.value) };
+        }
+      });
+      if (!out) return { proceed: false, appliedToCurrent: false };
+      if (!out.yes) return { proceed: true, appliedToCurrent: false };
+      try {
+        const r = await fetch('/api/magazine-periodicity', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: magName, periodicity: newPer, quarters: out.sel }) });
+        const d = await r.json();
+        if (!d.success) throw new Error(d.message || 'பிழை');
+        setStatus('status', 'success', '✅ ' + _ccEsc(d.message));
+        return { proceed: true, appliedToCurrent: out.sel.indexOf(invQuarter) >= 0 };
+      } catch (e) {
+        setStatus('status', 'error', '❌ Master Periodicity மாற்ற முடியவில்லை: ' + _ccEsc(e.message));
+        return { proceed: false, appliedToCurrent: false };
+      }
     }
 
     function reopenQtrIssuesCard() {
@@ -2244,17 +2308,26 @@
       const issuePrice = parseFloat(m.issuePrice)  || 0;
       const libraries  = parseInt(m.noOfLibraries) || 0;
 
+      const quarterSel = document.getElementById('quarter').value;
+      const _ovKey  = magName + '|' + quarterSel;
+      const curPer  = (_perOverride[_ovKey] || (m.periodicity || '')).trim();   // இந்த இன்வாய்ஸுக்கு அட்டையில் காட்டப்படும் Periodicity
+      const curKey  = _periodicityKey(curPer);
+      const perOpts = PERIODICITY_OPTIONS.slice();
+      if (curPer && !perOpts.some(o => _periodicityKey(o) === curKey)) perOpts.unshift(curPer);
+      const perHtml = (curPer ? '' : '<option value="">-- தேர்ந்தெடுக்கவும் --</option>') +
+        perOpts.map(o => '<option value="' + _ccEsc(o) + '"' + (curPer && _periodicityKey(o) === curKey ? ' selected' : '') + '>' + _ccEsc(o) + '</option>').join('');
+
       const current = parseInt(qtrInput.value) || 0;           // ஏற்கனவே பதிவானது
-      const dflt    = _qtrDefaultScaled(m);                    // periodicity இயல்பு (பகுதி மாதங்களுக்கு விகிதப்படி)
+      const dflt    = _qtrDefaultScaled(m, curPer);            // periodicity இயல்பு (பகுதி மாதங்களுக்கு விகிதப்படி)
       const start   = current > 0 ? current : (dflt > 0 ? dflt : '');
       const note    = current > 0
         ? 'தற்போது பதிவாகியுள்ள மதிப்பு — தேவைப்பட்டால் திருத்தலாம்.'
-        : (dflt > 0 ? 'இதழ் காலம் (' + _ccEsc((m.periodicity || '').trim()) + ') அடிப்படையில் தானாக நிரப்பப்பட்டது — தேவைப்பட்டால் திருத்தலாம்.' : '');
+        : (dflt > 0 ? 'இதழ் காலம் (' + _ccEsc(curPer) + ') அடிப்படையில் தானாக நிரப்பப்பட்டது — தேவைப்பட்டால் திருத்தலாம்.' : '');
 
       _qtrCardOpen = true;
-      let res;
+      let resObj;
       try {
-        res = await showConfirmCard({
+        resObj = await showConfirmCard({
           icon: '🧾',
           title: 'QTR Issues & தொகை சரிபார்ப்பு',
           subtitle: 'எண்ணை உள்ளிடவும் — தொகை உடனே கணக்கிடப்படும்',
@@ -2265,6 +2338,9 @@
               '<div class="cc-times">×</div>' +
               '<div class="cc-chip"><span>Libraries</span><b>' + libraries + '</b></div>' +
             '</div>' +
+            '<div class="cc-field-label">Periodicity (இதழ் காலம்) — மாற்றலாம்</div>' +
+            '<select id="ccPer" class="cc-per">' + perHtml + '</select>' +
+            '<div class="cc-note" id="ccPerNote" style="display:none;"></div>' +
             '<div class="cc-field-label">QTR Issues <span style="color:#c0392b">*</span></div>' +
             '<div class="cc-stepper">' +
               '<button type="button" class="cc-step" id="ccMinus" aria-label="குறை">−</button>' +
@@ -2295,16 +2371,45 @@
             });
             ov.querySelector('#ccMinus').onclick = () => { inp.value = Math.max(1, (parseInt(inp.value) || 2) - 1); refresh(); inp.focus(); };
             ov.querySelector('#ccPlus').onclick  = () => { inp.value = Math.min(99, (parseInt(inp.value) || 0) + 1); refresh(); inp.focus(); };
+            // Periodicity மாற்றம் → QTR Issues & தொகை உடனே மறுகணக்கீடு
+            const per = ov.querySelector('#ccPer'), pnote = ov.querySelector('#ccPerNote');
+            per.addEventListener('change', () => {
+              const changed = _periodicityKey(per.value) !== curKey;
+              per.classList.toggle('changed', changed);
+              const d = _qtrDefaultScaled(m, per.value);
+              if (changed) {
+                if (d > 0) inp.value = d;
+                pnote.style.display = 'block';
+                pnote.textContent = 'Periodicity: ' + (curPer || '—') + ' → ' + per.value + (d > 0
+                  ? ' — QTR Issues ' + d + ' ஆக மறுகணக்கிடப்பட்டது (தேவைப்பட்டால் திருத்தலாம்).'
+                  : ' — இதற்கு இயல்பு மதிப்பு இல்லை; QTR Issues-ஐ நீங்களே உள்ளிடவும்.');
+              } else {
+                pnote.style.display = 'none';
+                const back = current > 0 ? current : d;
+                if (back > 0) inp.value = back;
+              }
+              refresh();
+            });
             refresh();
           },
           resolveWith: function (val, ov) {
             if (val !== true) return null;
             const inp = ov.querySelector('#ccQtrInput');
             const n = Number(inp.value);
-            return (inp.value !== '' && Number.isInteger(n) && n >= 1 && n <= 99) ? n : null;
+            return (inp.value !== '' && Number.isInteger(n) && n >= 1 && n <= 99)
+              ? { n: n, per: ov.querySelector('#ccPer').value } : null;
           }
         });
       } finally { _qtrCardOpen = false; }
+
+      let res = resObj ? resObj.n : null;
+      if (resObj && resObj.per && _periodicityKey(resObj.per) !== curKey) {
+        // Periodicity மாற்றப்பட்டது — Master-லும் மாற்றவா? எந்தெந்த Quarter-க்கு?
+        const r = await askMasterPeriodicity(magName, curPer, resObj.per, quarterSel);
+        if (!r.proceed) res = null;
+        else if (r.appliedToCurrent) { if (masterData[magName]) masterData[magName].periodicity = resObj.per; delete _perOverride[_ovKey]; }
+        else _perOverride[_ovKey] = resObj.per;
+      }
 
       if (res) {
         // சரி → QTR Issues உரிய இடத்தில் பதிவு; Invoice விவரங்கள் திறக்கும்
@@ -2629,8 +2734,8 @@
       return '<div class="cc-note" style="margin:6px 0 10px;"><b>Part ' + currentPartNo() + '</b> — ' +
         _ccEsc(monthsText(dupInfo.monthNames, cov.months)) + ' மாதங்களுக்கான QTR Issues-ஐ மட்டும் உள்ளிடவும்.</div>';
     }
-    function _qtrDefaultScaled(m) {
-      const base = _qtrDefaultFor(m);
+    function _qtrDefaultScaled(m, perOverride) {
+      const base = (perOverride !== undefined) ? (QTR_DEFAULTS[_periodicityKey(perOverride)] || 0) : _qtrDefaultFor(m);
       if (!base || cov.full || !dupInfo || !dupInfo.monthTick) return base;
       return Math.max(1, Math.round(base * cov.months.length / 3));
     }

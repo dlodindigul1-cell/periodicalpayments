@@ -106,6 +106,8 @@ def ensure_part_schema():
         with conn.cursor() as cur:
             cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS part INTEGER NOT NULL DEFAULT 1")
             cur.execute("ALTER TABLE payments ADD COLUMN IF NOT EXISTS months TEXT")
+            # Quarter வாரி Periodicity (NULL = இதழ் Master-ன் பொது Periodicity)
+            cur.execute("ALTER TABLE magazine_quarters ADD COLUMN IF NOT EXISTS periodicity TEXT")
             # படி 3: vouchers வரிசையும் எந்த Part-க்குரியது என்பதை அறிய (பழையவை எல்லாம் Part 1)
             cur.execute("ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS part INTEGER NOT NULL DEFAULT 1")
             # பழைய UNIQUE (magazine, quarter) constraint / index-ஐ கண்டறிந்து நீக்கு
@@ -224,6 +226,22 @@ def quarter_month_names(quarter):
 
 def uses_month_tick(periodicity):
     return _periodicity_key(periodicity) in MONTH_TICK_PERIODICITIES
+
+
+def effective_periodicity_map(cur, quarter):
+    """{இதழ் பெயர்: அந்த Quarter-க்குரிய Periodicity} — Quarter வாரி மதிப்பு இருந்தால் அது,
+    இல்லையெனில் இதழ் Master-ன் Periodicity."""
+    cur.execute("SELECT name, periodicity FROM magazines")
+    out = {r["name"]: (r["periodicity"] or "") for r in cur.fetchall()}
+    if quarter:
+        _mags, master = magazines_and_master_for_quarter(cur, quarter)
+        for n, d in master.items():
+            out[n] = d.get("periodicity") or out.get(n, "")
+    return out
+
+
+def periodicity_for(cur, magazine, quarter):
+    return effective_periodicity_map(cur, quarter).get(magazine, "")
 
 
 def parse_months(v):
@@ -1322,6 +1340,7 @@ def magazines_and_master_for_quarter(cur, quarter):
     cur.execute(
         """
         SELECT m.name, m.periodicity, m.language,
+               q.periodicity AS q_periodicity,
                q.quarter, q.issue_price, q.price, q.discount, q.no_of_libraries
         FROM magazine_quarters q
         JOIN magazines m ON m.id = q.magazine_id
@@ -1360,7 +1379,8 @@ def magazines_and_master_for_quarter(cur, quarter):
         master[name] = {
             "issuePrice": float(r["issue_price"] or 0),
             "noOfLibraries": int(r["no_of_libraries"] or 0),
-            "periodicity": r["periodicity"] or "",
+            "periodicity": (r["q_periodicity"] or r["periodicity"] or ""),
+            "masterPeriodicity": r["periodicity"] or "",
             "language": r["language"] or "",
             "price": float(r["price"] or 0),
             "discount": float(r["discount"] or 0),
@@ -1421,11 +1441,10 @@ def api_check_duplicate():
     try:
         with conn.cursor() as cur:
             rows = fetch_quarter_parts(cur, magazine, quarter)
-            cur.execute("SELECT periodicity FROM magazines WHERE name=%s", (magazine,))
-            mrow = cur.fetchone()
+            _per = periodicity_for(cur, magazine, quarter)
             cur.execute("SELECT non_supply FROM despatch_nonsupply WHERE quarter=%s AND magazine=%s", (quarter, magazine))
             nsrow = cur.fetchone()
-        month_tick = uses_month_tick(mrow["periodicity"] if mrow else "")
+        month_tick = uses_month_tick(_per)
         names = quarter_month_names(quarter)
         used, parts = set(), []
         for r in rows:
@@ -1489,9 +1508,7 @@ def api_add_payment():
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT periodicity FROM magazines WHERE name=%s", (magazine,))
-            mrow = cur.fetchone()
-            month_tick = uses_month_tick(mrow["periodicity"] if mrow else "")
+            month_tick = uses_month_tick(periodicity_for(cur, magazine, payload.get("quarter") or ""))
             if not month_tick:
                 full_q = True
             names = quarter_month_names(quarter)
@@ -1605,8 +1622,7 @@ def api_by_quarter():
                 (quarter,),
             )
             rows = lang_rows(cur, cur.fetchall())
-            cur.execute("SELECT name, periodicity FROM magazines")
-            ticks = {x["name"] for x in cur.fetchall() if uses_month_tick(x["periodicity"])}
+            ticks = {n for n, per in effective_periodicity_map(cur, quarter).items() if uses_month_tick(per)}
 
         by_mag = {}
         for r in rows:
@@ -1671,9 +1687,8 @@ def api_payment_parts():
                 "non_supply, net_payable, paid_amt, payment_date, voucher_no, transaction_no "
                 "FROM payments WHERE magazine=%s AND quarter=%s ORDER BY part", (magazine, quarter))
             rows = cur.fetchall()
-            cur.execute("SELECT periodicity FROM magazines WHERE name=%s", (magazine,))
-            m = cur.fetchone()
-        month_tick = uses_month_tick(m["periodicity"] if m else "")
+            _per = periodicity_for(cur, magazine, quarter)
+        month_tick = uses_month_tick(_per)
         names = quarter_month_names(quarter)
         used, parts = set(), []
         for r in rows:
@@ -1725,9 +1740,7 @@ def api_payment_part_months():
     conn = get_conn()
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT periodicity FROM magazines WHERE name=%s", (magazine,))
-            m = cur.fetchone()
-            if not uses_month_tick(m["periodicity"] if m else ""):
+            if not uses_month_tick(periodicity_for(cur, magazine, quarter)):
                 return jsonify({"success": False, "message": "இந்த இதழ் வகைக்கு மாத வாரியாகப் பிரிக்கும் வசதி இல்லை."}), 400
             rows = fetch_quarter_parts(cur, magazine, quarter)
             me = next((r for r in rows if r["part"] == part), None)
@@ -2207,8 +2220,8 @@ def api_group_status():
                 )
                 for r in cur.fetchall():
                     pay.setdefault(r["magazine"], []).append(r)
-                cur.execute("SELECT name, periodicity FROM magazines WHERE name = ANY(%s)", (list(names),))
-                ticks = {x["name"] for x in cur.fetchall() if uses_month_tick(x["periodicity"])}
+                _pm = effective_periodicity_map(cur, quarter)
+                ticks = {n for n in names if uses_month_tick(_pm.get(n, ""))}
                 # carry-forward இதழ்கள் குழுவில் வரக்கூடாது — அந்த Quarter-க்கு நேரடி Master பதிவு உள்ளவை மட்டும்
                 in_quarter = get_direct_master_magazines_for_quarter(cur, quarter)
 
@@ -2369,6 +2382,8 @@ _CSV_HEADERS = {
 
 
 def upsert_magazine_base(cur, name, language, periodicity):
+    cur.execute("SELECT id, periodicity FROM magazines WHERE name=%s", (name,))
+    _old = cur.fetchone()
     cur.execute(
         """
         INSERT INTO magazines (name, language, periodicity)
@@ -2379,7 +2394,11 @@ def upsert_magazine_base(cur, name, language, periodicity):
         """,
         (name, language, periodicity),
     )
-    return cur.fetchone()["id"]
+    _id = cur.fetchone()["id"]
+    if _old and (_old["periodicity"] or "") != (periodicity or ""):
+        # Master-ல் நேரடியாக Periodicity மாற்றினால் — Quarter வாரி மாற்றங்கள் நீங்கி எல்லா Quarter-க்கும் இதுவே பொருந்தும்
+        cur.execute("UPDATE magazine_quarters SET periodicity=NULL WHERE magazine_id=%s", (_id,))
+    return _id
 
 
 def upsert_quarter_rows(cur, magazine_id, quarters, price, discount, issue_price, no_of_libraries):
@@ -2697,6 +2716,7 @@ def api_admin_bulk_quarters_apply():
                     stats["existingMags"] += 1
                     if update_periodicity and periodicity and (m["periodicity"] or "") != periodicity:
                         cur.execute("UPDATE magazines SET periodicity=%s WHERE id=%s", (periodicity, mid))
+                        cur.execute("UPDATE magazine_quarters SET periodicity=NULL WHERE magazine_id=%s", (mid,))
                         stats["periodicityUpdated"] += 1
                 elif action == "new":
                     cur.execute("SELECT id FROM magazines WHERE name=%s", (excel_name,))
@@ -2920,6 +2940,76 @@ def api_admin_update_magazine():
         if skipped:
             msg += " பதிவுள்ள Quarter-கள் (%s) தொடப்படவில்லை." % ", ".join(skipped)
         return jsonify({"success": True, "message": msg})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/magazine-periodicity")
+def api_magazine_periodicity_get():
+    """இதழின் Master Periodicity + ஒவ்வொரு Quarter-க்குமான Periodicity (QTR Issues அட்டைக்காக)."""
+    name = request.args.get("name", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, periodicity FROM magazines WHERE name=%s", (name,))
+            m = cur.fetchone()
+            if not m:
+                return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை."}), 404
+            cur.execute("SELECT quarter, periodicity FROM magazine_quarters WHERE magazine_id=%s ORDER BY quarter", (m["id"],))
+            rows = cur.fetchall()
+        base = m["periodicity"] or ""
+        return jsonify({"success": True, "master": base,
+                        "isAdmin": (current_user() or {}).get("role") == "admin",
+                        "quarters": [{"quarter": r["quarter"], "periodicity": (r["periodicity"] or base)} for r in rows]})
+    finally:
+        conn.close()
+
+
+@app.route("/api/magazine-periodicity", methods=["POST"])
+def api_magazine_periodicity_set():
+    """இதழ் Master-ல் Periodicity மாற்ற — தேர்ந்த Quarter-களுக்கு மட்டும்.
+    body: {name, periodicity, quarters:[...]}
+    தேர்ந்த Quarter-கள் புதிய மதிப்பைப் பெறும்; மற்ற Quarter-கள் தற்போதைய மதிப்பையே தக்கவைக்கும்;
+    புதிய Quarter-கள் சேர்க்கும்போது அண்மைய Quarter-ன் மதிப்பு தொடரும். admin மட்டும்."""
+    if (current_user() or {}).get("role") != "admin":
+        return jsonify({"success": False, "message": "Master மாற்ற admin அனுமதி தேவை."}), 403
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    new_per = (data.get("periodicity") or "").strip()
+    quarters = {str(q).strip() for q in (data.get("quarters") or []) if str(q).strip()}
+    if not name or not new_per or not quarters:
+        return jsonify({"success": False, "message": "இதழ், Periodicity மற்றும் குறைந்தது ஒரு Quarter அவசியம்."}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, periodicity FROM magazines WHERE name=%s", (name,))
+            m = cur.fetchone()
+            if not m:
+                return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை."}), 404
+            base = m["periodicity"] or ""
+            cur.execute("SELECT quarter, periodicity FROM magazine_quarters WHERE magazine_id=%s ORDER BY quarter", (m["id"],))
+            rows = cur.fetchall()
+            have = {r["quarter"] for r in rows}
+            missing = sorted(quarters - have)
+            changed, latest_val = [], base
+            for r in rows:
+                cur_val = r["periodicity"] or base
+                val = new_per if r["quarter"] in quarters else cur_val
+                cur.execute("UPDATE magazine_quarters SET periodicity=%s WHERE magazine_id=%s AND quarter=%s",
+                            (val, m["id"], r["quarter"]))
+                if r["quarter"] in quarters and cur_val != new_per:
+                    changed.append(r["quarter"])
+                latest_val = val
+            if rows:
+                cur.execute("UPDATE magazines SET periodicity=%s WHERE id=%s", (latest_val, m["id"]))
+            conn.commit()
+        msg = "'%s': Periodicity '%s' — %d Quarter-க்கு மாற்றப்பட்டது." % (name, new_per, len(changed))
+        if missing:
+            msg += " Master பதிவு இல்லாதவை: " + ", ".join(missing)
+        return jsonify({"success": True, "message": msg, "changed": changed, "missing": missing})
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
@@ -6587,7 +6677,7 @@ def api_fx_to_part():
             m = cur.fetchone()
             if not m:
                 return jsonify({"success": False, "message": "'%s' Master-ல் இல்லை." % to}), 400
-            if not uses_month_tick(m["periodicity"]):
+            if not uses_month_tick(periodicity_for(cur, to, q)):
                 return jsonify({"success": False, "message":
                                 "'%s' மாத வாரியாகப் பிரித்து அனுப்பும் வகை இதழ் அல்ல (Monthly / Fortnightly / Weekly / Twice Weekly / Triweekly மட்டும்)." % to}), 400
             cur.execute("SELECT id, part, months FROM payments WHERE magazine=%s AND quarter=%s AND id<>%s ORDER BY part",
