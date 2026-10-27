@@ -876,6 +876,14 @@
         </div>
       </div>
 
+      <div id="groupInvoiceCard" style="display:none; margin-bottom:20px;">
+        <div class="card" style="border:2px solid #4a7fc1; background:linear-gradient(135deg,#f5f9ff,#eaf2fd);">
+          <div class="card-title" style="color:#1f4e8c;">🏢 அதே Vendor Code இதழ்களின் இன்வாய்ஸ்கள் — இந்த Quarter</div>
+          <div id="groupInvoiceHint" style="font-size:13px;color:var(--muted);margin-bottom:10px;"></div>
+          <div id="groupInvoiceList" style="display:grid; gap:10px;"></div>
+        </div>
+      </div>
+
       <div class="card">
         <div class="card-title">இன்வாய்ஸ் விவரம்</div>
         <div id="invoiceDetailsLockedNote" style="font-size:13px; color:#a32020; font-weight:600; margin-bottom:14px;">
@@ -1792,6 +1800,7 @@
   const H = {
     getAllData: q => get('/api/magazines?' + Q({ quarter: q || '' }), d => Object.assign({ despatch: {} }, d)),
     checkDuplicate: (m, q) => get('/api/payments/check-duplicate?' + Q({ magazine: m, quarter: q })),
+    groupInvoices: (m, q) => get('/api/payments/group-invoices?' + Q({ magazine: m, quarter: q })),
     addPayment: (p, isUpdate) => soft('/api/payments' + (isUpdate ? '?update=true' : ''), postOpt(p)),
     getMagazinesByQuarter: q => get('/api/payments/by-quarter?' + Q({ quarter: q })),
     getNonSupplyFromDespatch: (q, m) => get('/api/despatch/non-supply?' + Q({ quarter: q, magazine: m })),
@@ -2120,6 +2129,7 @@
       const _ib = document.getElementById('invoiceBtn'); if (_ib) _ib.disabled = false;
       document.getElementById('existingInvoiceCard').style.display = 'none';
       document.getElementById('appendBtn').style.display = 'none';
+      hideGroupInvoices();
       isDuplicateExists = false;
       resetCoverageState();
       resetQtrIssuesAndLock();
@@ -2153,11 +2163,67 @@
       loadAllData(quarter);
     }
 
+    // ─── ஒரே Vendor Code குழு இன்வாய்ஸ்கள்: பட்டியலிட்டு, தேர்ந்தால் Invoice No/Date நிரம்பும் (திருத்தலாம்) ───
+    let _grpInvoices = [];
+    function hideGroupInvoices() {
+      _grpInvoices = [];
+      const c = document.getElementById('groupInvoiceCard');
+      if (c) { c.style.display = 'none'; document.getElementById('groupInvoiceList').innerHTML = ''; }
+    }
+    async function loadGroupInvoices(magName) {
+      hideGroupInvoices();
+      const quarter = document.getElementById('quarter').value;
+      if (!magName || !quarter) return;
+      const card = document.getElementById('groupInvoiceCard');
+      const hint = document.getElementById('groupInvoiceHint');
+      const list = document.getElementById('groupInvoiceList');
+      let res;
+      try {
+        res = await new Promise((ok, bad) => {
+          google.script.run.withSuccessHandler(ok).withFailureHandler(bad).groupInvoices(magName, quarter);
+        });
+      } catch (e) {
+        if (document.getElementById('magazine').value !== magName) return;
+        hint.innerHTML = '<span style="color:#a32020;font-weight:700;">⚠️ குழு இன்வாய்ஸ் பட்டியலை ஏற்ற முடியவில்லை: ' + _ccEsc((e && e.message) || e) + '</span>';
+        list.innerHTML = ''; card.style.display = 'block';
+        return;
+      }
+      if (document.getElementById('magazine').value !== magName) return;
+      _grpInvoices = (res && res.invoices) || [];
+      if (!res || !res.vendorCode) {
+        hint.innerHTML = '<span style="color:#a32020;font-weight:700;">⚠️ இந்த இதழுக்கு Vendor Code இல்லை — குழு இன்வாய்ஸ்களைக் காட்ட இயலாது.</span>';
+        list.innerHTML = ''; card.style.display = 'block';
+        return;
+      }
+      if (!_grpInvoices.length) {
+        hint.textContent = 'Vendor Code ' + res.vendorCode + ' — இந்த Quarter-ல் அதே Code உள்ள வேறு இதழுக்கு இன்வாய்ஸ் இன்னும் பதிவாகவில்லை.';
+        list.innerHTML = ''; card.style.display = 'block';
+        return;
+      }
+      hint.textContent = 'Vendor Code ' + res.vendorCode + ' — பொருத்தமானதைத் தேர்ந்தால் Invoice Number / Date நிரம்பும்; பின்னும் திருத்தலாம்.';
+      list.innerHTML = _grpInvoices.map((g, i) =>
+        '<div style="background:#fff;border:1.5px solid #9dbbe3;border-radius:10px;padding:12px 14px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;">' +
+          '<div><div style="font-size:15px;font-weight:700;color:#0f2347;">' + _ccEsc(g.invoiceNo) +
+            ' <span style="font-weight:500;color:var(--muted);font-size:13px;">· ' + _ccEsc(g.invoiceDate || '—') + '</span></div>' +
+            '<div style="font-size:12.5px;color:var(--muted);margin-top:3px;">' + g.magazines.map(_ccEsc).join(', ') + '</div></div>' +
+          '<button type="button" class="btn-secondary" style="padding:6px 14px;" onclick="useGroupInvoice(' + i + ')">📋 இதைப் பயன்படுத்து</button></div>'
+      ).join('');
+      card.style.display = 'block';
+    }
+    function useGroupInvoice(i) {
+      const g = _grpInvoices[i]; if (!g) return;
+      const no = document.getElementById('invoiceNo'), dt = document.getElementById('invoiceDate');
+      no.value = g.invoiceNo; dt.value = g.invoiceDateISO || '';
+      document.getElementById('pK').textContent = g.invoiceNo || '—';
+      setStatus('status', 'success', '✅ இன்வாய்ஸ் விவரம் நிரப்பப்பட்டது — தேவைப்பட்டால் திருத்தலாம்.');
+    }
+
     async function onMagazineChangeInvoiceForm() {
       resetQtrIssuesAndLock();
       resetCoverageState();
       document.getElementById('existingInvoiceCard').style.display = 'none';
       document.getElementById('appendBtn').style.display = 'none';
+      hideGroupInvoices();
       const magName = document.getElementById('magazine').value;
       const qtrInput = document.getElementById('qtrIssues');
       const invBtn = document.getElementById('invoiceBtn');
@@ -2174,6 +2240,7 @@
       loadMagazineDetails();
       await checkDuplicateOnSelect();
       if (document.getElementById('magazine').value !== magName) return;   // இடையில் வேறு இதழ் தேர்ந்தால்
+      loadGroupInvoices(magName);
       const info = dupInfo || {};
       if (info.exists && (info.complete || !info.monthTick)) {
         // Quarter முழுமையாகப் பதிவாகிவிட்டது (அல்லது மாதப் பிரிப்பு இல்லாத இதழ்) → Update மட்டும்
