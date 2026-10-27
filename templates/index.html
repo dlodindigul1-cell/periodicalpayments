@@ -6527,7 +6527,26 @@ function _pdfHelper(fnName, targetId) {
       const name = document.getElementById('masterMagName').value.trim();
       const quarters = Array.from(document.querySelectorAll('#masterMagQuarterChecks input[type=checkbox]:checked:not(:disabled)')).map(c => c.value);
       if (!name) { setStatus('masterMagFormStatus', 'error', '❌ இதழ் பெயர் அவசியம்.'); return; }
-      if (!quarters.length) { setStatus('masterMagFormStatus', 'error', '❌ புதிதாகச் சேர்க்க குறைந்தது ஒரு Quarter-ஐ டிக் செய்யவும். (🔒 பதிவுள்ள Quarter-களை மாற்ற கீழே உள்ள "பழைய Quarter மாற்று" பகுதியைப் பயன்படுத்தவும்.)'); return; }
+      if (!quarters.length) {
+        // Quarter டிக் செய்யவில்லை → மொழி / Periodicity மட்டும் புதுப்பிக்கப்படும் (விலை, Quarter பதிவுகள் மாறாது)
+        const lang = document.getElementById('masterMagLanguage').value.trim();
+        const per  = document.getElementById('masterMagPeriodicity').value.trim();
+        const okLP = await showConfirmCard({
+          icon: 'ℹ️',
+          title: 'மொழி / Periodicity மட்டும் புதுப்பிக்கப்படும்',
+          subtitle: name,
+          html: '<div class="cc-list">' +
+                  '<div class="cc-row"><span>மொழி:</span><b>' + _ccEsc(lang || '—') + '</b></div>' +
+                  '<div class="cc-row"><span>Periodicity:</span><b>' + _ccEsc(per || '—') + '</b></div>' +
+                '</div>' +
+                '<div class="cc-ask">எந்த Quarter-ம் சேர்க்கப்படாது; ஏற்கனவே உள்ள விலை / நூலக எண்ணிக்கை மாறாது.</div>',
+          buttons: [
+            { label: 'ரத்து', value: null, style: 'ghost' },
+            { label: 'சரி, புதுப்பி', value: 'ok', style: 'primary' }
+          ]
+        });
+        if (okLP !== 'ok') return;
+      }
       const nPrice = parseFloat(document.getElementById('masterMagPrice').value) || 0;
       const nDisc  = parseFloat(document.getElementById('masterMagDiscount').value) || 0;
       const nIssue = parseFloat(document.getElementById('masterMagIssuePrice').value) || 0;
@@ -6579,7 +6598,7 @@ function _pdfHelper(fnName, targetId) {
         if (result.success) {
           quarters.forEach(q => { window._masterEditQuarters[q] = { price: nPrice, discount: nDisc, issuePrice: nIssue, noOfLibraries: nLibs }; });
           applyMasterQuarterLocks();
-          setStatus('masterMagFormStatus', 'success', '✅ ' + result.message);
+          setStatus('masterMagFormStatus', 'success', '✅ ' + (quarters.length ? result.message : "'" + _ccEsc(name) + "' — மொழி / Periodicity புதுப்பிக்கப்பட்டது."));
           loadMasterMagazinesList();
         } else {
           setStatus('masterMagFormStatus', 'error', '❌ ' + result.message);
