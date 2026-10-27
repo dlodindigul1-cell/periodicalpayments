@@ -1480,6 +1480,49 @@ def api_check_duplicate():
 
 
 # --------------------------------------------------------------------------- #
+# 2b) ஒரே Vendor Code குழுவின் இன்வாய்ஸ்கள் — இன்வாய்ஸ் பதிவில் தேர்வுக்கு
+# --------------------------------------------------------------------------- #
+@app.route("/api/payments/group-invoices")
+def api_group_invoices():
+    """தேர்ந்த இதழின் Vendor Code-ஐப் பகிரும் மற்ற இதழ்களுக்கு, அதே Quarter-ல் ஏற்கனவே பதிவான
+    இன்வாய்ஸ்கள் (Invoice No + Date வாரியாகத் தொகுத்து). இதழ் தானே சேர்க்கப்படாது."""
+    magazine = request.args.get("magazine", "").strip()
+    quarter = request.args.get("quarter", "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (magazine,))
+            m = cur.fetchone()
+            code = norm_code(m["tnpfts_code"]) if m else ""
+            if not code or not quarter:
+                return jsonify({"success": True, "vendorCode": code, "invoices": []})
+            cur.execute(
+                """SELECT p.magazine, p.part, p.invoice_no, p.invoice_date
+                   FROM payments p
+                   JOIN magazines mg ON mg.name = p.magazine
+                   WHERE p.quarter=%s AND p.magazine<>%s
+                     AND UPPER(TRIM(COALESCE(mg.tnpfts_code,''))) = %s
+                     AND COALESCE(TRIM(p.invoice_no),'')<>''
+                   ORDER BY p.invoice_date NULLS LAST, p.magazine, p.part""",
+                (quarter, magazine, code),
+            )
+            rows = cur.fetchall()
+        groups = {}
+        for r in rows:
+            no = (r["invoice_no"] or "").strip()
+            iso = r["invoice_date"].isoformat() if r["invoice_date"] else ""
+            g = groups.setdefault((no, iso), {
+                "invoiceNo": no, "invoiceDate": fmt_date(r["invoice_date"]),
+                "invoiceDateISO": iso, "magazines": [],
+            })
+            if r["magazine"] not in g["magazines"]:
+                g["magazines"].append(r["magazine"])
+        return jsonify({"success": True, "vendorCode": code, "invoices": list(groups.values())})
+    finally:
+        conn.close()
+
+
+# --------------------------------------------------------------------------- #
 # 3) addPayment (add / update) — Part ஆதரவுடன்
 # --------------------------------------------------------------------------- #
 @app.route("/api/payments", methods=["POST"])
