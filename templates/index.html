@@ -2101,6 +2101,7 @@
       hideAll();
       document.getElementById('invoiceForm').style.display = 'block';
       // preview card reset
+      hideGroupInvoices();
       document.getElementById('existingInvoiceCard').style.display = 'none';
       document.getElementById('appendBtn').style.display = 'none';
       document.getElementById('invoiceBtn').innerHTML = '✅ இன்வாய்ஸ் பதிவு செய்';
@@ -2156,6 +2157,7 @@
       const _ib = document.getElementById('invoiceBtn'); if (_ib) _ib.disabled = false;
       document.getElementById('existingInvoiceCard').style.display = 'none';
       document.getElementById('appendBtn').style.display = 'none';
+      hideGroupInvoices();
       isDuplicateExists = false;
       resetCoverageState();
       resetQtrIssuesAndLock();
@@ -3195,6 +3197,7 @@
           document.getElementById('magazine').value = '';
           document.getElementById('qtrIssues').disabled = true;
           lockInvoiceFields();
+          hideGroupInvoices();
           document.getElementById('existingInvoiceCard').style.display = 'none';
           document.getElementById('appendBtn').style.display = 'none';
           document.getElementById('invoiceBtn').innerHTML = '✅ இன்வாய்ஸ் பதிவு செய்';
