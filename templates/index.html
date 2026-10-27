@@ -855,6 +855,15 @@
           <div class="lang-hint">Quarter தேர்ந்தெடுத்தவுடன் மொழியைத் தேர்ந்தெடுக்கவும்; அதன் பின்னரே அந்த மொழிக்குரிய இதழ்கள் பட்டியலில் வரும்.</div>
         </div>
         <div class="field">
+          <label style="display:flex; align-items:center; gap:8px; cursor:pointer; font-weight:700; color:var(--navy);">
+            <input type="checkbox" id="invUpdateMode" onchange="onInvUpdateModeChange()" disabled style="width:auto; margin:0;">
+            ☑ பதிவான இன்வாய்ஸை Update செய்ய
+          </label>
+          <div id="invUpdateHint" style="font-size:12px; color:var(--muted); margin-top:4px;">
+            இயல்பாக, இந்த Quarter-ல் இன்வாய்ஸ் பதிவாகாத இதழ்கள் மட்டுமே பட்டியலில் வரும். பதிவான இன்வாய்ஸைத் திருத்த இதை டிக் செய்யவும் (தொகை வழங்கப்பட்டவை வராது — அவற்றை Master → பழைய Payment தரவு திருத்து-ல் மாற்றவும்).
+          </div>
+        </div>
+        <div class="field">
           <label>3. பருவ இதழ் பெயர் <span class="req">*</span></label>
           <select id="magazine" onchange="onMagazineChangeInvoiceForm()" disabled>
             <option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>
@@ -2111,6 +2120,7 @@
       // 🔥 Quarter-first flow — Quarter தேர்ந்தெடுக்கும் வரை இதழ் dropdown disabled
       document.getElementById('quarter').value = '';
       LangSel.reset('invoiceForm'); LangSel.enable('invoiceForm', false);
+      resetInvUpdateMode(false);
       const magSel = document.getElementById('magazine');
       magSel.innerHTML = '<option value="">-- முதலில் Quarter தேர்ந்தெடுக்கவும் --</option>';
       magSel.disabled = true;
@@ -2135,6 +2145,7 @@
       resetCoverageState();
       resetQtrIssuesAndLock();
 
+      resetInvUpdateMode(false);             // Quarter மாறினால் Update டிக் நீங்கும் (மொழி தேர்ந்ததும் மீண்டும் இயங்கும்)
       LangSel.reset('invoiceForm');          // Quarter மாறினால் மொழியை மீண்டும் தேர்ந்தெடுக்க வேண்டும்
       if (!quarter) {
         LangSel.enable('invoiceForm', false);
@@ -2148,8 +2159,29 @@
       magSel.disabled = true;
     }
 
+    // ☑ பதிவான இன்வாய்ஸை Update செய்ய — டிக் பெட்டி
+    function isInvUpdateMode() {
+      const c = document.getElementById('invUpdateMode');
+      return !!(c && c.checked);
+    }
+    function resetInvUpdateMode(enable) {
+      const c = document.getElementById('invUpdateMode');
+      if (!c) return;
+      c.checked = false;
+      c.disabled = !enable;
+    }
+    function onInvUpdateModeChange() {
+      reloadInvoiceMagazineList();         // படிவத்தை மீட்டமைத்து, பட்டியலை (புதிய / Update முறைக்கு) மறுஏற்று
+    }
+
     // 🌐 மொழி தேர்ந்தெடுத்ததும் — அந்த மொழிக்குரிய இதழ்களை மட்டும் ஏற்று
     function onLanguageChangeInvoiceForm() {
+      const quarter = document.getElementById('quarter').value;
+      if (!quarter || !LangSel.get('invoiceForm')) return;
+      resetInvUpdateMode(true);            // மொழி மாறினால் Update டிக் நீங்கும்; மொழி தேர்ந்ததும் டிக் பெட்டி இயங்கும்
+      reloadInvoiceMagazineList();
+    }
+    function reloadInvoiceMagazineList() {
       const quarter = document.getElementById('quarter').value;
       const magSel = document.getElementById('magazine');
       if (!quarter || !LangSel.get('invoiceForm')) return;
@@ -2231,7 +2263,7 @@
       const invBtn = document.getElementById('invoiceBtn');
       if (invBtn) invBtn.disabled = false;
       if (!magName) { qtrInput.disabled = true; return; }
-      if (masterData[magName] && masterData[magName].inQuarter === false) {
+      if (!isInvUpdateMode() && masterData[magName] && masterData[magName].inQuarter === false) {
         // Master-ல் இந்த Quarter டிக் செய்யப்படாத இதழ் — Invoice பதிவுக்கு அனுமதி இல்லை
         qtrInput.disabled = true;
         if (invBtn) invBtn.disabled = true;
@@ -2244,6 +2276,18 @@
       if (document.getElementById('magazine').value !== magName) return;   // இடையில் வேறு இதழ் தேர்ந்தால்
       loadGroupInvoices(magName);
       const info = dupInfo || {};
+      if (isInvUpdateMode()) {
+        // Update முறை: தொகை வழங்கப்படாத பதிவை நேரடியாகத் திருத்த; பல இருந்தால் மேலே தேர்ந்தெடுக்க
+        const _unpaid = (info.parts || []).filter(p => !p.paid);
+        if (!info.exists || !_unpaid.length) {
+          setStatus('status', 'error', '⚠️ இந்த இதழுக்கு Update செய்யக்கூடிய (தொகை வழங்கப்படாத) இன்வாய்ஸ் இல்லை.');
+        } else if (_unpaid.length === 1) {
+          startEditPart(_unpaid[0].part);
+        } else {
+          setStatus('status', 'error', '⚠️ பல Part உள்ளன — மேலே தேவையான Part-ல் "Update செய்" என்பதைக் கிளிக் செய்யவும்.');
+        }
+        return;
+      }
       if (info.exists && (info.complete || !info.monthTick)) {
         // Quarter முழுமையாகப் பதிவாகிவிட்டது (அல்லது மாதப் பிரிப்பு இல்லாத இதழ்) → Update மட்டும்
         if (info.parts.length === 1) { startEditPart(info.parts[0].part); }
@@ -2736,16 +2780,28 @@
         const sel = document.getElementById('magazine');
         sel.innerHTML = '<option value="">-- இதழைத் தேர்ந்தெடுக்கவும் --</option>';
         // இந்த Quarter-க்கு Master-ல் டிக் செய்யப்பட்ட இதழ்கள் மட்டுமே பட்டியலில் வரும்
-        const listed = magazines.filter(m => !(masterData[m] && masterData[m].inQuarter === false));
+        const _updMode = isInvUpdateMode();
+        const listed = magazines.filter(m => {
+          const d = masterData[m] || {};
+          if (_updMode) return d.canUpdate === true;                        // Update முறை: தொகை வழங்கப்படாத பதிவு உள்ளவை மட்டும்
+          return d.inQuarter !== false && d.invoiceDone !== true;          // புதிய பதிவு: Master-ல் டிக் + இன்வாய்ஸ் முடியாதவை மட்டும்
+        });
         listed.forEach(m => {
           const o = document.createElement('option');
           o.value = m; o.textContent = m;
           sel.appendChild(o);
         });
         if (listed.length === 0) {
-          setStatus('status', 'error', '⚠️ இந்த Quarter-க்கு Master-ல் டிக் செய்யப்பட்ட இதழ் எதுவும் இல்லை. Master → இதழ் திருத்து-ல் இந்த Quarter-ஐ டிக் செய்யவும்.');
+          if (_updMode) {
+            setStatus('status', 'error', '⚠️ இந்த Quarter-ல் Update செய்யக்கூடிய (தொகை வழங்கப்படாத) இன்வாய்ஸ் எதுவும் இல்லை.');
+          } else {
+            const _anyInQ = magazines.some(m => !(masterData[m] && masterData[m].inQuarter === false));
+            setStatus('status', _anyInQ ? 'success' : 'error', _anyInQ
+              ? '✅ இந்த Quarter-ன் அனைத்து இதழ்களுக்கும் இன்வாய்ஸ் பதிவாகிவிட்டது. திருத்த "பதிவான இன்வாய்ஸை Update செய்ய" என்பதை டிக் செய்யவும்.'
+              : '⚠️ இந்த Quarter-க்கு Master-ல் டிக் செய்யப்பட்ட இதழ் எதுவும் இல்லை. Master → இதழ் திருத்து-ல் இந்த Quarter-ஐ டிக் செய்யவும்.');
+          }
         } else {
-          setStatus('status', 'success', '✅ ' + listed.length + ' இதழ்கள் ஏற்றப்பட்டன (' + selectedQuarter + ')!');
+          setStatus('status', 'success', '✅ ' + listed.length + ' இதழ்கள் ஏற்றப்பட்டன (' + selectedQuarter + ')' + (_updMode ? ' — Update முறை' : '') + '!');
         }
       } catch(e) {
         setStatus('status', 'error', '❌ பிழை: ' + e.message);
@@ -3129,7 +3185,7 @@
       }
       showLoading(btn, 'Saving...');
       const magName      = document.getElementById('magazine').value;
-      if (masterData[magName] && masterData[magName].inQuarter === false) {
+      if (!isInvUpdateMode() && masterData[magName] && masterData[magName].inQuarter === false) {
         setStatus('status', 'error', '⛔ இந்த இதழ் இந்த quarter-க்கு உண்டானதுதானா என்பதையும், விலை, நூலக எண்ணிக்கை, கழிவு ஆகியவற்றையும் சரிபார்த்த பின்னரே இன்வாய்ஸ் பதிவு செய்ய இயலும்.');
         hideLoading(btn); return;
       }

@@ -1402,6 +1402,32 @@ def api_magazines():
         with conn.cursor() as cur:
             if quarter:
                 magazines, master = magazines_and_master_for_quarter(cur, quarter)
+                # இன்வாய்ஸ் பதிவு நிலை (இந்த Quarter) — புதிய புலங்கள் மட்டும்:
+                #   invoiceDone = இன்வாய்ஸ் முழுமையாகப் பதிவாகிவிட்டது (புதிய பதிவுப் பட்டியலிலிருந்து மறையும்)
+                #   hasInvoice  = ஏதேனும் பதிவு உள்ளது
+                #   canUpdate   = தொகை வழங்கப்படாத (Paid அல்லாத) பதிவு உள்ளது → "பதிவான இன்வாய்ஸ் Update" பட்டியலில் வரும்
+                cur.execute(
+                    "SELECT magazine, months, paid_amt FROM payments WHERE quarter=%s",
+                    (quarter,),
+                )
+                _state = {}
+                for _r in cur.fetchall():
+                    st = _state.setdefault(_r["magazine"], {"months": set(), "n": 0, "unpaid": 0})
+                    st["n"] += 1
+                    st["months"] |= set(parse_months(_r["months"]))
+                    if float(_r["paid_amt"] or 0) <= 0:
+                        st["unpaid"] += 1
+                for _name, _d in master.items():
+                    st = _state.get(_name)
+                    if not st:
+                        _d["invoiceDone"] = False
+                        _d["hasInvoice"] = False
+                        _d["canUpdate"] = False
+                        continue
+                    _tick = uses_month_tick(_d.get("periodicity"))
+                    _d["invoiceDone"] = (st["months"] >= {1, 2, 3}) if _tick else True
+                    _d["hasInvoice"] = True
+                    _d["canUpdate"] = st["unpaid"] > 0
             else:
                 # quarter குறிப்பிடாவிட்டால் — அனைத்து இதழ்களும் (price 0-உடன்)
                 cur.execute(
