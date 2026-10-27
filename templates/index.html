@@ -2297,7 +2297,7 @@
 
     // periodicity அடிப்படையிலான இயல்புநிலை QTR Issues
     // பெயர் பொருத்தம்: எழுத்து வேறுபாடு / இடைவெளி / புள்ளி / '-' பாராது (Fortnightly, fortnightly, FORT NIGHTLY, Fortnightly. எல்லாம் ஒன்றே)
-    const QTR_DEFAULTS = { monthly:3, fortnightly:6, fortnight:6, weekly:12, twiceweekly:12, bimonthly:2,
+    const QTR_DEFAULTS = { monthly:3, fortnightly:6, fortnight:6, weekly:12, twiceweekly:24, bimonthly:2,
                            yearly:1, quarterly:1, semiannually:1, triweekly:28 };
     const PERIODICITY_OPTIONS = ['Weekly', 'Twice Weekly', 'Fortnightly', 'Monthly', 'Bimonthly', 'Quarterly', 'Semiannually', 'Yearly', 'Triweekly'];
     let _perOverride = {};   // 'இதழ்|Quarter' -> இந்த இன்வாய்ஸுக்கு மட்டும் தேர்ந்த Periodicity (Master மாறாது)
