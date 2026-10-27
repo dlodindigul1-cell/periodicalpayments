@@ -1482,6 +1482,13 @@ def api_check_duplicate():
 # --------------------------------------------------------------------------- #
 # 2b) ஒரே Vendor Code குழுவின் இன்வாய்ஸ்கள் — இன்வாய்ஸ் பதிவில் தேர்வுக்கு
 # --------------------------------------------------------------------------- #
+def vendor_code_key(code):
+    """Vendor Code ஒப்பீட்டுக்கு: எல்லா இடைவெளிகளும் (non-breaking உட்பட) நீக்கி, பெரிய எழுத்தாக்கி,
+    வேறு வகைக் கோடுகளை '-' ஆக்கும். எ.கா '57048- V', '57048 -v', '57048–V' எல்லாம் '57048-V'."""
+    c = re.sub(r"[\s\u00a0\u200b\ufeff]+", "", (code or "")).upper()
+    return re.sub(r"[\u2010-\u2015\u2212]", "-", c)
+
+
 @app.route("/api/payments/group-invoices")
 def api_group_invoices():
     """தேர்ந்த இதழின் Vendor Code-ஐப் பகிரும் மற்ற இதழ்களுக்கு, அதே Quarter-ல் ஏற்கனவே பதிவான
@@ -1493,20 +1500,20 @@ def api_group_invoices():
         with conn.cursor() as cur:
             cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (magazine,))
             m = cur.fetchone()
-            code = norm_code(m["tnpfts_code"]) if m else ""
+            code = vendor_code_key(m["tnpfts_code"]) if m else ""
             if not code or not quarter:
                 return jsonify({"success": True, "vendorCode": code, "invoices": []})
             cur.execute(
-                """SELECT p.magazine, p.part, p.invoice_no, p.invoice_date
+                """SELECT p.magazine, p.part, p.invoice_no, p.invoice_date, mg.tnpfts_code
                    FROM payments p
                    JOIN magazines mg ON mg.name = p.magazine
                    WHERE p.quarter=%s AND p.magazine<>%s
-                     AND UPPER(TRIM(COALESCE(mg.tnpfts_code,''))) = %s
+                     AND COALESCE(TRIM(mg.tnpfts_code),'')<>''
                      AND COALESCE(TRIM(p.invoice_no),'')<>''
                    ORDER BY p.invoice_date NULLS LAST, p.magazine, p.part""",
-                (quarter, magazine, code),
+                (quarter, magazine),
             )
-            rows = cur.fetchall()
+            rows = [r for r in cur.fetchall() if vendor_code_key(r["tnpfts_code"]) == code]
         groups = {}
         for r in rows:
             no = (r["invoice_no"] or "").strip()
