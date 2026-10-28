@@ -810,6 +810,14 @@
             <span>இதழ் &amp; Vendor Master</span>
           </div>
         </div>
+        <div class="menu-card" id="menuLibrarianCard" style="display:none;" onclick="location.href='/admin/librarian'">
+          <div class="menu-icon">📖</div>
+          <div class="menu-info">
+            <div class="num">10</div>
+            <h3>நூலகர் பதிவு</h3>
+            <span>இதழ் வருகைப் பதிவு &amp; Quarter ஏற்றுதல்</span>
+          </div>
+        </div>
       </div>
       </div><!-- /home-left -->
 
@@ -7490,6 +7498,8 @@ async function loadMeAndApplyRole() {
     document.getElementById('userChip').style.display = d.username ? 'inline-block' : 'none';
     const mc = document.getElementById('menuMasterCard');
     if (mc) mc.style.display = (d.role === 'admin') ? '' : 'none';
+    const lc = document.getElementById('menuLibrarianCard');
+    if (lc) lc.style.display = (d.role === 'admin') ? '' : 'none';
     const rc = document.getElementById('mailResetCard');
     if (rc) rc.style.display = (d.role === 'admin') ? '' : 'none';
   } catch (e) { /* புறக்கணி */ }

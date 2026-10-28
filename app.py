@@ -447,8 +447,8 @@ LOGIN_HTML = """<!DOCTYPE html>
   .emb{font-size:44px;text-align:center} h1{font-size:19px;text-align:center;color:#0f2347;margin:8px 0 2px}
   p.sub{text-align:center;color:#55607a;font-size:13px;margin:0 0 22px}
   label{display:block;font-size:13px;font-weight:600;color:#1e4d8c;margin:14px 0 6px}
-  input{width:100%;padding:12px 14px;border:1.5px solid #c5cee3;border-radius:10px;font-size:15px;outline:none;background:#fff;color:#111}
-  input:focus{border-color:#1e4d8c;box-shadow:0 0 0 3px rgba(30,77,140,.18)}
+  input,select{width:100%;padding:12px 14px;border:1.5px solid #c5cee3;border-radius:10px;font-size:15px;outline:none;background:#fff;color:#111}
+  input:focus,select:focus{border-color:#1e4d8c;box-shadow:0 0 0 3px rgba(30,77,140,.18)}
   button{width:100%;margin-top:22px;padding:13px;border:0;border-radius:10px;background:#1e4d8c;color:#fff;font-size:16px;font-weight:700;cursor:pointer}
   button:hover{background:#0f2347}
   .err{background:#fdecea;color:#a12b20;border-radius:10px;padding:10px 12px;font-size:13.5px;margin-top:14px}
@@ -457,24 +457,67 @@ LOGIN_HTML = """<!DOCTYPE html>
   <div class="emb">📚</div>
   <h1>பருவ இதழ்கள் தொகை செலுத்துதல்</h1>
   <p class="sub">மாவட்ட நூலக அலுவலகம், திண்டுக்கல்</p>
-  <label for="u">Username</label>
+  <label for="u">பயனர் (Username)</label>
+  {% if users %}
+  <select id="u" name="username" autofocus>
+    {% for n in users %}<option value="{{ n }}" {{ 'selected' if n == selected else '' }}>{{ n }}</option>{% endfor %}
+    <option value="Librarian" {{ 'selected' if selected == 'Librarian' else '' }}>Librarian (நூலகர்)</option>
+  </select>
+  {% else %}
   <input id="u" name="username" type="text" autocomplete="username" required autofocus>
-  <label for="p">Password</label>
-  <input id="p" name="password" type="password" autocomplete="current-password" required>
+  {% endif %}
+  <div id="pwbox">
+    <label for="p">Password</label>
+    <input id="p" name="password" type="password" autocomplete="current-password">
+  </div>
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
   <button type="submit">🔐 உள் நுழை</button>
-</form></body></html>"""
+</form>
+<script>
+(function(){
+  var u=document.getElementById('u'),box=document.getElementById('pwbox'),p=document.getElementById('p');
+  function sync(){var lib=(u.value||'').trim().toLowerCase()==='librarian';box.style.display=lib?'none':'';p.required=!lib;if(lib)p.value='';}
+  u.addEventListener('change',sync);u.addEventListener('input',sync);sync();
+})();
+</script></body></html>"""
+
+
+def _login_users():
+    """Login dropdown-க்கான பயனர் பெயர்கள் (app_users) — DB பிழை எனில் [] (text பெட்டி காட்டப்படும்)."""
+    try:
+        ensure_auth_tables()
+        conn = get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT username FROM app_users ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END, id")
+                return [r["username"] for r in cur.fetchall()]
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _render_login(error="", selected="", status=200):
+    return render_template_string(LOGIN_HTML, error=error, users=_login_users(), selected=selected), status
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = ""
+    selected = ""
     if request.method == "POST":
         ip = _client_ip()
+        uname = (request.form.get("username") or "").strip()
+        selected = uname
+        if uname.lower() == "librarian":
+            # நூலகர் — Password இல்லை; /librarian/* பக்கங்கள் மட்டுமே (global_auth கட்டுப்படுத்தும்)
+            session.clear()
+            session.permanent = True
+            session["user"] = {"id": 0, "username": "Librarian", "role": "librarian"}
+            return redirect("/librarian/select")
         if _login_blocked(ip):
             error = "அதிக முறை தவறான முயற்சி. 10 நிமிடம் கழித்து மீண்டும் முயலவும்."
         else:
-            uname = (request.form.get("username") or "").strip()
             pw = request.form.get("password") or ""
             row = None
             try:
@@ -487,7 +530,7 @@ def login():
                 finally:
                     conn.close()
             except Exception as e:  # noqa: BLE001
-                return render_template_string(LOGIN_HTML, error="Database இணைப்பு பிழை: " + str(e)), 503
+                return _render_login("Database இணைப்பு பிழை: " + str(e), selected, 503)
             if row and check_password_hash(row["password_hash"], pw):
                 session.clear()
                 session.permanent = True
@@ -498,7 +541,7 @@ def login():
             error = "Username அல்லது Password தவறானது."
     elif current_user():
         return redirect("/")
-    return render_template_string(LOGIN_HTML, error=error)
+    return _render_login(error, selected)
 
 
 @app.route("/logout")
@@ -533,6 +576,13 @@ def global_auth():
             return jsonify({"success": False, "needLogin": True,
                             "message": "மீண்டும் உள் நுழையவும் (Session முடிந்தது)"}), 401
         return redirect("/login")
+    # நூலகர் (Password இல்லாத பயனர்) — நூலகர் பக்கங்கள் / API மட்டுமே; வேறு எதுவும் இல்லை
+    if user.get("role") == "librarian":
+        if path.startswith("/librarian/") or path.startswith("/api/librarian/") or path == "/api/me":
+            return
+        if path.startswith("/api/"):
+            return jsonify({"success": False, "message": "அனுமதி இல்லை."}), 403
+        return redirect("/librarian/dashboard" if session.get("lib_code") else "/librarian/select")
     # Master / Admin API-கள் — admin மட்டும் (வங்கி விவரப் பக்கம் படிக்கும் vendors-list தவிர)
     if path.startswith("/api/admin/") and user.get("role") != "admin":
         if not (path == "/api/admin/vendors-list" and request.method == "GET"):
@@ -562,6 +612,8 @@ def api_admin_update_user():
         return jsonify({"success": False, "message": "பயனர் தேர்வு தவறு."}), 400
     if len(username) < 3 or re.search(r"\s", username):
         return jsonify({"success": False, "message": "Username குறைந்தது 3 எழுத்து; இடைவெளி கூடாது."}), 400
+    if username.lower() == "librarian":
+        return jsonify({"success": False, "message": "'Librarian' என்பது நூலகர் நுழைவுக்காக ஒதுக்கப்பட்ட பெயர்."}), 400
     if new_pw and len(new_pw) < 6:
         return jsonify({"success": False, "message": "Password குறைந்தது 6 எழுத்துகள் இருக்க வேண்டும்."}), 400
     conn = get_conn()
@@ -7222,6 +7274,11 @@ def api_paid_report():
     except Exception as e:  # noqa: BLE001
         return jsonify({"success": False, "message": f"{fmt.upper()} உருவாக்கத்தில் பிழை: {e}"}), 500
     return jsonify({"success": False, "message": "format தவறு"}), 400
+
+
+# நூலகர் இதழ் வருகைப் பதிவு (librarian_module.py)
+from librarian_module import init_librarian  # noqa: E402
+init_librarian(app, get_conn)
 
 
 if __name__ == "__main__":
