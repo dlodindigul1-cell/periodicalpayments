@@ -890,26 +890,32 @@ function render(d){
   const early=d.earlierUnregistered.length+d.earlierNotReceived.length;
   if(early)h.appendChild(el('div',{class:'muted',style:'margin-top:8px'},'முந்தைய வாரங்களின் இதழ்கள் அதிகபட்சம் '+d.carryWeeks+' வாரங்கள் வரை இங்கே தெரியும்.'));
   ROWS=[];list.innerHTML='';
-  const parts=[
-    ['⚠️ கடந்த வாரங்களில் பதிவு செய்யாதவை','unreg',d.earlierUnregistered,'இவை இன்னும் பதிவு செய்யப்படவில்லை — Received / Not received தேர்ந்து சேமிக்கவும்.'],
-    ['⏳ முந்தைய வாரங்களில் இன்னும் வராதவை','pend',d.earlierNotReceived,'முன்பு "Not received" எனக் குறித்தவை — இதழ் வந்திருந்தால் Received எனக் குறிக்கவும்; வராவிட்டால் அப்படியே விடவும்.'],
-    ['📅 இந்த வாரம் ('+d.weekStart+' – '+d.weekEnd+')','this',d.rows,'']];
-  parts.forEach(([title,k,rows,hint])=>{
-    if(!rows.length)return;
-    list.appendChild(el('div',{class:'sec '+k},title+' ('+rows.length+')'));
-    if(hint)list.appendChild(el('div',{class:'muted',style:'margin:0 2px 4px'},hint));
+  function addRows(parent,rows,k,early){
     let last='';
     rows.forEach(r=>{
-      if(r.date!==last){last=r.date;list.appendChild(el('div',{class:'day'},r.day+' — '+r.dateLabel+(r.date===d.today?'  (இன்று)':'')+(k!=='this'&&r.weeksAgo?'  · '+r.weeksAgo+' வாரத்துக்கு முன்':'')))}
+      if(r.date!==last){last=r.date;parent.appendChild(el('div',{class:'day'},r.day+' — '+r.dateLabel+(r.date===d.today?'  (இன்று)':'')+(early&&r.weeksAgo?'  · '+r.weeksAgo+' வாரத்துக்கு முன்':'')))}
       const i=ROWS.push({magazine:r.magazine,date:r.date})-1;
       const row=el('div',{class:'row'});const nm=el('div',{class:'nm'},r.magazine);if(r.periodicity)nm.appendChild(el('small',null,r.periodicity));row.appendChild(nm);
       const o=el('div',{class:'opts'});
       [['Received','rc','✅ Received'],['Not received','nr','❌ Not received']].forEach(([v,c,t])=>{
         const l=el('label');const inp=el('input',{type:'radio',name:'r'+i,value:v,'data-sec':k});if(r.status===v)inp.checked=true;inp.onchange=update;
         l.appendChild(inp);l.appendChild(el('span',{class:c},t));o.appendChild(l)});
-      row.appendChild(o);list.appendChild(row)})
-  });
+      row.appendChild(o);parent.appendChild(row)})
+  }
+  const openRows=d.rows.filter(r=>r.status!=='Received'),doneRows=d.rows.filter(r=>r.status==='Received');
+  [['⚠️ கடந்த வாரங்களில் பதிவு செய்யாதவை','unreg',d.earlierUnregistered,'இவை இன்னும் பதிவு செய்யப்படவில்லை — Received / Not received தேர்ந்து சேமிக்கவும்.',true],
+   ['⏳ முந்தைய வாரங்களில் இன்னும் வராதவை','pend',d.earlierNotReceived,'முன்பு "Not received" எனக் குறித்தவை — இதழ் வந்திருந்தால் Received எனக் குறிக்கவும்; வராவிட்டால் அப்படியே விடவும்.',true],
+   ['📅 இந்த வாரம் — இன்னும் பதிவாகாதவை / வராதவை ('+d.weekStart+' – '+d.weekEnd+')','this',openRows,'',false]].forEach(([title,k,rows,hint,early])=>{
+    if(!rows.length)return;
+    list.appendChild(el('div',{class:'sec '+k},title+' ('+rows.length+')'));
+    if(hint)list.appendChild(el('div',{class:'muted',style:'margin:0 2px 4px'},hint));
+    addRows(list,rows,k,early)});
   if(!d.rows.length)list.appendChild(el('div',{class:'card muted',style:'margin-top:14px'},'இந்த வாரத்துக்கு ('+d.weekStart+' – '+d.weekEnd+') வர வேண்டிய இதழ்கள் எதுவும் இல்லை.'));
+  else if(!openRows.length)list.appendChild(el('div',{class:'card',style:'margin-top:14px;background:#e6f6ea;color:#1b6b34;font-weight:700'},'✅ இந்த வாரத்துக்கான எல்லா இதழ்களும் Received எனப் பதிவாகிவிட்டன.'));
+  if(doneRows.length){
+    const det=el('details',{style:'margin-top:18px'});
+    det.appendChild(el('summary',{style:'cursor:pointer;font-weight:700;color:#1b6b34;padding:8px 2px'},'✅ இந்த வாரம் Received எனப் பதிவானவை ('+doneRows.length+') — மாற்ற வேண்டுமானால் திறக்கவும்'));
+    addRows(det,doneRows,'this',false);list.appendChild(det)}
   if(!ROWS.length){bar.style.display='none';return}
   bar.style.display='flex';update();
 }
