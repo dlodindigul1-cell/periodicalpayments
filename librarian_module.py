@@ -6,14 +6,15 @@ app.py-ல் `init_librarian(app, get_conn)` என்று ஒரே ஒர�
 பகுதிகள்
   1. நூலகர் (Login dropdown-ல் "Librarian", Password இல்லை)
        /librarian/select      -> வகை + நூலகப் பெயர் தேர்வு
-       /librarian/dashboard   -> இந்த வாரத்துக்கான இதழ்கள்: Received / Not received
+       /librarian/dashboard   -> இந்த வாரம் + முந்தைய வாரங்களின் (அதிகபட்சம் 4) "இன்னும் வராதவை" / "பதிவு செய்யாதவை": Received / Not received
   2. Admin
-       /admin/librarian       -> Quarter Excel ஏற்றுதல், நூலகர் பதிவு (பதிவு செய்தவை / செய்யாதவை)
+       /admin/librarian       -> Quarter Excel ஏற்றுதல், நூலகர் பதிவு நிலை (பதிவு செய்தவை / இன்னும் வராதவை / பதிவே செய்யாதவை),
+                                 ஒரு நூலகத்தைத் தேர்ந்து Admin-ஆகவே Received / Not received பதிவு செய்தல்
 
 Tables (தானாக உருவாகும்)
   lib_libraries (code, name, category)         <- data/libraries_seed.csv (காலியாக இருந்தால் ஒருமுறை) அல்லது Admin பக்கம்
   lib_schedule  (quarter, code, magazine, periodicity, expected_date)  <- Admin பக்கத்தில் Q3 / Q4 Excel ஏற்றுதல்
-  lib_receipts  (code, magazine, expected_date, status, marked_at)     <- நூலகர் பதிவு
+  lib_receipts  (code, magazine, expected_date, status, marked_at, marked_by)  <- நூலகர் / Admin பதிவு
   * lib_receipts தனி table என்பதால் Quarter Excel-ஐ மீண்டும் ஏற்றினாலும் நூலகர் பதிவுகள் அழியாது.
 """
 
@@ -34,6 +35,7 @@ _ready = False
 IST = timezone(timedelta(hours=5, minutes=30))
 SEED_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "libraries_seed.csv")
 STATUSES = ("Received", "Not received")
+CARRY_WEEKS = 4   # நூலகர் திரையில் முந்தைய வாரங்களின் இதழ்கள் அதிகபட்சம் எத்தனை வாரம் காட்டப்படும்
 CATEGORY_ORDER = ["மாவட்ட மைய நூலகம்", "முழுநேர கிளை நூலகம்", "கிளை நூலகம்", "ஊர்ப்புற நூலகம்"]
 TA_DAYS = ["திங்கள்", "செவ்வாய்", "புதன்", "வியாழன்", "வெள்ளி", "சனி", "ஞாயிறு"]
 
@@ -101,6 +103,8 @@ def ensure_schema():
                 " marked_at TIMESTAMPTZ NOT NULL DEFAULT now(),"
                 " PRIMARY KEY (code, magazine, expected_date))")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_lib_receipts_date ON lib_receipts (expected_date)")
+            # யார் பதிவு செய்தார்: librarian / admin (பழைய பதிவுகள் = librarian)
+            cur.execute("ALTER TABLE lib_receipts ADD COLUMN IF NOT EXISTS marked_by TEXT NOT NULL DEFAULT 'librarian'")
             cur.execute("SELECT COUNT(*) AS n FROM lib_libraries")
             if cur.fetchone()["n"] == 0 and os.path.exists(SEED_CSV):
                 with open(SEED_CSV, newline="", encoding="utf-8-sig") as f:
@@ -183,9 +187,7 @@ def librarian_change():
     return redirect("/librarian/select")
 
 
-@lib_bp.route("/api/librarian/libraries")
-@librarian_api(need_library=False)
-def api_librarian_libraries():
+def _libraries_json():
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -199,6 +201,12 @@ def api_librarian_libraries():
     out = [{"category": c, "libraries": sorted(v, key=lambda x: x["name"])}
            for c, v in sorted(groups.items(), key=lambda kv: _category_sort_key(kv[0]))]
     return jsonify({"success": True, "categories": out})
+
+
+@lib_bp.route("/api/librarian/libraries")
+@librarian_api(need_library=False)
+def api_librarian_libraries():
+    return _libraries_json()
 
 
 @lib_bp.route("/api/librarian/select", methods=["POST"])
@@ -226,72 +234,109 @@ def librarian_dashboard_page():
     return render_template_string(DASH_HTML)
 
 
-@lib_bp.route("/api/librarian/week")
-@librarian_api()
-def api_librarian_week():
-    code = session["lib_code"]
-    ws, we = week_bounds(today_ist())
+def _row_json(r, ws):
+    d = r["expected_date"]
+    return {"magazine": r["magazine"], "periodicity": r["periodicity"] or "",
+            "date": d.isoformat(), "dateLabel": fmt_d(d), "day": TA_DAYS[d.weekday()],
+            "status": r["status"], "weeksAgo": (ws - week_bounds(d)[0]).days // 7}
+
+
+def _library_week_payload(code, weeks_back):
+    """ஒரு நூலகத்துக்கு: இந்த வாரம் + முந்தைய வாரங்களில் (weeks_back வாரம் வரை; None = வரம்பின்றி)
+    'இன்னும் வராதவை' (Not received) மற்றும் 'பதிவு செய்யாதவை'. நூலகர் திரையும் Admin பதிவுத் திரையும் இதையே பயன்படுத்தும்."""
+    today = today_ist()
+    ws, we = week_bounds(today)
+    join = ("LEFT JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine "
+            "AND r.expected_date=s.expected_date ")
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT code, name, category FROM lib_libraries WHERE code=%s", (code,))
             lib = cur.fetchone()
+            if not lib:
+                return None
             cur.execute(
-                "SELECT s.magazine, s.periodicity, s.expected_date, r.status "
-                "FROM lib_schedule s LEFT JOIN lib_receipts r "
-                "  ON r.code=s.code AND r.magazine=s.magazine AND r.expected_date=s.expected_date "
-                "WHERE s.code=%s AND s.expected_date BETWEEN %s AND %s "
-                "ORDER BY s.expected_date, s.magazine", (code, ws, we))
-            rows = cur.fetchall()
+                "SELECT s.magazine, s.periodicity, s.expected_date, r.status FROM lib_schedule s " + join +
+                "WHERE s.code=%s AND s.expected_date BETWEEN %s AND %s ORDER BY s.expected_date, s.magazine",
+                (code, ws, we))
+            this_rows = cur.fetchall()
+            sql = ("SELECT s.magazine, s.periodicity, s.expected_date, r.status FROM lib_schedule s " + join +
+                   "WHERE s.code=%s AND s.expected_date < %s")
+            params = [code, ws]
+            if weeks_back:
+                sql += " AND s.expected_date >= %s"
+                params.append(ws - timedelta(weeks=weeks_back))
+            sql += " AND (r.code IS NULL OR r.status='Not received') ORDER BY s.expected_date, s.magazine"
+            cur.execute(sql, params)
+            earlier = cur.fetchall()
     finally:
         conn.close()
-    return jsonify({
-        "success": True, "library": dict(lib) if lib else {},
-        "weekStart": fmt_d(ws), "weekEnd": fmt_d(we), "today": today_ist().isoformat(),
-        "rows": [{"magazine": r["magazine"], "periodicity": r["periodicity"] or "",
-                  "date": r["expected_date"].isoformat(), "dateLabel": fmt_d(r["expected_date"]),
-                  "day": TA_DAYS[r["expected_date"].weekday()], "status": r["status"]} for r in rows],
-    })
+    return {
+        "success": True, "library": dict(lib),
+        "weekStart": fmt_d(ws), "weekEnd": fmt_d(we), "today": today.isoformat(), "carryWeeks": weeks_back or 0,
+        "rows": [_row_json(r, ws) for r in this_rows],
+        "earlierNotReceived": [_row_json(r, ws) for r in earlier if r["status"] == "Not received"],
+        "earlierUnregistered": [_row_json(r, ws) for r in earlier if not r["status"]],
+    }
 
 
-@lib_bp.route("/api/librarian/save", methods=["POST"])
-@librarian_api()
-def api_librarian_save():
-    code = session["lib_code"]
+def _save_entries(code, entries, weeks_back, by):
+    """Received / Not received சேமிப்பு. எதிர்காலத் தேதி (இந்த வாரத்துக்குப் பிந்தையவை) எப்போதும் தடை.
+    weeks_back: இந்த வாரத்துக்கு முந்தைய எத்தனை வாரம் வரை அனுமதி (None = வரம்பின்றி — Admin)."""
     ws, we = week_bounds(today_ist())
-    entries = (request.get_json(force=True, silent=True) or {}).get("entries") or []
-    clean = []
+    lo = ws - timedelta(weeks=weeks_back) if weeks_back else None
+    clean = {}
     for e in entries:
         d = parse_iso(e.get("date"))
         mag, st = (e.get("magazine") or "").strip(), e.get("status")
-        if not mag or st not in STATUSES or not d or not (ws <= d <= we):
-            return jsonify({"success": False, "message": "தவறான பதிவு (இந்த வாரத்துக்கு உரியவை மட்டுமே சேமிக்கலாம்)."}), 400
-        clean.append((code, mag, d, st))
-    if not clean:
+        if not mag or st not in STATUSES or not d or d > we or (lo and d < lo):
+            return jsonify({"success": False,
+                            "message": "தவறான பதிவு (இந்த வாரம் மற்றும் அதற்கு முந்தையவை மட்டுமே; எதிர்காலத் தேதிகள் முடியாது)."}), 400
+        clean[(mag, d)] = (code, mag, d, st, by)
+    rows = list(clean.values())
+    if not rows:
         return jsonify({"success": False, "message": "எந்த இதழும் தேர்ந்தெடுக்கப்படவில்லை."}), 400
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
             # அட்டவணையில் உள்ள இதழ்களை மட்டுமே ஏற்கும்
             cur.execute("SELECT magazine, expected_date FROM lib_schedule WHERE code=%s AND expected_date BETWEEN %s AND %s",
-                        (code, ws, we))
+                        (code, min(r[2] for r in rows), max(r[2] for r in rows)))
             valid = {(r["magazine"], r["expected_date"]) for r in cur.fetchall()}
-            clean = [c for c in clean if (c[1], c[2]) in valid]
-            if not clean:
+            rows = [r for r in rows if (r[1], r[2]) in valid]
+            if not rows:
                 return jsonify({"success": False, "message": "பதிவு செய்ய இதழ்கள் எதுவும் பொருந்தவில்லை."}), 400
             psycopg2.extras.execute_values(
                 cur,
-                "INSERT INTO lib_receipts (code, magazine, expected_date, status) VALUES %s "
+                "INSERT INTO lib_receipts (code, magazine, expected_date, status, marked_by) VALUES %s "
                 "ON CONFLICT (code, magazine, expected_date) DO UPDATE "
-                "SET status=EXCLUDED.status, marked_at=now() WHERE lib_receipts.status IS DISTINCT FROM EXCLUDED.status",
-                clean)
+                "SET status=EXCLUDED.status, marked_at=now(), marked_by=EXCLUDED.marked_by "
+                "WHERE lib_receipts.status IS DISTINCT FROM EXCLUDED.status",
+                rows)
         conn.commit()
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
     finally:
         conn.close()
-    return jsonify({"success": True, "saved": len(clean), "message": f"✅ {len(clean)} இதழ்களின் பதிவு சேமிக்கப்பட்டது."})
+    who = "Admin மூலம் " if by == "admin" else ""
+    return jsonify({"success": True, "saved": len(rows), "message": f"✅ {len(rows)} இதழ்களின் பதிவு {who}சேமிக்கப்பட்டது."})
+
+
+@lib_bp.route("/api/librarian/week")
+@librarian_api()
+def api_librarian_week():
+    data = _library_week_payload(session["lib_code"], CARRY_WEEKS)
+    if data is None:
+        return jsonify({"success": False, "needLibrary": True, "message": "நூலகம் கண்டறியப்படவில்லை."}), 400
+    return jsonify(data)
+
+
+@lib_bp.route("/api/librarian/save", methods=["POST"])
+@librarian_api()
+def api_librarian_save():
+    entries = (request.get_json(force=True, silent=True) or {}).get("entries") or []
+    return _save_entries(session["lib_code"], entries, CARRY_WEEKS, "librarian")
 
 
 # =========================================================================== #
@@ -535,10 +580,23 @@ def api_admin_upload_libraries():
     return jsonify({"success": True, "message": f"✅ {len(rows)} நூலகங்கள் சேமிக்கப்பட்டன/புதுப்பிக்கப்பட்டன."})
 
 
-# ---- பதிவு செய்தவை / செய்யாதவை ---------------------------------------------------------------- #
+# ---- Admin: பதிவு செய்தவை / இன்னும் வராதவை / பதிவே செய்யாதவை ------------------------------------- #
+STATUS_TABS = ("received", "notreceived", "unregistered")
+
+
+def _delay_days(marked_at, expected):
+    """எதிர்பார்த்த தேதிக்குப் பிறகு Received எனக் குறித்த நாட்கள் (தாமதம்)."""
+    if not marked_at or not expected:
+        return 0
+    return max((marked_at.astimezone(IST).date() - expected).days, 0)
+
+
 def _filters():
-    """status, category, from, to, code (+ pending-க்கு 'to' <= இன்று)."""
-    status = request.args.get("status", "recorded")
+    """status (received | notreceived | unregistered), category, from, to, code.
+    'unregistered'-க்கு 'to' <= இன்று."""
+    status = request.args.get("status", "received")
+    if status not in STATUS_TABS:
+        status = "received"
     cat = (request.args.get("category") or "").strip()
     dfrom, dto = parse_iso(request.args.get("from")), parse_iso(request.args.get("to"))
     code = (request.args.get("code") or "").strip()
@@ -549,16 +607,24 @@ def _filters():
     if code:
         where.append("l.code = %s")
         params.append(code)
-    if status == "pending":
+    if status == "received":
+        where.append("r.status = 'Received'")
+    elif status == "notreceived":
+        where.append("r.status = 'Not received'")
+    else:
         cap = today_ist()
         dto = min(dto, cap) if dto else cap
+    dcol = "s.expected_date" if status == "unregistered" else "r.expected_date"
     if dfrom:
-        where.append("s.expected_date >= %s" if status == "pending" else "r.expected_date >= %s")
+        where.append(dcol + " >= %s")
         params.append(dfrom)
     if dto:
-        where.append("s.expected_date <= %s" if status == "pending" else "r.expected_date <= %s")
+        where.append(dcol + " <= %s")
         params.append(dto)
     return status, where, params
+
+
+_TZ_DAYS = "((r.marked_at AT TIME ZONE 'Asia/Kolkata')::date - r.expected_date)"
 
 
 @lib_bp.route("/api/admin/librarian/summary")
@@ -571,7 +637,7 @@ def api_admin_summary():
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) AS n FROM lib_libraries")
             total_libs = cur.fetchone()["n"]
-            if status == "pending":
+            if status == "unregistered":
                 cur.execute(
                     "SELECT l.code, l.name, l.category, COUNT(*) AS cnt, COUNT(DISTINCT s.magazine) AS mags, "
                     "       MIN(s.expected_date) AS first_d, "
@@ -585,13 +651,16 @@ def api_admin_summary():
             else:
                 cur.execute(
                     "SELECT l.code, l.name, l.category, COUNT(*) AS cnt, COUNT(DISTINCT r.magazine) AS mags, "
-                    "       SUM(CASE WHEN r.status='Received' THEN 1 ELSE 0 END) AS got, "
-                    "       SUM(CASE WHEN r.status='Not received' THEN 1 ELSE 0 END) AS notgot, "
-                    "       MAX(r.marked_at) AS last_at "
+                    "       MIN(r.expected_date) AS first_d, MAX(r.marked_at) AS last_at, "
+                    f"       SUM(CASE WHEN {_TZ_DAYS} > 0 THEN 1 ELSE 0 END) AS late, "
+                    f"       MAX(GREATEST({_TZ_DAYS}, 0)) AS max_late, "
+                    "       SUM(CASE WHEN r.marked_by = 'admin' THEN 1 ELSE 0 END) AS by_admin "
                     "FROM lib_receipts r JOIN lib_libraries l ON l.code=r.code "
                     "WHERE TRUE" + extra + " GROUP BY l.code, l.name, l.category ORDER BY l.name", params)
                 items = [{"code": r["code"], "name": r["name"], "category": r["category"], "count": r["cnt"],
-                          "magazines": r["mags"], "received": int(r["got"] or 0), "notReceived": int(r["notgot"] or 0),
+                          "magazines": r["mags"], "firstDue": fmt_d(r["first_d"]),
+                          "late": int(r["late"] or 0), "maxLate": int(r["max_late"] or 0),
+                          "byAdmin": int(r["by_admin"] or 0),
                           "lastAt": r["last_at"].astimezone(IST).strftime("%d/%m/%Y %H:%M") if r["last_at"] else ""}
                          for r in cur.fetchall()]
             cur.execute("SELECT COUNT(DISTINCT code) AS n FROM lib_receipts")
@@ -599,43 +668,58 @@ def api_admin_summary():
     finally:
         conn.close()
     return jsonify({"success": True, "items": items, "totalLibraries": total_libs, "librariesEverRecorded": ever,
-                    "totalRows": sum(i["count"] for i in items)})
+                    "totalRows": sum(i["count"] for i in items), "lateTotal": sum(i.get("late", 0) for i in items)})
 
 
 def _detail_rows(limit=None):
     status, where, params = _filters()
     extra = (" AND " + " AND ".join(where)) if where else ""
+    lim = f" LIMIT {int(limit)}" if limit else ""
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
-            if status == "pending":
+            if status == "unregistered":
                 cur.execute(
                     "SELECT l.code, l.name, l.category, s.magazine, s.periodicity, s.expected_date, NULL::text AS status, "
-                    "       NULL::timestamptz AS marked_at "
+                    "       NULL::timestamptz AS marked_at, NULL::text AS marked_by "
                     "FROM lib_schedule s JOIN lib_libraries l ON l.code=s.code "
                     "LEFT JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine AND r.expected_date=s.expected_date "
-                    "WHERE r.code IS NULL" + extra + " ORDER BY l.name, s.expected_date, s.magazine"
-                    + (f" LIMIT {int(limit)}" if limit else ""), params)
+                    "WHERE r.code IS NULL" + extra + " ORDER BY l.name, s.expected_date, s.magazine" + lim, params)
             else:
                 cur.execute(
-                    "SELECT l.code, l.name, l.category, r.magazine, s.periodicity, r.expected_date, r.status, r.marked_at "
+                    "SELECT l.code, l.name, l.category, r.magazine, s.periodicity, r.expected_date, r.status, "
+                    "       r.marked_at, r.marked_by "
                     "FROM lib_receipts r JOIN lib_libraries l ON l.code=r.code "
                     "LEFT JOIN lib_schedule s ON s.code=r.code AND s.magazine=r.magazine AND s.expected_date=r.expected_date "
-                    "WHERE TRUE" + extra + " ORDER BY l.name, r.expected_date, r.magazine"
-                    + (f" LIMIT {int(limit)}" if limit else ""), params)
+                    "WHERE TRUE" + extra + " ORDER BY l.name, r.expected_date, r.magazine" + lim, params)
             return status, cur.fetchall()
     finally:
         conn.close()
+
+
+def _who(v):
+    return "Admin" if v == "admin" else ("நூலகர்" if v else "")
 
 
 @lib_bp.route("/api/admin/librarian/detail")
 @admin_api
 def api_admin_detail():
     status, rows = _detail_rows(limit=2000)
-    return jsonify({"success": True, "rows": [
-        {"magazine": r["magazine"], "periodicity": r["periodicity"] or "", "date": fmt_d(r["expected_date"]),
-         "status": r["status"] or "",
-         "markedAt": r["marked_at"].astimezone(IST).strftime("%d/%m/%Y %H:%M") if r["marked_at"] else ""} for r in rows]})
+    ws, _we = week_bounds(today_ist())
+    lo = ws - timedelta(weeks=CARRY_WEEKS)
+    out = []
+    for r in rows:
+        mk = r["marked_at"]
+        out.append({
+            "magazine": r["magazine"], "periodicity": r["periodicity"] or "", "date": fmt_d(r["expected_date"]),
+            "status": r["status"] or "",
+            "markedAt": mk.astimezone(IST).strftime("%d/%m/%Y %H:%M") if mk else "",
+            "markedDate": fmt_d(mk.astimezone(IST).date()) if mk else "",
+            "markedBy": _who(r["marked_by"]),
+            "delay": _delay_days(mk, r["expected_date"]) if r["status"] == "Received" else 0,
+            "onLibrarianScreen": r["expected_date"] >= lo,
+        })
+    return jsonify({"success": True, "rows": out})
 
 
 @lib_bp.route("/api/admin/librarian/export")
@@ -643,28 +727,77 @@ def api_admin_detail():
 def api_admin_export():
     import xlsxwriter
     status, rows = _detail_rows()
+    names = {"received": "Received", "notreceived": "Not received yet", "unregistered": "Not registered"}
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
-    ws = wb.add_worksheet("Recorded" if status != "pending" else "Not recorded")
+    ws = wb.add_worksheet(names[status])
     head = wb.add_format({"bold": True, "bg_color": "#1e4d8c", "font_color": "#ffffff", "border": 1})
     cols = ["Library Code", "Library", "Category", "Magazine", "Periodicity", "Expected Date"]
-    if status != "pending":
-        cols += ["Status", "Marked At"]
+    if status != "unregistered":
+        cols += ["Status", "Marked At", "Marked By"]
+    if status == "received":
+        cols += ["Delay (days)"]
     for c, h in enumerate(cols):
         ws.write(0, c, h, head)
     for i, r in enumerate(rows, start=1):
         vals = [r["code"], r["name"], r["category"], r["magazine"], r["periodicity"] or "", fmt_d(r["expected_date"])]
-        if status != "pending":
-            vals += [r["status"], r["marked_at"].astimezone(IST).strftime("%d/%m/%Y %H:%M") if r["marked_at"] else ""]
+        if status != "unregistered":
+            vals += [r["status"], r["marked_at"].astimezone(IST).strftime("%d/%m/%Y %H:%M") if r["marked_at"] else "",
+                     _who(r["marked_by"])]
+        if status == "received":
+            vals += [_delay_days(r["marked_at"], r["expected_date"])]
         for c, v in enumerate(vals):
             ws.write(i, c, v)
-    for c, w in enumerate([14, 38, 22, 34, 14, 14, 14, 18]):
+    for c, w in enumerate([14, 38, 22, 34, 14, 14, 14, 18, 12, 12]):
         ws.set_column(c, c, w)
     ws.freeze_panes(1, 0)
     wb.close()
-    fname = "librarian_" + ("not_recorded" if status == "pending" else "recorded") + f"_{today_ist().isoformat()}.xlsx"
+    fname = f"librarian_{status}_{today_ist().isoformat()}.xlsx"
     return Response(buf.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
+
+
+# ---- Admin: ஒரு நூலகத்துக்காக Admin பதிவு செய்தல் ------------------------------------------------ #
+def _weeks_arg(v, default=CARRY_WEEKS):
+    """weeks=0 -> வரம்பின்றி (None)."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return default
+    return None if n <= 0 else min(n, 520)
+
+
+@lib_bp.route("/api/admin/librarian/libraries")
+@admin_api
+def api_admin_libraries():
+    return _libraries_json()
+
+
+@lib_bp.route("/api/admin/librarian/mark-list")
+@admin_api
+def api_admin_mark_list():
+    code = (request.args.get("code") or "").strip()
+    data = _library_week_payload(code, _weeks_arg(request.args.get("weeks")))
+    if data is None:
+        return jsonify({"success": False, "message": "நூலகம் கண்டறியப்படவில்லை."}), 404
+    return jsonify(data)
+
+
+@lib_bp.route("/api/admin/librarian/mark-save", methods=["POST"])
+@admin_api
+def api_admin_mark_save():
+    body = request.get_json(force=True, silent=True) or {}
+    code = (body.get("code") or "").strip()
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM lib_libraries WHERE code=%s", (code,))
+            ok = cur.fetchone()
+    finally:
+        conn.close()
+    if not ok:
+        return jsonify({"success": False, "message": "நூலகம் கண்டறியப்படவில்லை."}), 404
+    return _save_entries(code, body.get("entries") or [], None, "admin")
 
 
 # =========================================================================== #
@@ -718,6 +851,10 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>இதழ்கள் வருகை பதிவு</title>
 <style>""" + BASE_CSS + """
 .day{background:#1e4d8c;color:#fff;border-radius:10px;padding:8px 12px;margin:16px 0 8px;font-weight:700;font-size:14px}
+.sec{border-radius:12px;padding:11px 14px;margin:22px 0 6px;font-weight:800;font-size:15px}
+.sec.unreg{background:#fff3cd;color:#7a5600;border:1.5px solid #f0c75e}
+.sec.pend{background:#fdecea;color:#a12b20;border:1.5px solid #f2b8b1}
+.sec.this{background:#e8eefb;color:#0f2347;border:1.5px solid #b9c7e6}
 .row{background:#fff;border-radius:12px;padding:12px 14px;margin-bottom:8px;box-shadow:0 2px 8px rgba(15,35,71,.07);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .row .nm{flex:1;min-width:180px;font-weight:600} .row .nm small{display:block;color:#6b7694;font-weight:400;font-size:12px;margin-top:2px}
 .opts{display:flex;gap:8px} .opts label{margin:0;display:block}
@@ -737,7 +874,7 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 </div>
 <div class="bar" id="bar" style="display:none">
   <span class="info" id="cnt"></span>
-  <button class="alt" id="allRc" type="button">எல்லாவற்றையும் Received எனக் குறி</button>
+  <button class="alt" id="allRc" type="button">இந்த வாரம் — எல்லாவற்றையும் Received எனக் குறி</button>
   <button id="save" type="button">💾 சேமி</button>
 </div>
 <script>
@@ -750,17 +887,30 @@ function render(d){
   h.appendChild(el('div',{style:'font-size:17px;font-weight:700'},d.library.name||''));
   const s=el('div',{style:'margin-top:6px'});s.appendChild(el('span',{class:'chip'},d.library.category||''));s.appendChild(el('span',{class:'chip'},d.library.code||''));
   s.appendChild(el('span',{class:'chip'},'📅 இந்த வாரம்: '+d.weekStart+' – '+d.weekEnd));h.appendChild(s);
-  ROWS=d.rows;list.innerHTML='';
-  if(!ROWS.length){list.appendChild(el('div',{class:'card muted'},'இந்த வாரத்துக்கு (' +d.weekStart+' – '+d.weekEnd+') வர வேண்டிய இதழ்கள் எதுவும் இல்லை.'));bar.style.display='none';return}
-  let last='';
-  ROWS.forEach((r,i)=>{
-    if(r.date!==last){last=r.date;list.appendChild(el('div',{class:'day'},r.day+' — '+r.dateLabel+(r.date===d.today?'  (இன்று)':'')))}
-    const row=el('div',{class:'row'});const nm=el('div',{class:'nm'},r.magazine);if(r.periodicity)nm.appendChild(el('small',null,r.periodicity));row.appendChild(nm);
-    const o=el('div',{class:'opts'});
-    [['Received','rc','✅ Received'],['Not received','nr','❌ Not received']].forEach(([v,c,t])=>{
-      const l=el('label');const inp=el('input',{type:'radio',name:'r'+i,value:v});if(r.status===v)inp.checked=true;inp.onchange=update;
-      l.appendChild(inp);l.appendChild(el('span',{class:c},t));o.appendChild(l)});
-    row.appendChild(o);list.appendChild(row)});
+  const early=d.earlierUnregistered.length+d.earlierNotReceived.length;
+  if(early)h.appendChild(el('div',{class:'muted',style:'margin-top:8px'},'முந்தைய வாரங்களின் இதழ்கள் அதிகபட்சம் '+d.carryWeeks+' வாரங்கள் வரை இங்கே தெரியும்.'));
+  ROWS=[];list.innerHTML='';
+  const parts=[
+    ['⚠️ கடந்த வாரங்களில் பதிவு செய்யாதவை','unreg',d.earlierUnregistered,'இவை இன்னும் பதிவு செய்யப்படவில்லை — Received / Not received தேர்ந்து சேமிக்கவும்.'],
+    ['⏳ முந்தைய வாரங்களில் இன்னும் வராதவை','pend',d.earlierNotReceived,'முன்பு "Not received" எனக் குறித்தவை — இதழ் வந்திருந்தால் Received எனக் குறிக்கவும்; வராவிட்டால் அப்படியே விடவும்.'],
+    ['📅 இந்த வாரம் ('+d.weekStart+' – '+d.weekEnd+')','this',d.rows,'']];
+  parts.forEach(([title,k,rows,hint])=>{
+    if(!rows.length)return;
+    list.appendChild(el('div',{class:'sec '+k},title+' ('+rows.length+')'));
+    if(hint)list.appendChild(el('div',{class:'muted',style:'margin:0 2px 4px'},hint));
+    let last='';
+    rows.forEach(r=>{
+      if(r.date!==last){last=r.date;list.appendChild(el('div',{class:'day'},r.day+' — '+r.dateLabel+(r.date===d.today?'  (இன்று)':'')+(k!=='this'&&r.weeksAgo?'  · '+r.weeksAgo+' வாரத்துக்கு முன்':'')))}
+      const i=ROWS.push({magazine:r.magazine,date:r.date})-1;
+      const row=el('div',{class:'row'});const nm=el('div',{class:'nm'},r.magazine);if(r.periodicity)nm.appendChild(el('small',null,r.periodicity));row.appendChild(nm);
+      const o=el('div',{class:'opts'});
+      [['Received','rc','✅ Received'],['Not received','nr','❌ Not received']].forEach(([v,c,t])=>{
+        const l=el('label');const inp=el('input',{type:'radio',name:'r'+i,value:v,'data-sec':k});if(r.status===v)inp.checked=true;inp.onchange=update;
+        l.appendChild(inp);l.appendChild(el('span',{class:c},t));o.appendChild(l)});
+      row.appendChild(o);list.appendChild(row)})
+  });
+  if(!d.rows.length)list.appendChild(el('div',{class:'card muted',style:'margin-top:14px'},'இந்த வாரத்துக்கு ('+d.weekStart+' – '+d.weekEnd+') வர வேண்டிய இதழ்கள் எதுவும் இல்லை.'));
+  if(!ROWS.length){bar.style.display='none';return}
   bar.style.display='flex';update();
 }
 async function load(){
@@ -768,7 +918,7 @@ async function load(){
   if(d.needLibrary){location.href='/librarian/select';return}
   if(!d.success){msg.className='msg err';msg.textContent=d.message||'பிழை';return}
   render(d)}
-document.getElementById('allRc').onclick=()=>{document.querySelectorAll('.opts input[value="Received"]').forEach(i=>i.checked=true);update()};
+document.getElementById('allRc').onclick=()=>{document.querySelectorAll('.opts input[value="Received"][data-sec="this"]').forEach(i=>i.checked=true);update()};
 document.getElementById('save').onclick=async()=>{
   const entries=[];ROWS.forEach((r,i)=>{const c=document.querySelector('input[name="r'+i+'"]:checked');if(c)entries.push({magazine:r.magazine,date:r.date,status:c.value})});
   if(!entries.length){msg.className='msg err';msg.textContent='குறைந்தது ஒரு இதழுக்காவது Received / Not received தேர்ந்தெடுக்கவும்.';return}
@@ -783,15 +933,26 @@ ADMIN_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>நூலகர் பதிவு — Admin</title>
 <style>""" + BASE_CSS + """
 .wrap{max-width:1100px} h2{margin:0 0 8px;font-size:17px;color:#0f2347}
-.tabs{display:flex;gap:8px;margin-bottom:12px} .tab{background:#e8eefb;color:#1e4d8c;flex:1} .tab.on{background:#1e4d8c;color:#fff}
+.tabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap} .tab{background:#e8eefb;color:#1e4d8c;flex:1;min-width:150px} .tab.on{background:#1e4d8c;color:#fff}
 .flt{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end}
 table{width:100%;border-collapse:collapse;font-size:14px} th{background:#1e4d8c;color:#fff;text-align:left;padding:8px 10px;position:sticky;top:0}
 td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{cursor:pointer} tr.lib:hover{background:#f3f6fd}
 .sub{background:#f8faff} .sub table th{background:#5b7fb8}
-.ok-c{color:#1b6b34;font-weight:700} .bad-c{color:#c0392b;font-weight:700}
+.ok-c{color:#1b6b34;font-weight:700} .bad-c{color:#c0392b;font-weight:700} .warn-c{color:#b26a00;font-weight:700}
 .kpi{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0} .kpi div{background:#e8eefb;border-radius:10px;padding:8px 14px;font-size:14px}
 .sm{padding:6px 12px;font-size:13px} .danger{background:#c0392b} .alt{background:#e8eefb;color:#1e4d8c}
 .scroll{overflow-x:auto} details summary{cursor:pointer;font-weight:700;color:#1e4d8c}
+.mh{border-radius:10px;padding:9px 12px;margin:16px 0 6px;font-weight:800;font-size:14px}
+.mh.unreg{background:#fff3cd;color:#7a5600} .mh.pend{background:#fdecea;color:#a12b20} .mh.this{background:#e8eefb;color:#0f2347}
+.md{background:#1e4d8c;color:#fff;border-radius:8px;padding:6px 10px;margin:10px 0 6px;font-weight:700;font-size:13px}
+.mr{background:#fff;border:1px solid #e3e8f4;border-radius:10px;padding:10px 12px;margin-bottom:6px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.mr .nm{flex:1;min-width:180px;font-weight:600} .mr .nm small{display:block;color:#6b7694;font-weight:400;font-size:12px}
+.opts{display:flex;gap:8px} .opts label{margin:0;display:block} .opts input{display:none}
+.opts span{display:inline-block;padding:8px 13px;border-radius:9px;border:1.5px solid #c5cee3;font-size:14px;font-weight:600;color:#44506f;background:#fff;cursor:pointer;user-select:none}
+.opts input:checked + span.rc{background:#1b8a43;border-color:#1b8a43;color:#fff}
+.opts input:checked + span.nr{background:#c0392b;border-color:#c0392b;color:#fff}
+.mbar{position:sticky;bottom:0;background:#fff;border-top:1px solid #d6ddee;padding:10px 0;margin-top:12px;display:none;gap:10px;align-items:center;flex-wrap:wrap}
+.chip{display:inline-block;background:#e8eefb;color:#1e4d8c;border-radius:999px;padding:3px 10px;font-size:12px;margin-right:6px}
 </style></head><body>
 <div class="top"><h1>🧑‍💼 நூலகர் பதிவு (இதழ் வருகை)</h1><a href="/">← முகப்பு</a></div>
 <div class="wrap">
@@ -815,7 +976,7 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
 
 <div class="card">
   <h2>② நூலகர் பதிவு நிலை</h2>
-  <div class="tabs"><button class="tab on" id="t1">✅ பதிவு செய்தவை</button><button class="tab" id="t2">⏳ பதிவு செய்யாதவை</button></div>
+  <div class="tabs"><button class="tab on" id="t1">✅ பதிவு செய்தவை (Received)</button><button class="tab" id="t2">⏳ இன்னும் வராதவை</button><button class="tab" id="t3">⚠️ பதிவே செய்யாதவை</button></div>
   <div class="flt">
     <div><label>நூலக வகை</label><select id="fcat"><option value="">எல்லாம்</option></select></div>
     <div><label>தேதி முதல்</label><input type="date" id="ffrom"></div>
@@ -823,12 +984,27 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
     <div style="display:flex;gap:8px"><button id="fgo">🔍 காட்டு</button><button id="fweek" class="alt">இந்த வாரம்</button></div>
   </div>
   <div class="kpi" id="kpi"></div>
-  <div style="margin:6px 0 10px"><button id="fxl" class="sm alt">📥 Excel பதிவிறக்கு</button> <span class="muted">வரிசையைக் கிளிக் செய்தால் இதழ்கள் விரியும்</span></div>
+  <div style="margin:6px 0 10px"><button id="fxl" class="sm alt">📥 Excel பதிவிறக்கு</button> <span class="muted">வரிசையைக் கிளிக் செய்தால் இதழ்கள் விரியும் · "✏️ பதிவு" பொத்தான் அந்த நூலகத்துக்கு Admin பதிவுக்குக் கொண்டு செல்லும்</span></div>
   <div class="scroll"><table id="stab"><thead></thead><tbody></tbody></table></div>
+</div>
+
+<div class="card" id="mcard">
+  <h2>③ நூலகத்துக்காக Admin பதிவு (Received / Not received)</h2>
+  <p class="muted" style="margin:0 0 6px">ஒரு நூலகத்தைத் தேர்ந்தெடுத்து, நூலகருக்குப் பதிலாக நீங்களே பதிவு செய்யலாம். இந்த வாரம் மற்றும் அதற்கு முந்தைய தேதிகள் மட்டும்; எதிர்காலத் தேதிகள் முடியாது. இங்கே பதிவானவை "Admin" எனக் குறிக்கப்படும்.</p>
+  <div class="flt">
+    <div><label>நூலக வகை</label><select id="mcat"><option value="">— தேர்ந்தெடுக்கவும் —</option></select></div>
+    <div><label>நூலகத்தின் பெயர்</label><select id="mlib"><option value="">— நூலகம் —</option></select></div>
+    <div><label>முந்தைய வாரங்கள்</label><select id="mweeks"><option value="4">4 வாரம்</option><option value="8">8 வாரம்</option><option value="13">13 வாரம்</option><option value="26">26 வாரம்</option><option value="0">எல்லாம்</option></select></div>
+    <div><button id="mload">📋 இதழ்களைக் காட்டு</button></div>
+  </div>
+  <div id="mmsg" class="msg"></div>
+  <div id="mhead" style="margin-top:12px"></div>
+  <div id="mlist"></div>
+  <div class="mbar" id="mbar"><span id="mcnt" style="font-weight:600"></span><button id="mallrc" class="alt" type="button">இந்த வாரம் — எல்லாம் Received</button><button id="msave" type="button">💾 சேமி (Admin)</button></div>
 </div>
 </div>
 <script>
-let MODE='recorded',OV=null;
+let MODE='received',OV=null,LIBS=[],MROWS=[],MCODE='';
 const $=id=>document.getElementById(id);
 function el(t,a,x){const e=document.createElement(t);if(a)for(const k in a)e.setAttribute(k,a[k]);if(x!==undefined)e.textContent=x;return e}
 function td(t,cls){const c=el('td',cls?{class:cls}:null,t===undefined?'':String(t));return c}
@@ -857,37 +1033,89 @@ $('qgo').onclick=async()=>{
 $('lgo').onclick=async()=>{
   const f=$('lfile').files[0];if(!f){say('lmsg',false,'கோப்பைத் தேர்ந்தெடுக்கவும்.');return}
   const fd=new FormData();fd.append('file',f);const d=await api('/api/admin/librarian/upload-libraries',{method:'POST',body:fd});
-  say('lmsg',d.success,d.message);if(d.success)loadOverview()};
+  say('lmsg',d.success,d.message);if(d.success){loadOverview();loadLibs()}};
 
 function qs(extra){const p=new URLSearchParams({status:MODE});if($('fcat').value)p.set('category',$('fcat').value);
   if($('ffrom').value)p.set('from',$('ffrom').value);if($('fto').value)p.set('to',$('fto').value);for(const k in (extra||{}))p.set(k,extra[k]);return p.toString()}
+const HEADS={
+  received:['நூலகம்','வகை','Received','தாமதமாகப் பதிவானவை','அதிக தாமதம் (நாள்)','Admin பதிவு','கடைசிப் பதிவு',''],
+  notreceived:['நூலகம்','வகை','இன்னும் வராதவை','இதழ்கள்','பழைய தேதி','கடைசிப் பதிவு',''],
+  unregistered:['நூலகம்','வகை','பதிவு செய்யாதவை','இதழ்கள்','முதல் தேதி','இதுவரை பதிவு செய்தவை','']};
 async function loadSummary(){
   const d=await api('/api/admin/librarian/summary?'+qs());
   const th=$('stab').querySelector('thead'),tb=$('stab').querySelector('tbody');th.innerHTML='';tb.innerHTML='';
-  const hr=el('tr');(MODE==='recorded'?['நூலகம்','வகை','பதிவுகள்','Received','Not received','இதழ்கள்','கடைசிப் பதிவு']:['நூலகம்','வகை','பதிவு செய்யாதவை','இதழ்கள்','முதல் தேதி','இதுவரை பதிவு செய்தவை']).forEach(h=>hr.appendChild(el('th',null,h)));th.appendChild(hr);
+  const hr=el('tr');HEADS[MODE].forEach(h=>hr.appendChild(el('th',null,h)));th.appendChild(hr);
   const k=$('kpi');k.innerHTML='';
-  if(MODE==='recorded'){k.appendChild(el('div',null,'பதிவு செய்த நூலகங்கள்: '+d.items.length+' / '+d.totalLibraries));k.appendChild(el('div',null,'மொத்தப் பதிவுகள்: '+d.totalRows))}
+  if(MODE==='received'){k.appendChild(el('div',null,'Received பதிவு செய்த நூலகங்கள்: '+d.items.length+' / '+d.totalLibraries));k.appendChild(el('div',null,'மொத்த Received: '+d.totalRows));k.appendChild(el('div',null,'தாமதமாகப் பதிவானவை: '+d.lateTotal))}
+  else if(MODE==='notreceived'){k.appendChild(el('div',null,'இன்னும் வராத இதழ்கள் உள்ள நூலகங்கள்: '+d.items.length+' / '+d.totalLibraries));k.appendChild(el('div',null,'வராத இதழ் வரிசைகள்: '+d.totalRows))}
   else{k.appendChild(el('div',null,'பதிவு செய்யாத பதிவுகள் உள்ள நூலகங்கள்: '+d.items.length+' / '+d.totalLibraries));k.appendChild(el('div',null,'பதிவு செய்யப்படாத வரிசைகள் (இன்று வரை): '+d.totalRows));
     const never=d.items.filter(i=>i.recordedTotal===0).length;k.appendChild(el('div',null,'இதுவரை ஒன்றுமே பதிவு செய்யாத நூலகங்கள்: '+never))}
-  if(!d.items.length){const tr=el('tr');const c=td('பதிவுகள் இல்லை.','muted');c.colSpan=7;tr.appendChild(c);tb.appendChild(tr)}
+  if(!d.items.length){const tr=el('tr');const c=td('பதிவுகள் இல்லை.','muted');c.colSpan=8;tr.appendChild(c);tb.appendChild(tr)}
   d.items.forEach(i=>{
     const tr=el('tr',{class:'lib'});tr.appendChild(td(i.name));tr.appendChild(td(i.category));
-    if(MODE==='recorded'){tr.appendChild(td(i.count));tr.appendChild(td(i.received,'ok-c'));tr.appendChild(td(i.notReceived,i.notReceived?'bad-c':''));tr.appendChild(td(i.magazines));tr.appendChild(td(i.lastAt))}
+    if(MODE==='received'){tr.appendChild(td(i.count,'ok-c'));tr.appendChild(td(i.late,i.late?'warn-c':''));tr.appendChild(td(i.maxLate||''));tr.appendChild(td(i.byAdmin||''));tr.appendChild(td(i.lastAt))}
+    else if(MODE==='notreceived'){tr.appendChild(td(i.count,'bad-c'));tr.appendChild(td(i.magazines));tr.appendChild(td(i.firstDue));tr.appendChild(td(i.lastAt))}
     else{tr.appendChild(td(i.count,'bad-c'));tr.appendChild(td(i.magazines));tr.appendChild(td(i.firstDue));tr.appendChild(td(i.recordedTotal))}
+    const ac=el('td');const mb=el('button',{class:'sm alt',type:'button'},'✏️ பதிவு');mb.onclick=e=>{e.stopPropagation();openMark(i.code,i.category)};ac.appendChild(mb);tr.appendChild(ac);
     let open=false,sub=null;
     tr.onclick=async()=>{ if(open){sub.remove();open=false;return}
-      open=true;sub=el('tr',{class:'sub'});const c=el('td');c.colSpan=7;c.textContent='ஏற்றுகிறது…';sub.appendChild(c);tr.after(sub);
+      open=true;sub=el('tr',{class:'sub'});const c=el('td');c.colSpan=8;c.textContent='ஏற்றுகிறது…';sub.appendChild(c);tr.after(sub);
       const r=await api('/api/admin/librarian/detail?'+qs({code:i.code}));c.textContent='';
-      const t=el('table');const h=el('tr');(MODE==='recorded'?['தேதி','இதழ்','Periodicity','நிலை','பதிவு நேரம்']:['தேதி','இதழ்','Periodicity']).forEach(x=>h.appendChild(el('th',null,x)));t.appendChild(h);
-      r.rows.forEach(w=>{const rr=el('tr');rr.appendChild(td(w.date));rr.appendChild(td(w.magazine));rr.appendChild(td(w.periodicity));
-        if(MODE==='recorded'){rr.appendChild(td(w.status,w.status==='Received'?'ok-c':'bad-c'));rr.appendChild(td(w.markedAt))}t.appendChild(rr)});
+      const t=el('table');const h=el('tr');
+      (MODE==='received'?['இதழ்','Periodicity','எதிர்பார்த்தது → வந்தது','பதிவு நேரம்','பதிவு செய்தவர்']:MODE==='notreceived'?['தேதி','இதழ்','Periodicity','பதிவு நேரம்','பதிவு செய்தவர்','நூலகர் திரையில்']:['தேதி','இதழ்','Periodicity','நூலகர் திரையில்']).forEach(x=>h.appendChild(el('th',null,x)));t.appendChild(h);
+      r.rows.forEach(w=>{const rr=el('tr');
+        if(MODE==='received'){rr.appendChild(td(w.magazine));rr.appendChild(td(w.periodicity));
+          rr.appendChild(td(w.date+' → '+(w.markedDate||'')+(w.delay>0?' ('+w.delay+' நாள் தாமதம்)':''),w.delay>0?'warn-c':'ok-c'));rr.appendChild(td(w.markedAt));rr.appendChild(td(w.markedBy))}
+        else if(MODE==='notreceived'){rr.appendChild(td(w.date));rr.appendChild(td(w.magazine));rr.appendChild(td(w.periodicity));rr.appendChild(td(w.markedAt));rr.appendChild(td(w.markedBy));rr.appendChild(td(w.onLibrarianScreen?'✔ தெரியும்':'— (4 வாரத்துக்கு மேல்)'))}
+        else{rr.appendChild(td(w.date));rr.appendChild(td(w.magazine));rr.appendChild(td(w.periodicity));rr.appendChild(td(w.onLibrarianScreen?'✔ தெரியும்':'— (4 வாரத்துக்கு மேல்)'))}
+        t.appendChild(rr)});
       c.appendChild(t);if(r.rows.length>=2000)c.appendChild(el('div',{class:'muted'},'முதல் 2000 வரிசைகள் மட்டும் — முழுமைக்கு Excel பதிவிறக்கவும்.'))};
     tb.appendChild(tr)})
 }
-function setMode(m){MODE=m;$('t1').classList.toggle('on',m==='recorded');$('t2').classList.toggle('on',m==='pending');loadSummary()}
-$('t1').onclick=()=>setMode('recorded');$('t2').onclick=()=>setMode('pending');
+function setMode(m){MODE=m;$('t1').classList.toggle('on',m==='received');$('t2').classList.toggle('on',m==='notreceived');$('t3').classList.toggle('on',m==='unregistered');loadSummary()}
+$('t1').onclick=()=>setMode('received');$('t2').onclick=()=>setMode('notreceived');$('t3').onclick=()=>setMode('unregistered');
 $('fgo').onclick=loadSummary;
 $('fweek').onclick=()=>{$('ffrom').value=OV.weekStart;$('fto').value=OV.weekEnd;loadSummary()};
 $('fxl').onclick=()=>{location.href='/api/admin/librarian/export?'+qs()};
-loadOverview().then(loadSummary);
+
+/* ---------- ③ Admin பதிவு ---------- */
+async function loadLibs(){
+  const d=await api('/api/admin/librarian/libraries');LIBS=d.categories||[];
+  const c=$('mcat');c.length=1;LIBS.forEach(x=>c.appendChild(el('option',{value:x.category},x.category+' ('+x.libraries.length+')')));fillLibs()}
+function fillLibs(){const l=$('mlib');l.length=1;const c=LIBS.find(x=>x.category===$('mcat').value);if(c)c.libraries.forEach(x=>l.appendChild(el('option',{value:x.code},x.name)))}
+$('mcat').onchange=fillLibs;
+function mcount(){$('mcnt').textContent='தேர்ந்தவை: '+document.querySelectorAll('#mlist .opts input:checked').length+' / '+MROWS.length}
+function renderMark(d){
+  const h=$('mhead');h.innerHTML='';h.appendChild(el('span',{style:'font-weight:700;font-size:16px;margin-right:8px'},d.library.name||''));
+  h.appendChild(el('span',{class:'chip'},d.library.category||''));h.appendChild(el('span',{class:'chip'},d.library.code||''));
+  const box=$('mlist');box.innerHTML='';MROWS=[];
+  [['⚠️ கடந்த வாரங்களில் பதிவு செய்யாதவை','unreg',d.earlierUnregistered],['⏳ முந்தைய வாரங்களில் இன்னும் வராதவை','pend',d.earlierNotReceived],['📅 இந்த வாரம் ('+d.weekStart+' – '+d.weekEnd+')','this',d.rows]].forEach(([t,k,rows])=>{
+    if(!rows.length)return;box.appendChild(el('div',{class:'mh '+k},t+' ('+rows.length+')'));let last='';
+    rows.forEach(r=>{
+      if(r.date!==last){last=r.date;box.appendChild(el('div',{class:'md'},r.day+' — '+r.dateLabel+(r.date===d.today?'  (இன்று)':'')))}
+      const i=MROWS.push({magazine:r.magazine,date:r.date})-1;
+      const row=el('div',{class:'mr'});const nm=el('div',{class:'nm'},r.magazine);if(r.periodicity)nm.appendChild(el('small',null,r.periodicity));row.appendChild(nm);
+      const o=el('div',{class:'opts'});
+      [['Received','rc','✅ Received'],['Not received','nr','❌ Not received']].forEach(([v,c,tt])=>{
+        const l=el('label');const inp=el('input',{type:'radio',name:'m'+i,value:v,'data-sec':k});if(r.status===v)inp.checked=true;inp.onchange=mcount;
+        l.appendChild(inp);l.appendChild(el('span',{class:c},tt));o.appendChild(l)});
+      row.appendChild(o);box.appendChild(row)})});
+  if(!MROWS.length)box.appendChild(el('div',{class:'muted',style:'margin-top:10px'},'இந்தக் காலத்துக்குப் பதிவு செய்ய இதழ்கள் எதுவும் இல்லை.'));
+  $('mbar').style.display=MROWS.length?'flex':'none';mcount()}
+async function loadMark(){
+  const code=$('mlib').value;if(!code){say('mmsg',false,'முதலில் நூலகத்தைத் தேர்ந்தெடுக்கவும்.');return}
+  MCODE=code;const d=await api('/api/admin/librarian/mark-list?code='+encodeURIComponent(code)+'&weeks='+$('mweeks').value);
+  if(!d.success){say('mmsg',false,d.message||'பிழை');return}
+  renderMark(d)}
+$('mload').onclick=()=>{$('mmsg').className='msg';loadMark()};
+function openMark(code,cat){$('mcat').value=cat;fillLibs();$('mlib').value=code;$('mmsg').className='msg';loadMark().then(()=>$('mcard').scrollIntoView({behavior:'smooth'}))}
+$('mallrc').onclick=()=>{document.querySelectorAll('#mlist .opts input[value="Received"][data-sec="this"]').forEach(i=>i.checked=true);mcount()};
+$('msave').onclick=async()=>{
+  const entries=[];MROWS.forEach((r,i)=>{const c=document.querySelector('#mlist input[name="m'+i+'"]:checked');if(c)entries.push({magazine:r.magazine,date:r.date,status:c.value})});
+  if(!entries.length){say('mmsg',false,'குறைந்தது ஒரு இதழுக்காவது Received / Not received தேர்ந்தெடுக்கவும்.');return}
+  $('msave').disabled=true;
+  try{const d=await api('/api/admin/librarian/mark-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:MCODE,entries})});
+    say('mmsg',d.success,d.message||'');if(d.success){await loadMark();loadSummary()}}
+  catch(e){say('mmsg',false,'சேமிக்க முடியவில்லை: '+e)}finally{$('msave').disabled=false}};
+loadOverview().then(loadSummary);loadLibs();
 </script></body></html>"""
