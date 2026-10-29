@@ -826,6 +826,14 @@
             <span>இதழ் வாரியாக வராதவை &amp; Email இல்லாத இதழ்கள்</span>
           </div>
         </div>
+        <div class="menu-card" id="menuLibDetailCard" style="display:none;" onclick="location.href='/admin/library-details'">
+          <div class="menu-icon">📇</div>
+          <div class="menu-info">
+            <div class="num">12</div>
+            <h3>நூலகங்கள் / நூலகர் முகவரி &amp; தொலைபேசி</h3>
+            <span>நூலகர் பெயர், தொலைபேசி, முகவரி — Excel ஏற்றுதல்</span>
+          </div>
+        </div>
       </div>
       </div><!-- /home-left -->
 
@@ -7585,6 +7593,8 @@ async function loadMeAndApplyRole() {
     if (lc) lc.style.display = (d.role === 'admin') ? '' : 'none';
     const mi = document.getElementById('menuMissingCard');
     if (mi) mi.style.display = (d.role === 'admin') ? '' : 'none';
+    const ld = document.getElementById('menuLibDetailCard');
+    if (ld) ld.style.display = (d.role === 'admin') ? '' : 'none';
     const rc = document.getElementById('mailResetCard');
     if (rc) rc.style.display = (d.role === 'admin') ? '' : 'none';
   } catch (e) { /* புறக்கணி */ }

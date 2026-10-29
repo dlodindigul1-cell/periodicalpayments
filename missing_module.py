@@ -8,7 +8,7 @@ app.py-ல் `init_missing(app, get_conn, classify_lang, parse_email_list)` எ
        வ.எண்., நூலகக் குறியீடு, நூலகம், நூலகர் பெயர், இதழ் வராத தேதி, தொலைபேசி, முகவரி.
        தமிழ் இதழ் -> தமிழ்த் தலைப்புகள்; ஆங்கில இதழ் -> English தலைப்புகள் (English பெயர்கள் இருந்தால் அவை).
   ② Email இல்லாத இதழ்கள் — magazines.email_id காலியானவை; இங்கே சேமித்தால் Vendor Bank Master-லும் (அதே புலம்) மாறும்.
-  ③ நூலக விவரங்கள் — நூலகர் பெயர், தொலைபேசி, முகவரி (தமிழ் / English) — பின்னர் சேர்க்க.
+  (நூலகர் பெயர், தொலைபேசி, முகவரி — தனிப் பக்கம் /admin/library-details, Admin முகப்பு "12")
 
 "வராத" = (அ) நூலகர் / Admin "Not received" எனக் குறித்தவை + (ஆ) Expected Date கடந்தும் பதிவே இல்லாதவை.
 இதழ் பெயர் பொருத்தம்: Master பெயர் + Master → "இதழ் பெயர் மாற்றம்" இணைப்புகள் (magazine_aliases) — எழுத்து / இடைவெளி வேறுபாடு பாராது.
@@ -333,6 +333,109 @@ def api_missing_library_save():
     return jsonify({"success": True})
 
 
+# ---- நூலகங்கள் / நூலகர் முகவரி & தொலைபேசி (Admin முகப்பு "12") ------------------------------------- #
+# Excel நெடுவரிசைகள்: A code, B நூலகம் (பார்க்க மட்டும்), C நூலகர் பெயர், D தொலைபேசி, E முகவரி,
+#                     F Library (English), G Librarian (English), H Address (English)
+XL_COLS = ("librarian_name", "phone", "address", "name_en", "librarian_name_en", "address_en")
+
+
+@miss_bp.route("/admin/library-details")
+@lm.admin_page
+def admin_library_details_page():
+    _ensure_cols()
+    return render_template_string(LIBDETAIL_HTML)
+
+
+@miss_bp.route("/api/admin/missing/libraries-template")
+@_api
+def api_missing_libraries_template():
+    import xlsxwriter
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT code, name, librarian_name, phone, address, name_en, librarian_name_en, address_en "
+                        "FROM lib_libraries ORDER BY code")
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"in_memory": True})
+    ws = wb.add_worksheet("Libraries")
+    head = wb.add_format({"bold": True, "bg_color": "#1e4d8c", "font_color": "#ffffff", "border": 1, "text_wrap": True})
+    lock = wb.add_format({"bg_color": "#eef1f8", "border": 1, "num_format": "@"})
+    txt = wb.add_format({"border": 1, "text_wrap": True, "valign": "top", "num_format": "@"})
+    heads = ["Library Code (மாற்ற வேண்டாம்)", "நூலகம் (பார்க்க மட்டும்)", "நூலகர் பெயர்", "தொலைபேசி எண்", "முகவரி",
+             "Library (English)", "Librarian (English)", "Address (English)"]
+    for c, h in enumerate(heads):
+        ws.write(0, c, h, head)
+    for i, r in enumerate(rows, start=1):
+        vals = [r["code"], r["name"], r["librarian_name"], r["phone"], r["address"], r["name_en"],
+                r["librarian_name_en"], r["address_en"]]
+        for c, v in enumerate(vals):
+            ws.write_string(i, c, v or "", lock if c < 2 else txt)
+    for c, w in enumerate([18, 36, 24, 18, 42, 30, 24, 42]):
+        ws.set_column(c, c, w)
+    ws.set_row(0, 32)
+    ws.freeze_panes(1, 2)
+    wb.close()
+    return Response(buf.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": "attachment; filename=library_details_template.xlsx"})
+
+
+@miss_bp.route("/api/admin/missing/libraries-upload", methods=["POST"])
+@_api
+def api_missing_libraries_upload():
+    fs = request.files.get("file")
+    if not fs or not fs.filename:
+        return jsonify({"success": False, "message": "கோப்பைத் தேர்ந்தெடுக்கவும்."}), 400
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT code FROM lib_libraries")
+            known = {r["code"] for r in cur.fetchall()}
+        updated, empty, unknown = 0, 0, []
+        try:
+            with conn.cursor() as cur:
+                for i, row in enumerate(lm._iter_sheet_rows(fs)):
+                    if not row:
+                        continue
+                    code = lm._txt(row[0])
+                    if not code:
+                        continue
+                    if code not in known:
+                        if i > 0:                      # முதல் வரிசை தலைப்பாக இருக்கலாம்
+                            unknown.append(code)
+                        continue
+                    vals = [lm._txt(row[k]) if len(row) > k else "" for k in range(2, 8)]
+                    if not any(vals):
+                        empty += 1
+                        continue
+                    # காலிக் கட்டம் ஏற்கனவே உள்ள மதிப்பை அழிக்காது
+                    cur.execute(
+                        "UPDATE lib_libraries SET " +
+                        ", ".join("%s=COALESCE(NULLIF(%%s,''), %s)" % (c, c) for c in XL_COLS) +
+                        ", updated_at=now() WHERE code=%s", vals + [code])
+                    updated += 1
+        except ValueError as e:
+            conn.rollback()
+            return jsonify({"success": False, "message": str(e)}), 400
+        except ImportError:
+            conn.rollback()
+            return jsonify({"success": False, "message": ".xls படிக்க xlrd தேவை; .xlsx ஆகச் சேமித்து ஏற்றவும்."}), 500
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": "பிழை: " + str(e)}), 500
+    finally:
+        conn.close()
+    warn = []
+    if unknown:
+        warn.append("நூலகப் பட்டியலில் இல்லாத code (%d): %s%s" % (
+            len(unknown), ", ".join(unknown[:10]), "…" if len(unknown) > 10 else ""))
+    return jsonify({"success": True, "updated": updated, "emptyRows": empty, "warnings": warn,
+                    "message": "✅ %d நூலகங்களின் விவரம் புதுப்பிக்கப்பட்டது; %d வரிசைகளில் புதிய தகவல் இல்லை." % (updated, empty)})
+
+
 MISSING_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>வராத இதழ்கள் விவரம்</title>
 <style>""" + lm.BASE_CSS + """
@@ -352,7 +455,6 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
 <div class="tabs noprint">
   <button class="tab on" id="t1" onclick="tab(1)">① இதழ் வாரியாக வராத இதழ்கள்</button>
   <button class="tab" id="t2" onclick="tab(2)">② Email இல்லாத இதழ்கள்</button>
-  <button class="tab" id="t3" onclick="tab(3)">③ நூலக விவரங்கள்</button>
 </div>
 
 <div class="card" id="p1">
@@ -380,12 +482,6 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
   <div class="scroll"><table><thead><tr><th>#</th><th>இதழ்</th><th>Vendor பெயர்</th><th>Vendor Code</th><th>Email</th><th></th></tr></thead><tbody id="etb"></tbody></table></div>
 </div>
 
-<div class="card" id="p3" style="display:none">
-  <h2>③ நூலக விவரங்கள் (நூலகர் பெயர், தொலைபேசி, முகவரி)</h2>
-  <p class="muted" style="margin:0 0 8px">தமிழ் இதழ்களின் அறிக்கையில் தமிழ் விவரங்களும், ஆங்கில இதழ்களுக்கு English விவரங்களும் (English காலியெனில் தமிழ்) வரும்.</p>
-  <div id="lmsg" class="msg"></div>
-  <div class="scroll"><table><thead><tr><th>Code</th><th>நூலகம்</th><th>Library (English)</th><th>நூலகர் பெயர்</th><th>Librarian (English)</th><th>தொலைபேசி</th><th>முகவரி</th><th>Address (English)</th><th></th></tr></thead><tbody id="ltb"></tbody></table></div>
-</div>
 </div>
 
 <script>
@@ -399,9 +495,8 @@ async function api(url, body) {
 }
 function msg(id, ok, t) { const e = $(id); e.className = 'msg ' + (ok ? 'ok' : 'err'); e.innerHTML = t; e.style.display = t ? 'block' : 'none'; }
 function tab(n) {
-  [1,2,3].forEach(i => { $('p'+i).style.display = i === n ? '' : 'none'; $('t'+i).classList.toggle('on', i === n); });
+  [1,2].forEach(i => { $('p'+i).style.display = i === n ? '' : 'none'; $('t'+i).classList.toggle('on', i === n); });
   if (n === 2) loadNoEmail();
-  if (n === 3) loadLibs();
 }
 let MAGS = [];
 function fillMags() {
@@ -452,21 +547,84 @@ async function saveEmail(i, enc) {
   if (!d.success) { msg('emsg', false, esc(d.message)); return; }
   await loadNoEmail(); msg('emsg', true, '✅ ' + esc(d.message));
 }
+init();
+</script></body></html>"""
+
+
+LIBDETAIL_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>நூலகங்கள் / நூலகர் முகவரி &amp; தொலைபேசி</title>
+<style>""" + lm.BASE_CSS + """
+.wrap{max-width:1250px} h2{margin:0 0 8px;font-size:17px;color:#0f2347}
+table{width:100%;border-collapse:collapse;font-size:14px} th{background:#1e4d8c;color:#fff;text-align:left;padding:8px 10px;position:sticky;top:0}
+td{padding:6px 8px;border-bottom:1px solid #e3e8f4;vertical-align:top} .scroll{overflow-x:auto;max-height:70vh}
+td input{padding:5px 7px;font-size:13px;width:100%;min-width:120px} .sm{padding:6px 12px;font-size:13px}
+.alt{background:#e8eefb;color:#1e4d8c}
+</style></head><body>
+<div class="top"><h1>📇 நூலகங்கள் / நூலகர் முகவரி &amp; தொலைபேசி எண்</h1><a href="/">← முகப்பு</a></div>
+<div class="wrap">
+<div class="card">
+  <h2>① Excel மூலம் ஒரே முறையில் ஏற்றுதல்</h2>
+  <ol class="muted" style="margin:0 0 10px;padding-left:20px;line-height:1.7">
+    <li>"மாதிரி Excel பதிவிறக்கு" — எல்லா நூலகங்களின் code, பெயருடன் கோப்பு கிடைக்கும் (ஏற்கனவே உள்ள விவரங்களும் நிரப்பப்பட்டிருக்கும்).</li>
+    <li>நூலகர் பெயர், தொலைபேசி, முகவரி (தேவையெனில் English நெடுவரிசைகளும்) நிரப்பவும். <b>A நெடுவரிசை code-ஐ மாற்ற வேண்டாம்.</b></li>
+    <li>கோப்பைத் தேர்ந்து "ஏற்று" அழுத்தவும். காலிக் கட்டங்கள் ஏற்கனவே உள்ள மதிப்பை அழிக்காது.</li>
+  </ol>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+    <button class="alt" onclick="location.href='/api/admin/missing/libraries-template'">⬇️ மாதிரி Excel பதிவிறக்கு</button>
+    <input type="file" id="xf" accept=".xlsx,.xls,.csv" style="max-width:320px">
+    <button onclick="upload()">⬆️ Excel ஏற்று</button>
+  </div>
+  <div id="xmsg" class="msg"></div>
+</div>
+<div class="card">
+  <h2>② நூலகம் வாரியாகத் திருத்த</h2>
+  <input type="text" id="flt" placeholder="code அல்லது நூலகப் பெயரைத் தேடு…" oninput="render()" style="max-width:360px;margin-bottom:10px">
+  <div id="lmsg" class="msg"></div>
+  <div class="scroll"><table><thead><tr><th>Code</th><th>நூலகம்</th><th>நூலகர் பெயர்</th><th>தொலைபேசி</th><th>முகவரி</th><th>Library (English)</th><th>Librarian (English)</th><th>Address (English)</th><th></th></tr></thead><tbody id="ltb"></tbody></table></div>
+</div>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function msg(id, ok, t) { const e = $(id); e.className = 'msg ' + (ok ? 'ok' : 'err'); e.innerHTML = t; e.style.display = t ? 'block' : 'none'; }
+async function api(url, body) {
+  const opt = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)} : {};
+  const r = await fetch(url, opt);
+  if (r.status === 401) { location.href = '/login'; throw new Error('login'); }
+  return r.json();
+}
 let LIBS = [];
-async function loadLibs() {
+const F = ['librarian_name', 'phone', 'address', 'name_en', 'librarian_name_en', 'address_en'];
+async function load() {
   const d = await api('/api/admin/missing/libraries');
   if (!d.success) { msg('lmsg', false, esc(d.message)); return; }
-  LIBS = d.items;
-  const f = ['name_en', 'librarian_name', 'librarian_name_en', 'phone', 'address', 'address_en'];
-  $('ltb').innerHTML = LIBS.map((x, i) => '<tr><td>' + esc(x.code) + '</td><td>' + esc(x.name) + '</td>' +
-    f.map(k => '<td><input id="l_' + k + i + '" value="' + esc(x[k]) + '"></td>').join('') +
+  LIBS = d.items; render();
+}
+function render() {
+  const q = $('flt').value.trim().toLowerCase();
+  $('ltb').innerHTML = LIBS.map((x, i) => [x, i]).filter(([x]) => !q || (x.code + ' ' + x.name).toLowerCase().includes(q)).map(([x, i]) =>
+    '<tr><td>' + esc(x.code) + '</td><td>' + esc(x.name) + '</td>' +
+    F.map(k => '<td><input id="l_' + k + i + '" value="' + esc(x[k]) + '"></td>').join('') +
     '<td><button class="sm" onclick="saveLib(' + i + ')">சேமி</button></td></tr>').join('');
 }
 async function saveLib(i) {
   const body = {code: LIBS[i].code};
-  ['name_en', 'librarian_name', 'librarian_name_en', 'phone', 'address', 'address_en'].forEach(k => body[k] = $('l_' + k + i).value);
+  F.forEach(k => body[k] = $('l_' + k + i).value);
   const d = await api('/api/admin/missing/library-save', body);
+  if (d.success) F.forEach(k => LIBS[i][k] = body[k]);
   msg('lmsg', d.success, d.success ? '✅ ' + esc(LIBS[i].name) + ' சேமிக்கப்பட்டது.' : esc(d.message));
 }
-init();
+async function upload() {
+  const f = $('xf').files[0];
+  if (!f) { msg('xmsg', false, 'Excel கோப்பைத் தேர்ந்தெடுக்கவும்.'); return; }
+  msg('xmsg', true, 'ஏற்றப்படுகிறது…');
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/api/admin/missing/libraries-upload', {method:'POST', body: fd});
+  if (r.status === 401) { location.href = '/login'; return; }
+  const d = await r.json();
+  if (!d.success) { msg('xmsg', false, esc(d.message)); return; }
+  msg('xmsg', !(d.warnings || []).length, esc(d.message) + (d.warnings || []).map(w => '<br>⚠️ ' + esc(w)).join(''));
+  $('xf').value = ''; load();
+}
+load();
 </script></body></html>"""
