@@ -143,6 +143,12 @@ def ensure_part_schema():
                 "CREATE UNIQUE INDEX IF NOT EXISTS ux_payments_mag_qtr_part "
                 "ON payments (magazine, quarter, part)"
             )
+            # இதழ் பெயர் மாற்ற இணைப்பு: புதிய பெயர் (alias) -> தொடரும் Master இதழ், எந்த Quarter முதல்
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS magazine_aliases ("
+                " alias_name TEXT PRIMARY KEY, master_name TEXT NOT NULL, from_quarter TEXT NOT NULL,"
+                " created_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+            )
         conn.commit()
     finally:
         conn.close()
@@ -1385,6 +1391,12 @@ def index():
     return render_template("index.html")
 
 
+def _quarter_key(q):
+    """'2026-2027-Q2' -> (2026, 2); வடிவம் தவறெனில் None."""
+    m = re.match(r"^(\d{4})-(\d{4})-Q([1-4])$", (q or "").strip())
+    return (int(m.group(1)), int(m.group(3))) if m else None
+
+
 def magazines_and_master_for_quarter(cur, quarter):
     """கொடுக்கப்பட்ட quarter-க்குப் பொருந்தும் இதழ்கள் பட்டியலையும் (carry-forward
     விலை உள்பட) அந்த quarter-க்கான master dict-ஐயும் திரும்பத் தரும்.
@@ -1440,6 +1452,14 @@ def magazines_and_master_for_quarter(cur, quarter):
             "isCarriedForward": rank != 0,
             "inQuarter": rank == 0,   # Master-ல் இந்த Quarter டிக் செய்யப்பட்டுள்ளதா
         }
+    # பெயர் மாற்ற இணைப்பு: இந்த Quarter, இணைப்பின் தொடக்க Quarter-க்குச் சமம் / பிந்தையது எனில் புதிய பெயரையும் காட்ட
+    qk = _quarter_key(quarter)
+    if qk:
+        cur.execute("SELECT alias_name, master_name, from_quarter FROM magazine_aliases")
+        for a in cur.fetchall():
+            fk = _quarter_key(a["from_quarter"])
+            if a["master_name"] in master and fk and qk >= fk:
+                master[a["master_name"]]["aliasName"] = a["alias_name"]
     return magazines, master
 
 
@@ -6667,10 +6687,15 @@ def _fx_scan(cur):
             "codepoints": len(nm or ""),
         })
     names = sorted(mset | {r["magazine"] for r in pays})
+    cur.execute("SELECT alias_name, master_name, from_quarter FROM magazine_aliases ORDER BY master_name, alias_name")
+    aliases = [{"alias": a["alias_name"], "master": a["master_name"], "fromQuarter": a["from_quarter"]}
+               for a in cur.fetchall()]
     return {
         "items": items,
         "masterNames": master,
         "allNames": [{"name": n, "inMaster": n in mset} for n in names],
+        "aliases": aliases,
+        "quarters": all_known_quarters(cur),
     }
 
 
@@ -6710,6 +6735,124 @@ def _fx_rename_one(cur, pid, new_name):
     _fx_move_related(cur, old, q, new_name, q, row["part"], row["part"])
     _fx_log(cur, "rename_magazine", {"id": pid, "quarter": q, "from": old, "to": new_name})
     return True, "சரிசெய்யப்பட்டது"
+
+
+_ALIAS_FILL_COLS = ("vendor_name", "tnpfts_code", "bank_account_number", "bank_name",
+                    "bank_place", "ifsc_code", "payee_name", "email_id")
+
+
+@app.route("/api/admin/data-fix/link-alias", methods=["POST"])
+def api_fx_link_alias():
+    """இதழ் பெயர் மாற்றம்: புதிய பெயரை (alias) தொடரும் Master இதழுடன் இணைக்கும் — fromQuarter முதல் மட்டும்.
+    body: {alias, to, fromQuarter}
+      - alias  : புதிய பெயர் (எ.கா. 'தேவியின் கண்மணி')
+      - to     : தொடரும் Master இதழ் (எ.கா. 'கண்மணி') — முதன்மைப் பெயராகவே இருக்கும்
+      - fromQuarter : இந்த Quarter முதல் மட்டும் (எ.கா. 2026-2027-Q2); முந்தைய Quarter-கள் மாறாது
+    செய்வது: (1) இணைப்பைப் பதிவு செய்தல் (2) alias பெயரில் உள்ள, fromQuarter அல்லது பிந்தைய payments / vouchers /
+    non-supply பதிவுகளை 'to' பெயருக்கு மாற்றுதல் (3) alias பெயரில் Master வரிசை இருந்தால், அதன் fromQuarter+
+    Quarter விவரங்களை (விலை முதலியன) 'to'-க்கு நகர்த்துதல்; 'to'-ல் காலியாக உள்ள Vendor/Bank/Email புலங்களை நிரப்புதல்."""
+    data = request.get_json(force=True) or {}
+    alias = (data.get("alias") or "").strip()
+    to = (data.get("to") or "").strip()
+    fq = (data.get("fromQuarter") or "").strip()
+    fk = _quarter_key(fq)
+    if not alias or not to:
+        return jsonify({"success": False, "message": "புதிய பெயர் மற்றும் தொடரும் இதழ் இரண்டும் அவசியம்."}), 400
+    if alias == to or _name_key(alias) == _name_key(to):
+        return jsonify({"success": False, "message": "இரண்டும் ஒரே பெயர்."}), 400
+    if not fk:
+        return jsonify({"success": False, "message": "Quarter சரியான வடிவில் இல்லை (எ.கா. 2026-2027-Q2)."}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM magazines WHERE name=%s", (to,))
+            mrow = cur.fetchone()
+            if not mrow:
+                return jsonify({"success": False, "message": "'%s' Master-ல் இல்லை." % to}), 400
+            cur.execute("SELECT 1 FROM magazine_aliases WHERE alias_name=%s AND master_name<>%s", (alias, to))
+            if cur.fetchone():
+                return jsonify({"success": False, "message": "'%s' ஏற்கனவே வேறொரு இதழுடன் இணைக்கப்பட்டுள்ளது." % alias}), 409
+            cur.execute(
+                "INSERT INTO magazine_aliases (alias_name, master_name, from_quarter) VALUES (%s,%s,%s) "
+                "ON CONFLICT (alias_name) DO UPDATE SET master_name=EXCLUDED.master_name, from_quarter=EXCLUDED.from_quarter",
+                (alias, to, fq))
+
+            # (2) payments (+ vouchers, non-supply) — fromQuarter அல்லது பிந்தையவை மட்டும்
+            cur.execute("SELECT id, quarter FROM payments WHERE magazine=%s ORDER BY quarter, part", (alias,))
+            fixed, kept, skipped = 0, 0, []
+            for r in cur.fetchall():
+                rk = _quarter_key(r["quarter"])
+                if not rk or rk < fk:
+                    kept += 1
+                    continue
+                ok, msg = _fx_rename_one(cur, r["id"], to)
+                if ok:
+                    fixed += 1
+                else:
+                    skipped.append({"quarter": r["quarter"], "message": msg})
+
+            # (3) alias பெயரில் Master வரிசை இருந்தால்
+            moved_q, dup_q, filled = 0, 0, []
+            cur.execute("SELECT * FROM magazines WHERE name=%s", (alias,))
+            arow = cur.fetchone()
+            if arow:
+                cur.execute("SELECT quarter FROM magazine_quarters WHERE magazine_id=%s", (arow["id"],))
+                for qr in cur.fetchall():
+                    qk = _quarter_key(qr["quarter"])
+                    if not qk or qk < fk:
+                        continue
+                    cur.execute("SELECT 1 FROM magazine_quarters WHERE magazine_id=%s AND quarter=%s",
+                                (mrow["id"], qr["quarter"]))
+                    if cur.fetchone():
+                        dup_q += 1
+                        continue
+                    cur.execute("UPDATE magazine_quarters SET magazine_id=%s WHERE magazine_id=%s AND quarter=%s",
+                                (mrow["id"], arow["id"], qr["quarter"]))
+                    moved_q += 1
+                for col in _ALIAS_FILL_COLS:
+                    if not (mrow[col] or "").strip() and (arow[col] or "").strip():
+                        cur.execute("UPDATE magazines SET %s=%%s WHERE id=%%s" % col, (arow[col], mrow["id"]))
+                        filled.append(col)
+            _fx_log(cur, "link_alias", {"alias": alias, "to": to, "fromQuarter": fq, "paymentsRenamed": fixed,
+                                         "paymentsKept": kept, "quartersMoved": moved_q, "filled": filled,
+                                         "skipped": skipped})
+        conn.commit()
+        parts = ["'%s' → '%s' (%s முதல்) இணைக்கப்பட்டது." % (alias, to, fq),
+                 "இன்வாய்ஸ் பதிவுகள் மாற்றப்பட்டவை: %d." % fixed]
+        if kept:
+            parts.append("முந்தைய Quarter-களின் %d பதிவுகள் '%s' என்றே இருக்கும்." % (kept, alias))
+        if moved_q:
+            parts.append("Quarter விவரங்கள் நகர்ந்தவை: %d." % moved_q)
+        if dup_q:
+            parts.append("'%s'-ல் ஏற்கனவே உள்ளதால் தவிர்க்கப்பட்ட Quarter விவரங்கள்: %d." % (to, dup_q))
+        if arow:
+            parts.append("Master-ல் '%s' வரிசை இன்னும் உள்ளது; தேவையில்லையெனில் Master-ல் நீக்கலாம்." % alias)
+        return jsonify({"success": True, "message": " ".join(parts), "skipped": skipped})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/data-fix/unlink-alias", methods=["POST"])
+def api_fx_unlink_alias():
+    """இணைப்புப் பதிவை மட்டும் நீக்கும் (ஏற்கனவே மாற்றிய பதிவுகள் பழையபடி மாறாது)."""
+    alias = ((request.get_json(force=True) or {}).get("alias") or "").strip()
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM magazine_aliases WHERE alias_name=%s", (alias,))
+            n = cur.rowcount
+            if n:
+                _fx_log(cur, "unlink_alias", {"alias": alias})
+        conn.commit()
+        return jsonify({"success": True, "removed": n})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
 
 
 @app.route("/api/admin/data-fix/scan")
@@ -7279,6 +7422,8 @@ def api_paid_report():
 # நூலகர் இதழ் வருகைப் பதிவு (librarian_module.py)
 from librarian_module import init_librarian  # noqa: E402
 init_librarian(app, get_conn)
+from missing_module import init_missing  # noqa: E402
+init_missing(app, get_conn, classify_lang, parse_email_list)
 
 
 if __name__ == "__main__":

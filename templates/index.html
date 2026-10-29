@@ -818,6 +818,14 @@
             <span>இதழ் வருகைப் பதிவு &amp; Quarter ஏற்றுதல்</span>
           </div>
         </div>
+        <div class="menu-card" id="menuMissingCard" style="display:none;" onclick="location.href='/admin/missing'">
+          <div class="menu-icon">📭</div>
+          <div class="menu-info">
+            <div class="num">11</div>
+            <h3>வராத இதழ்கள் விவரம்</h3>
+            <span>இதழ் வாரியாக வராதவை &amp; Email இல்லாத இதழ்கள்</span>
+          </div>
+        </div>
       </div>
       </div><!-- /home-left -->
 
@@ -4983,6 +4991,56 @@
       document.getElementById('fxAutoBtn').textContent = '⚡ தானாகச் சரிசெய் (' + autoN + ')';
       clearStatus('fxScanStatus');
       if (d.items.length) setStatus('fxScanStatus', 'error', '⚠️ ' + d.items.length + ' பதிவுகளில் பெயர் பொருந்தவில்லை.');
+      fxRenderAliasCard(d);
+    }
+    function fxRenderAliasCard(d) {
+      const nSel = document.getElementById('fxAliasNew'), mSel = document.getElementById('fxAliasMaster'), qSel = document.getElementById('fxAliasQ');
+      if (!nSel) return;
+      const keepN = nSel.value, keepM = mSel.value, keepQ = qSel.value;
+      nSel.innerHTML = '<option value="">-- தேர்ந்தெடு --</option>' +
+        d.allNames.map(n => '<option value="' + _pe(n.name) + '">' + _pe(n.name) + (n.inMaster ? '' : '  ⚠️ (Master-ல் இல்லை)') + '</option>').join('');
+      mSel.innerHTML = '<option value="">-- தேர்ந்தெடு --</option>' +
+        d.masterNames.map(m => '<option value="' + _pe(m) + '">' + _pe(m) + '</option>').join('');
+      const qs = d.quarters || [];
+      qSel.innerHTML = qs.map(q => '<option value="' + _pe(q) + '">' + _pe(q) + '</option>').join('');
+      if (keepN) nSel.value = keepN;
+      if (keepM) mSel.value = keepM;
+      qSel.value = keepQ || (qs.indexOf('2026-2027-Q2') >= 0 ? '2026-2027-Q2' : (qs[0] || ''));
+      document.getElementById('fxAliasBody').innerHTML = (d.aliases || []).map(a =>
+        '<tr><td>' + _pe(a.alias) + '</td><td>' + _pe(a.master) + '</td><td>' + _pe(a.fromQuarter) + '</td>' +
+        '<td><button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="fxUnlinkAlias(\'' +
+        encodeURIComponent(a.alias) + '\')">இணைப்பை நீக்கு</button></td></tr>').join('') ||
+        '<tr><td colspan="4" class="ctr" style="padding:14px; color:var(--muted);">இணைப்புகள் எதுவும் இல்லை.</td></tr>';
+    }
+    async function fxLinkAlias() {
+      const alias = document.getElementById('fxAliasNew').value;
+      const to = document.getElementById('fxAliasMaster').value;
+      const q = document.getElementById('fxAliasQ').value;
+      if (!alias || !to) { setStatus('fxAliasStatus', 'error', '❌ புதிய பெயர் மற்றும் தொடரும் இதழ் இரண்டையும் தேர்ந்தெடுக்கவும்.'); return; }
+      if (alias === to) { setStatus('fxAliasStatus', 'error', '❌ இரண்டும் ஒரே பெயர்.'); return; }
+      const ok = await showConfirmCard({ icon: '🔗', title: 'இணைக்கவா?',
+        subtitle: '"' + to + '" ஏற்கனவே பதிவாகியுள்ளது. "' + alias + '" என்ற புதிய பெயரை இதனுடன் இணைக்கவா? ' +
+          q + ' முதல் மட்டும் இணையும்; முந்தைய Quarter-கள் மாறாது. "' + alias + '" பெயரில் உள்ள அந்த Quarter முதலான பதிவுகள் "' + to + '" என மாறும்.',
+        buttons: [{ label: 'இல்லை', value: false, style: 'ghost' }, { label: '✅ ஆம், இணை', value: true, style: 'primary' }] });
+      if (!ok) return;
+      setStatus('fxAliasStatus', 'loading', '<span class="spinner dark"></span> இணைக்கப்படுகிறது...');
+      let d;
+      try { d = await _fxApi('/api/admin/data-fix/link-alias', { alias, to, fromQuarter: q }); }
+      catch (e) { setStatus('fxAliasStatus', 'error', '❌ பிழை: ' + _pe(e.message)); return; }
+      if (!d.success) { setStatus('fxAliasStatus', 'error', '❌ ' + _pe(d.message)); return; }
+      await fxScan();
+      setStatus('fxAliasStatus', d.skipped && d.skipped.length ? 'error' : 'success',
+        '✅ ' + _pe(d.message) + (d.skipped || []).map(x => '<br>⚠️ ' + _pe(x.quarter) + ': ' + _pe(x.message)).join(''));
+    }
+    async function fxUnlinkAlias(enc) {
+      const alias = decodeURIComponent(enc);
+      const ok = await showConfirmCard({ icon: '🔗', title: 'இணைப்பை நீக்கவா?',
+        subtitle: '"' + alias + '" இணைப்புப் பதிவு மட்டும் நீக்கப்படும். ஏற்கனவே மாற்றப்பட்ட பதிவுகள் பழையபடி மாறாது.',
+        buttons: [{ label: 'இல்லை', value: false, style: 'ghost' }, { label: 'நீக்கு', value: true, style: 'primary' }] });
+      if (!ok) return;
+      const d = await _fxApi('/api/admin/data-fix/unlink-alias', { alias });
+      if (!d.success) { setStatus('fxAliasStatus', 'error', '❌ ' + _pe(d.message)); return; }
+      await fxScan();
     }
     async function fxAutoFix() {
       const ok = await showConfirmCard({ icon: '⚡', title: 'தானாகச் சரிசெய்யவா?',
@@ -5459,6 +5517,31 @@ function _pdfHelper(fnName, targetId) {
             <table class="data-table" style="font-size:12.5px;">
               <thead><tr><th>Payments பெயர்</th><th>Quarter</th><th>காரணம்</th><th>Master பெயர்</th><th></th></tr></thead>
               <tbody id="fxScanBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">🔗 3) இதழ் பெயர் மாற்றம் — பழைய இதழுடன் இணை</div>
+          <p style="font-size:13px; color:var(--muted); margin-bottom:12px;">
+            இதழின் பெயர் மாறியிருந்தால் (எ.கா. <b>கண்மணி</b> → <b>தேவியின் கண்மணி</b>), புதிய பெயரை ஏற்கனவே பதிவான இதழுடன் இணைக்கலாம்.
+            Master-ல் பழைய பெயரே முதன்மையாகத் தொடரும்; புதிய பெயரில் உள்ள இன்வாய்ஸ் பதிவுகள் <b>தேர்ந்த Quarter முதல் மட்டும்</b> பழைய பெயருக்கு மாறும்.
+            அதற்கு முந்தைய Quarter-கள் மாறாது.
+          </p>
+          <div class="field"><label>புதிய பெயர் (எ.கா. தேவியின் கண்மணி)</label>
+            <select id="fxAliasNew"><option value="">-- தேர்ந்தெடு --</option></select></div>
+          <div class="field"><label>தொடரும் (ஏற்கனவே பதிவான) இதழ் (எ.கா. கண்மணி)</label>
+            <select id="fxAliasMaster"><option value="">-- தேர்ந்தெடு --</option></select></div>
+          <div class="field"><label>இந்த Quarter முதல்</label>
+            <select id="fxAliasQ"></select></div>
+          <div class="btn-row" style="margin:0 0 12px; justify-content:flex-start;">
+            <button class="btn-primary" onclick="fxLinkAlias()">🔗 இணை</button>
+          </div>
+          <div id="fxAliasStatus" class="status"></div>
+          <div class="data-table-wrap" style="max-height:260px;">
+            <table class="data-table" style="font-size:12.5px;">
+              <thead><tr><th>புதிய பெயர்</th><th>தொடரும் இதழ்</th><th>Quarter முதல்</th><th></th></tr></thead>
+              <tbody id="fxAliasBody"></tbody>
             </table>
           </div>
         </div>
@@ -7500,6 +7583,8 @@ async function loadMeAndApplyRole() {
     if (mc) mc.style.display = (d.role === 'admin') ? '' : 'none';
     const lc = document.getElementById('menuLibrarianCard');
     if (lc) lc.style.display = (d.role === 'admin') ? '' : 'none';
+    const mi = document.getElementById('menuMissingCard');
+    if (mi) mi.style.display = (d.role === 'admin') ? '' : 'none';
     const rc = document.getElementById('mailResetCard');
     if (rc) rc.style.display = (d.role === 'admin') ? '' : 'none';
   } catch (e) { /* புறக்கணி */ }
