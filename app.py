@@ -7423,7 +7423,7 @@ def api_paid_report():
 from librarian_module import init_librarian  # noqa: E402
 init_librarian(app, get_conn)
 from missing_module import init_missing  # noqa: E402
-init_missing(app, get_conn, classify_lang, parse_email_list)
+init_missing(app, get_conn, classify_lang, parse_email_list, send_email)
 
 
 if __name__ == "__main__":

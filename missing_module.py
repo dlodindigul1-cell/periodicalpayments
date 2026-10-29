@@ -29,6 +29,7 @@ miss_bp = Blueprint("missing", __name__)
 _get_conn = None
 _classify = None
 _parse_email = None
+_send_email = None
 _cols_ready = False
 
 LIB_COLS = ("name_en", "librarian_name", "librarian_name_en", "phone", "address", "address_en")
@@ -45,9 +46,9 @@ LABELS = {
 }
 
 
-def init_missing(app, get_conn, classify_lang, parse_email_list):
-    global _get_conn, _classify, _parse_email
-    _get_conn, _classify, _parse_email = get_conn, classify_lang, parse_email_list
+def init_missing(app, get_conn, classify_lang, parse_email_list, send_email=None):
+    global _get_conn, _classify, _parse_email, _send_email
+    _get_conn, _classify, _parse_email, _send_email = get_conn, classify_lang, parse_email_list, send_email
     app.register_blueprint(miss_bp)
 
 
@@ -68,6 +69,10 @@ def _ensure_cols():
                 "CREATE TABLE IF NOT EXISTS magazine_aliases ("
                 " alias_name TEXT PRIMARY KEY, master_name TEXT NOT NULL, from_quarter TEXT NOT NULL,"
                 " created_at TIMESTAMPTZ NOT NULL DEFAULT now())")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS missing_mail_log (id SERIAL PRIMARY KEY, magazine TEXT NOT NULL, email TEXT,"
+                " date_from DATE, date_to DATE, rows_count INTEGER, ok BOOLEAN NOT NULL DEFAULT TRUE, error TEXT,"
+                " sent_by TEXT, sent_at TIMESTAMPTZ NOT NULL DEFAULT now())")
         conn.commit()
     finally:
         conn.close()
@@ -118,25 +123,34 @@ def _load_master(cur):
     return mags, resolver, aliases
 
 
-def _build_report(cur, magazine, dfrom, dto):
-    """தேர்ந்த இதழ் + அதே Vendor Code உள்ள Group இதழ்கள் -> groups list"""
+ALL_MAGS = "__all__"
+
+
+def _build_report(cur, magazine, dfrom, dto, lang="", only=False):
+    """வராத இதழ்கள் (நூலகர் / Admin \"Not received\" எனக் குறித்தவை மட்டும்).
+    magazine == ALL_MAGS -> எல்லா இதழ்கள் (lang: ta | en | '' வடிகட்டி; வராத இதழ் உள்ளவை மட்டும்).
+    இல்லையெனில் தேர்ந்த இதழ் + அதே Vendor Code உள்ள Group இதழ்கள் (only=True எனில் தேர்ந்த இதழ் மட்டும்)."""
     mags, resolver, aliases = _load_master(cur)
     by_name = {m["name"]: m for m in mags}
-    sel = by_name.get(magazine) or by_name.get(resolver.get(_key(magazine), ""))
-    if not sel:
-        return None
-    members = [sel]
-    ck = _code_key(sel["code"])
-    if ck:
-        members += [m for m in mags if m["name"] != sel["name"] and _code_key(m["code"]) == ck]
+    if magazine == ALL_MAGS:
+        sel = None
+        members = [m for m in mags if not lang or m["lang"] == lang]
+    else:
+        sel = by_name.get(magazine) or by_name.get(resolver.get(_key(magazine), ""))
+        if not sel:
+            return None
+        members = [sel]
+        ck = _code_key(sel["code"])
+        if ck and not only:
+            members += [m for m in mags if m["name"] != sel["name"] and _code_key(m["code"]) == ck]
     wanted = {m["name"] for m in members}
 
     cur.execute(
         "SELECT l.code AS lcode, l.name AS lname, l.name_en, l.librarian_name, l.librarian_name_en, l.phone, "
-        "       l.address, l.address_en, s.magazine, s.expected_date, r.status "
+        "       l.address, l.address_en, s.magazine, s.expected_date "
         "FROM lib_schedule s JOIN lib_libraries l ON l.code = s.code "
-        "LEFT JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine AND r.expected_date=s.expected_date "
-        "WHERE s.expected_date BETWEEN %s AND %s AND (r.code IS NULL OR r.status = 'Not received') "
+        "JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine AND r.expected_date=s.expected_date "
+        "WHERE s.expected_date BETWEEN %s AND %s AND r.status = 'Not received' "
         "ORDER BY l.code, s.expected_date", (dfrom, dto))
     rows_by = {n: [] for n in wanted}
     for r in cur.fetchall():
@@ -144,8 +158,15 @@ def _build_report(cur, magazine, dfrom, dto):
         if mname in wanted:
             rows_by[mname].append(r)
 
+    cur.execute("SELECT DISTINCT ON (magazine) magazine, sent_at, date_from, date_to FROM missing_mail_log "
+                "WHERE ok ORDER BY magazine, sent_at DESC")
+    last = {x["magazine"]: "%s (%s – %s)" % (x["sent_at"].astimezone(lm.IST).strftime("%d/%m/%Y %H:%M"),
+                                              lm.fmt_d(x["date_from"]), lm.fmt_d(x["date_to"])) for x in cur.fetchall()}
+
     groups = []
     for m in members:
+        if magazine == ALL_MAGS and not rows_by[m["name"]]:
+            continue
         lab = LABELS[m["lang"]]
         en = m["lang"] == "en"
         out = []
@@ -157,10 +178,10 @@ def _build_report(cur, magazine, dfrom, dto):
                 "date": lm.fmt_d(r["expected_date"]),
                 "phone": r["phone"] or "",
                 "address": _addr((r["address_en"] or r["address"]) if en else r["address"]),
-                "status": lab["s_nr"] if r["status"] == "Not received" else lab["s_un"],
             })
-        groups.append({"magazine": m["name"], "lang": m["lang"], "vendorCode": m["code"],
-                       "aliases": aliases.get(m["name"], []), "labels": lab, "isSelected": m["name"] == sel["name"],
+        groups.append({"magazine": m["name"], "lang": m["lang"], "vendorCode": m["code"], "email": m["email"],
+                       "aliases": aliases.get(m["name"], []), "labels": lab,
+                       "isSelected": bool(sel) and m["name"] == sel["name"], "lastMail": last.get(m["name"], ""),
                        "rows": out})
     return groups
 
@@ -195,21 +216,41 @@ def api_missing_magazines():
         {"name": m["name"], "lang": m["lang"], "code": m["code"]} for m in mags]})
 
 
-@miss_bp.route("/api/admin/missing/report")
-@_api
-def api_missing_report():
-    magazine = (request.args.get("magazine") or "").strip()
-    dfrom, dto = _range_args()
+def _report_args(src):
+    """-> (magazine, lang, only, dfrom, dto) ; src = request.args அல்லது JSON body."""
+    magazine = (src.get("magazine") or "").strip()
+    lang = (src.get("lang") or "").strip()
+    lang = lang if lang in ("ta", "en") else ""
+    only = str(src.get("only") or "") in ("1", "true", "True")
+    dto = lm.parse_iso(src.get("to")) or lm.today_ist()
+    dfrom = lm.parse_iso(src.get("from")) or (dto - timedelta(days=30))
+    return magazine, lang, only, dfrom, min(dto, lm.today_ist())
+
+
+def _run_report(src):
+    """-> (groups, dfrom, dto, error_response|None)"""
+    magazine, lang, only, dfrom, dto = _report_args(src)
+    if not magazine:
+        return None, dfrom, dto, (jsonify({"success": False, "message": "இதழைத் தேர்ந்தெடுக்கவும்."}), 400)
     if dfrom > dto:
-        return jsonify({"success": False, "message": "'தேதி முதல்' என்பது 'தேதி வரை'-க்கு முந்தையதாக இருக்க வேண்டும்."}), 400
+        return None, dfrom, dto, (jsonify({"success": False, "message": "'தேதி முதல்' என்பது 'தேதி வரை'-க்கு முந்தையதாக இருக்க வேண்டும்."}), 400)
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
-            groups = _build_report(cur, magazine, dfrom, dto)
+            groups = _build_report(cur, magazine, dfrom, dto, lang, only)
     finally:
         conn.close()
     if groups is None:
-        return jsonify({"success": False, "message": "இதழ் Master-ல் கிடைக்கவில்லை."}), 404
+        return None, dfrom, dto, (jsonify({"success": False, "message": "இதழ் Master-ல் கிடைக்கவில்லை."}), 404)
+    return groups, dfrom, dto, None
+
+
+@miss_bp.route("/api/admin/missing/report")
+@_api
+def api_missing_report():
+    groups, dfrom, dto, err = _run_report(request.args)
+    if err:
+        return err
     return jsonify({"success": True, "from": lm.fmt_d(dfrom), "to": lm.fmt_d(dto), "groups": groups})
 
 
@@ -217,46 +258,252 @@ def api_missing_report():
 @_api
 def api_missing_export():
     import xlsxwriter
-    magazine = (request.args.get("magazine") or "").strip()
-    dfrom, dto = _range_args()
-    conn = _get_conn()
-    try:
-        with conn.cursor() as cur:
-            groups = _build_report(cur, magazine, dfrom, dto)
-    finally:
-        conn.close()
-    if groups is None:
-        return jsonify({"success": False, "message": "இதழ் Master-ல் கிடைக்கவில்லை."}), 404
+    groups, dfrom, dto, err = _run_report(request.args)
+    if err:
+        return err
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
     ws = wb.add_worksheet("Missing issues")
     head = wb.add_format({"bold": True, "bg_color": "#1e4d8c", "font_color": "#ffffff", "border": 1, "text_wrap": True})
     title = wb.add_format({"bold": True, "font_size": 13, "bg_color": "#e8eefb"})
-    cell = wb.add_format({"border": 1, "text_wrap": True, "valign": "top"})
+    cell = wb.add_format({"border": 1, "text_wrap": True, "valign": "top", "num_format": "@"})
     r = 0
     for g in groups:
         lab = g["labels"]
-        ws.merge_range(r, 0, r, 7, "%s: %s   (%s: %s)   %s – %s" % (
+        ws.merge_range(r, 0, r, 6, "%s: %s   (%s: %s)   %s – %s" % (
             lab["mag"], g["magazine"], lab["vendor"], g["vendorCode"] or "-", lm.fmt_d(dfrom), lm.fmt_d(dto)), title)
         r += 1
-        for c, k in enumerate(["sno", "code", "lib", "librarian", "date", "phone", "addr", "status"]):
+        for c, k in enumerate(["sno", "code", "lib", "librarian", "date", "phone", "addr"]):
             ws.write(r, c, lab[k], head)
         r += 1
         if not g["rows"]:
-            ws.merge_range(r, 0, r, 7, lab["none"], cell)
+            ws.merge_range(r, 0, r, 6, lab["none"], cell)
             r += 1
         for x in g["rows"]:
-            for c, v in enumerate([x["sno"], x["code"], x["library"], x["librarian"], x["date"], x["phone"],
-                                   x["address"], x["status"]]):
-                ws.write(r, c, v, cell)
+            for c, v in enumerate([x["sno"], x["code"], x["library"], x["librarian"], x["date"], x["phone"], x["address"]]):
+                ws.write_string(r, c, str(v), cell)
             r += 1
         r += 1
-    for c, w in enumerate([7, 15, 36, 24, 16, 16, 40, 28]):
+    for c, w in enumerate([7, 15, 36, 24, 16, 16, 40]):
         ws.set_column(c, c, w)
     wb.close()
     fname = "missing_issues_%s_%s.xlsx" % (dfrom.isoformat(), dto.isoformat())
     return Response(buf.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     headers={"Content-Disposition": "attachment; filename=" + fname})
+
+
+# ---- மாடல் கடிதம் (தமிழ் / English) — PDF + Mail ------------------------------------------------------ #
+LETTER = {
+    "ta": {
+        "head1": "தமிழ்நாடு அரசு பொது நூலகத் துறை",
+        "head2": "திண்டுக்கல் மாவட்ட நூலக ஆணைக்குழு",
+        "salute": "அன்புடையீர்",
+        "date": "நாள்",
+        "paras": [
+            "திண்டுக்கல் மாவட்ட நூலக ஆணைக்குழுவின் கீழ் செயல்படும் நூலகங்களுக்கு தங்களின் பருவ இதழான {mag} "
+            "விநியோகம் செய்ய ஆணை பிறப்பிக்கப் பட்டுள்ளது.",
+            "நூலகர்களிடம் இருந்து பெறப்பட்ட அறிக்கையில் தங்களது இதழ் கீழ்க்கண்ட நூலகங்களில் கிடைக்கப் பெறவில்லை என "
+            "சம்மந்தப்பட்ட நூலகர்கள் தெரிவித்துள்ளனர்.",
+            "எனவே கீழ்க்குறிப்பிட்டுள்ள நூலகங்களுக்கு விடுபட்ட மேற்படி இதழினை அனுப்பி வைக்கும்படியும், அனுப்பப் பட்ட "
+            "விவரத்தினை இவ்வலுவலக மின்னஞ்சல் முகவரிக்கு அனுப்பி வைக்கும்படியும் தங்களைக் கேட்டுக் கொள்கிறேன்.",
+            "குறிப்பிட்ட காலக் கெடுவிற்குள் தங்களிடம் இருந்து எவ்வித தகவலும் பெறப்படவில்லை எனில் எதிர்வரும் கேட்புப் "
+            "பட்டியலில் இருந்து மேற்கண்ட நூலகங்களுக்கு அனுப்பாத இதழ்களுக்கான தொகை பிடித்தம் செய்யப்படும் என்ற "
+            "விவரத்தினையும் தெரிவித்துக் கொள்கிறேன்.",
+        ],
+        "cols": ["வ.எண்.", "நூலகம் பெயர்", "கிடைக்கப் பெறாத இதழ் தேதி", "நூலகர் பெயர்", "நூலகர் தொலைபேசி எண்", "நூலக முகவரி"],
+        "sign": ["மாவட்ட நூலக அலுவலர்,", "திண்டுக்கல்."],
+        "subject": "இதழ் கிடைக்கப் பெறாதது குறித்து — {mag}",
+    },
+    "en": {
+        "head1": "PUBLIC LIBRARIES DEPARTMENT",
+        "head2": "DINDIGUL DISTRICT LOCAL LIBRARY AUTHORITY",
+        "salute": "Dear Sir / Madam,",
+        "date": "Date",
+        "paras": [
+            "We have subscribed to the magazines {mag} for the year {fy}.",
+            "We have received reports from the concerned librarians regarding the non-receipt of periodical issues "
+            "for the dates mentioned below. The following issues have been reported as not received.",
+            "Hence, I kindly request you to arrange for the dispatch of the missing issues to the concerned libraries "
+            "at the earliest.",
+            "I also request you to inform me by email of the date on which the missing issues will be supplied at "
+            "the earliest. If no response or confirmation is received from your end, the cost of the missing issues "
+            "will be deducted from the forthcoming quarterly invoice.",
+        ],
+        "list_line": "The List of Libraries are given below",
+        "cols": ["S.NO", "NAME OF THE LIBRARY", "NON RECEIVED ISSUE DATE", "LIBRARIAN NAME", "CONTACT NUM", "ADDRESS"],
+        "sign": ["District Library Officer,", "Dindigul."],
+        "subject": "Non-receipt of magazine issues — {mag}",
+    },
+}
+
+
+def _letter_rows(group):
+    """ஒரு நூலகத்துக்கு ஒரே வரிசை; அந்த நூலகத்தின் வராத தேதிகள் ஒன்றின் கீழ் ஒன்றாக."""
+    by, order = {}, []
+    for x in group["rows"]:
+        if x["code"] not in by:
+            by[x["code"]] = {"library": x["library"], "dates": [], "librarian": x["librarian"],
+                             "phone": x["phone"], "address": x["address"]}
+            order.append(x["code"])
+        by[x["code"]]["dates"].append(x["date"])
+    return [dict(by[c], sno=i, date="\n".join(by[c]["dates"])) for i, c in enumerate(order, start=1)]
+
+
+def _fy_text(d):
+    return lm.quarter_label(d).split("-Q")[0]
+
+
+def _letter_paras(group, today):
+    L = LETTER[group["lang"]]
+    return [p.format(mag=group["magazine"], fy=_fy_text(today)) for p in L["paras"]]
+
+
+def build_letter_pdf(group, today):
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+    L = LETTER[group["lang"]]
+    en = group["lang"] == "en"
+    paras = _letter_paras(group, today)
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_margins(15, 14, 15)
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_font("Tamil", "", FONT_REG)
+    pdf.add_font("Tamil", "B", FONT_BOLD)
+    pdf.set_text_shaping(True)
+    pdf.add_page()
+    pdf.set_font("Tamil", "B", 11)
+    pdf.cell(0, 6, L["head1"], align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, L["head2"], align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(5)
+    pdf.set_font("Tamil", size=10)
+    y = pdf.get_y()
+    pdf.cell(110, 6, L["salute"], new_x="LEFT", new_y="TOP")
+    pdf.set_xy(125, y)
+    pdf.cell(0, 6, "%s: %s" % (L["date"], lm.fmt_d(today)), align="R", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(3)
+    for i, p in enumerate(paras):
+        pdf.set_x(pdf.l_margin + 10)
+        pdf.multi_cell(0, 5.6, p, align="J", new_x="LMARGIN", new_y="NEXT")
+        pdf.ln(2.5)
+    if en:
+        pdf.set_font("Tamil", size=9)
+        pdf.cell(0, 6, L["list_line"], new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
+    pdf.set_font("Tamil", size=8)
+    widths = (17, 35, 24, 26, 28, 60)                       # மொத்தம் 190 மி.மீ
+    head_style = FontFace(emphasis="BOLD", color=(0, 0, 0), fill_color=(238, 241, 248))
+    with pdf.table(col_widths=widths, text_align=("CENTER", "LEFT", "CENTER", "LEFT", "CENTER", "LEFT"),
+                   headings_style=head_style, line_height=4.2, padding=1.2, borders_layout="ALL") as table:
+        h = table.row()
+        for c in L["cols"]:
+            h.cell(c, align="C")
+        for x in _letter_rows(group):
+            r = table.row()
+            for v in (str(x["sno"]), x["library"], x["date"], x["librarian"], x["phone"], x["address"]):
+                r.cell(v)
+    pdf.ln(8)
+    pdf.set_font("Tamil", size=10)
+    for ln in L["sign"]:
+        pdf.set_x(pdf.w - pdf.r_margin - 70)
+        pdf.cell(70, 6, ln, align="C", new_x="LMARGIN", new_y="NEXT")
+    return bytes(pdf.output())
+
+
+def build_letter_html(group, today):
+    """மெயில் உடல் — அதே கடிதம் + அட்டவணை (PDF-ம் இணைக்கப்படும்)."""
+    from html import escape as e
+    L = LETTER[group["lang"]]
+    en = group["lang"] == "en"
+    paras = _letter_paras(group, today)
+
+    def multi(v):
+        return e(v).replace("\n", "<br>")
+    th = "border:1px solid #444;padding:5px 7px;background:#eef1f8;font-size:13px;text-align:center"
+    td = "border:1px solid #444;padding:5px 7px;font-size:13px;vertical-align:top"
+    head = "".join("<th style='%s'>%s</th>" % (th, e(c)) for c in L["cols"])
+    body = "".join(
+        "<tr><td style='%s;text-align:center'>%d</td><td style='%s'>%s</td><td style='%s;text-align:center'>%s</td>"
+        "<td style='%s'>%s</td><td style='%s;text-align:center'>%s</td><td style='%s'>%s</td></tr>" % (
+            td, x["sno"], td, e(x["library"]), td, multi(x["date"]), td, e(x["librarian"]), td, e(x["phone"]),
+            td, multi(x["address"])) for x in _letter_rows(group))
+    ps = "".join("<p style='margin:0 0 12px 28px;text-align:justify'>%s</p>" % e(p) for p in paras)
+    listline = "<p style='margin:0 0 6px'>%s</p>" % e(L["list_line"]) if en else ""
+    return (
+        "<div style=\"font-family:'Noto Sans Tamil','Latha',Arial,sans-serif;font-size:14px;color:#111;max-width:760px\">"
+        "<div style='text-align:center;font-weight:700'>%s<br>%s</div><br>"
+        "<table style='width:100%%'><tr><td>%s</td><td style='text-align:right'>%s: %s</td></tr></table><br>"
+        "%s%s<table style='border-collapse:collapse;width:100%%'><thead><tr>%s</tr></thead><tbody>%s</tbody></table>"
+        "<p style='margin:18px 0 0;text-align:right'>%s<br>%s</p></div>" % (
+            e(L["head1"]), e(L["head2"]), e(L["salute"]), e(L["date"]), lm.fmt_d(today), ps, listline, head, body,
+            e(L["sign"][0]), e(L["sign"][1])))
+
+
+@miss_bp.route("/api/admin/missing/letter-pdf")
+@_api
+def api_missing_letter_pdf():
+    """தேர்ந்த இதழுக்கான கடிதம் (PDF) — மெயில் அனுப்பும் முன் பார்வையிட / பதிவிறக்க."""
+    args = request.args.to_dict()
+    args["only"] = "1"
+    groups, dfrom, dto, err = _run_report(args)
+    if err:
+        return err
+    g = groups[0]
+    if not g["rows"]:
+        return jsonify({"success": False, "message": "இந்த இதழுக்கு வராத பதிவுகள் இல்லை."}), 404
+    try:
+        pdf = build_letter_pdf(g, lm.today_ist())
+    except ImportError as ex:
+        return jsonify({"success": False, "message": "PDF நூலகம் இல்லை: %s" % ex}), 500
+    return Response(pdf, mimetype="application/pdf",
+                    headers={"Content-Disposition": "inline; filename=missing_issues_letter_%s.pdf" % lm.today_ist().isoformat()})
+
+
+@miss_bp.route("/api/admin/missing/send-mail", methods=["POST"])
+@_api
+def api_missing_send_mail():
+    """வராத இதழ்கள் உள்ள ஒவ்வொரு இதழுக்கும் (magazine / ALL) அந்த இதழின் Email-க்கு மாடல் கடிதம் + PDF அனுப்பும்."""
+    if _send_email is None:
+        return jsonify({"success": False, "message": "Mail வசதி இணைக்கப்படவில்லை (app.py-ல் init_missing-க்கு send_email கொடுக்கவும்)."}), 500
+    body = request.get_json(force=True, silent=True) or {}
+    groups, dfrom, dto, err = _run_report(body)
+    if err:
+        return err
+    today = lm.today_ist()
+    user = (lm._user().get("username") or "admin")
+    results = []
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            for g in groups:
+                if not g["rows"]:
+                    continue
+                res = {"magazine": g["magazine"], "email": g["email"], "count": len(g["rows"]), "ok": False, "note": ""}
+                if not g["email"]:
+                    res["note"] = "Email இல்லை (\"Email இல்லாத இதழ்கள்\" தாவலில் சேர்க்கவும்)"
+                else:
+                    try:
+                        pdf = build_letter_pdf(g, today)
+                        subject = LETTER[g["lang"]]["subject"].format(mag=g["magazine"])
+                        _send_email(g["email"], subject, build_letter_html(g, today), pdf,
+                                    "missing_issues_%s.pdf" % today.isoformat())
+                        res["ok"] = True
+                        res["note"] = "அனுப்பப்பட்டது"
+                    except Exception as ex:  # noqa: BLE001
+                        res["note"] = str(ex)
+                    cur.execute(
+                        "INSERT INTO missing_mail_log (magazine, email, date_from, date_to, rows_count, ok, error, sent_by) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (g["magazine"], g["email"], dfrom, dto, len(g["rows"]), res["ok"],
+                         "" if res["ok"] else res["note"], user))
+                results.append(res)
+        conn.commit()
+    finally:
+        conn.close()
+    sent = sum(1 for r in results if r["ok"])
+    if not results:
+        return jsonify({"success": False, "message": "இந்தத் தேதி வரம்பில் வராத இதழ்கள் இல்லை; மெயில் அனுப்பப்படவில்லை.", "results": []})
+    return jsonify({"success": sent > 0, "results": results,
+                    "message": "✉️ %d / %d இதழ்களுக்கு மெயில் அனுப்பப்பட்டது." % (sent, len(results))})
 
 
 # ---- Email இல்லாத இதழ்கள் -------------------------------------------------------------------------- #
@@ -611,12 +858,12 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
 
 <div class="card" id="p1">
   <h2>① இதழ் வாரியாக வராத இதழ்கள்</h2>
-  <p class="muted" style="margin:0 0 8px">நூலகர் "Not received" எனக் குறித்தவை + Expected Date கடந்தும் பதிவு செய்யப்படாதவை. அதே Vendor Code உள்ள (Group) இதழ்களும் ஒன்றின் கீழ் ஒன்றாக வரும்.</p>
+  <p class="muted" style="margin:0 0 8px">நூலகர் / Admin "Not received" எனக் குறித்த இதழ்கள் மட்டும். "அனைத்தும்" தேர்ந்தால் வராத இதழ் உள்ள எல்லா இதழ்களும் வரும். காட்டிய பின் இதழுக்கான கடிதத்தைப் பார்க்கலாம்; ✉️ பொத்தான் அந்த இதழின் Email-க்கு மாடல் கடிதத்தை (தமிழ் இதழுக்குத் தமிழ், ஆங்கில இதழுக்கு English) PDF-உடன் அனுப்பும்.</p>
   <div class="flt noprint">
     <div><label>தேதி முதல்</label><input type="date" id="dfrom"></div>
     <div><label>தேதி வரை</label><input type="date" id="dto"></div>
     <div><label>மொழி</label><select id="mlang" onchange="fillMags()"><option value="">அனைத்தும்</option><option value="ta">தமிழ்</option><option value="en">English</option></select></div>
-    <div><label>இதழ்</label><select id="mag"><option value="">-- தேர்ந்தெடு --</option></select></div>
+    <div><label>இதழ்</label><select id="mag"><option value="">-- தேர்ந்தெடு --</option><option value="__all__">அனைத்தும்</option></select></div>
   </div>
   <div class="noprint" style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
     <button onclick="loadReport()">📋 காட்டு</button>
@@ -624,6 +871,7 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
     <button class="alt sm" onclick="window.print()">🖨️ Print</button>
   </div>
   <div id="rmsg" class="msg"></div>
+  <div id="mailres" class="noprint"></div>
   <div id="rout"></div>
 </div>
 
@@ -653,7 +901,7 @@ function tab(n) {
 let MAGS = [];
 function fillMags() {
   const lg = $('mlang').value, cur = $('mag').value;
-  $('mag').innerHTML = '<option value="">-- தேர்ந்தெடு --</option>' +
+  $('mag').innerHTML = '<option value="">-- தேர்ந்தெடு --</option><option value="__all__">அனைத்தும்</option>' +
     MAGS.filter(m => !lg || m.lang === lg).map(m => '<option value="' + esc(m.name) + '">' + esc(m.name) + '</option>').join('');
   if (cur) $('mag').value = cur;
 }
@@ -664,23 +912,60 @@ async function init() {
   const d = await api('/api/admin/missing/magazines');
   MAGS = d.magazines || []; fillMags();
 }
-function qs() { return 'magazine=' + encodeURIComponent($('mag').value) + '&from=' + $('dfrom').value + '&to=' + $('dto').value; }
+function qs(mag, only) {
+  const m = mag || $('mag').value;
+  let q = 'magazine=' + encodeURIComponent(m) + '&from=' + $('dfrom').value + '&to=' + $('dto').value;
+  if (m === '__all__' && $('mlang').value) q += '&lang=' + $('mlang').value;
+  if (only) q += '&only=1';
+  return q;
+}
+let GROUPS = [];
 async function loadReport() {
   if (!$('mag').value) { msg('rmsg', false, 'இதழைத் தேர்ந்தெடுக்கவும்.'); return; }
   msg('rmsg', true, 'ஏற்றப்படுகிறது…');
+  $('mailres').innerHTML = '';
   const d = await api('/api/admin/missing/report?' + qs());
   if (!d.success) { msg('rmsg', false, esc(d.message)); $('rout').innerHTML = ''; return; }
+  GROUPS = d.groups;
   const total = d.groups.reduce((a, g) => a + g.rows.length, 0);
-  msg('rmsg', true, d.from + ' முதல் ' + d.to + ' வரை — மொத்தம் ' + total + ' வராத இதழ் பதிவுகள் (' + d.groups.length + ' இதழ்).');
-  $('rout').innerHTML = d.groups.map(g => {
+  msg('rmsg', true, d.from + ' முதல் ' + d.to + ' வரை — மொத்தம் ' + total + ' வராத இதழ் பதிவுகள் (' + d.groups.filter(g => g.rows.length).length + ' இதழ்).');
+  const withRows = d.groups.filter(g => g.rows.length);
+  $('rout').innerHTML = (withRows.length > 1 ? '<div class="noprint" style="margin:12px 0"><button onclick="sendMail(-1)">✉️ காட்டிய ' + withRows.length + ' இதழ்களுக்கும் Mail அனுப்பு</button></div>' : '') +
+  d.groups.map((g, gi) => {
     const L = g.labels;
     const al = g.aliases.length ? ' · ' + esc(g.aliases.join(', ')) : '';
-    return '<div class="gh">' + esc(L.mag) + ': ' + esc(g.magazine) + al + ' <small>(' + esc(L.vendor) + ': ' + esc(g.vendorCode || '-') + ' · ' + g.rows.length + ')</small></div>' +
-      '<div class="scroll"><table><thead><tr><th>' + [L.sno, L.code, L.lib, L.librarian, L.date, L.phone, L.addr, L.status].map(esc).join('</th><th>') + '</th></tr></thead><tbody>' +
+    const act = g.rows.length
+      ? '<span class="noprint" style="float:right;display:flex;gap:6px;flex-wrap:wrap"><button class="sm alt" onclick="letterPdf(' + gi + ')">📄 கடிதம் PDF</button>' +
+        '<button class="sm" onclick="sendMail(' + gi + ')">✉️ Mail அனுப்பு</button></span>' : '';
+    const em = g.rows.length
+      ? '<div class="noprint muted" style="margin:-2px 0 6px">' + (g.email ? '📧 ' + esc(g.email) : '<span class="bad-c">Email இல்லை — "② Email இல்லாத இதழ்கள்" தாவலில் சேர்க்கவும்</span>') +
+        (g.lastMail ? ' · கடைசியாக அனுப்பியது: ' + esc(g.lastMail) : '') + '</div>' : '';
+    return '<div class="gh">' + act + esc(L.mag) + ': ' + esc(g.magazine) + al + ' <small>(' + esc(L.vendor) + ': ' + esc(g.vendorCode || '-') + ' · ' + g.rows.length + ')</small></div>' + em +
+      '<div class="scroll"><table><thead><tr><th>' + [L.sno, L.code, L.lib, L.librarian, L.date, L.phone, L.addr].map(esc).join('</th><th>') + '</th></tr></thead><tbody>' +
       (g.rows.map(x => '<tr><td>' + x.sno + '</td><td>' + esc(x.code) + '</td><td>' + esc(x.library) + '</td><td>' + esc(x.librarian) + '</td><td>' + esc(x.date) +
-        '</td><td>' + esc(x.phone) + '</td><td style="white-space:pre-line">' + esc(x.address) + '</td><td>' + esc(x.status) + '</td></tr>').join('') ||
-        '<tr><td colspan="8" class="ok-c">' + esc(L.none) + '</td></tr>') + '</tbody></table></div>';
+        '</td><td>' + esc(x.phone) + '</td><td style="white-space:pre-line">' + esc(x.address) + '</td></tr>').join('') ||
+        '<tr><td colspan="7" class="ok-c">' + esc(L.none) + '</td></tr>') + '</tbody></table></div>';
   }).join('');
+}
+function letterPdf(gi) {
+  window.open('/api/admin/missing/letter-pdf?' + qs(GROUPS[gi].magazine, true), '_blank');
+}
+async function sendMail(gi) {
+  const list = gi < 0 ? GROUPS.filter(g => g.rows.length) : [GROUPS[gi]];
+  const noMail = list.filter(g => !g.email).map(g => g.magazine);
+  const lines = list.filter(g => g.email).map(g => '• ' + g.magazine + ' → ' + g.email + ' (' + g.rows.length + ' பதிவு, ' + (g.lang === 'en' ? 'English' : 'தமிழ்') + ')');
+  if (!lines.length) { msg('rmsg', false, 'Email உள்ள இதழ் இல்லை — "② Email இல்லாத இதழ்கள்" தாவலில் Email சேர்க்கவும்.'); return; }
+  if (!confirm('இந்த இதழ்களின் Email-க்கு கடிதம் (PDF இணைப்புடன்) அனுப்பவா?\\n\\n' + lines.join('\\n') +
+      (noMail.length ? '\\n\\nEmail இல்லாததால் தவிர்க்கப்படுபவை: ' + noMail.join(', ') : ''))) return;
+  msg('rmsg', true, 'Mail அனுப்பப்படுகிறது…');
+  const body = {from: $('dfrom').value, to: $('dto').value, lang: $('mlang').value};
+  if (gi < 0) { body.magazine = $('mag').value; }
+  else { body.magazine = GROUPS[gi].magazine; body.only = '1'; }
+  let d;
+  try { d = await api('/api/admin/missing/send-mail', body); } catch (e) { msg('rmsg', false, 'Mail அனுப்ப முடியவில்லை: ' + esc(e)); return; }
+  msg('rmsg', !!d.success, esc(d.message));
+  $('mailres').innerHTML = (d.results || []).map(r => '<div class="' + (r.ok ? 'ok-c' : 'bad-c') + '" style="margin:3px 0">' + (r.ok ? '✅ ' : '❌ ') + esc(r.magazine) + ' → ' + esc(r.email || '-') + ' : ' + esc(r.note) + '</div>').join('');
+  if (d.results && d.results.some(r => r.ok)) loadReport().then(() => { msg('rmsg', !!d.success, esc(d.message)); });
 }
 function exportXlsx() {
   if (!$('mag').value) { msg('rmsg', false, 'இதழைத் தேர்ந்தெடுக்கவும்.'); return; }
