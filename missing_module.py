@@ -304,8 +304,8 @@ LETTER = {
             "விநியோகம் செய்ய ஆணை பிறப்பிக்கப் பட்டுள்ளது.",
             "நூலகர்களிடம் இருந்து பெறப்பட்ட அறிக்கையில் தங்களது இதழ் கீழ்க்கண்ட நூலகங்களில் கிடைக்கப் பெறவில்லை என "
             "சம்மந்தப்பட்ட நூலகர்கள் தெரிவித்துள்ளனர்.",
-            "எனவே கீழ்க்குறிப்பிட்டுள்ள நூலகங்களுக்கு விடுபட்ட மேற்படி இதழினை அனுப்பி வைக்கும்படியும், அனுப்பப் பட்ட "
-            "விவரத்தினை இவ்வலுவலக மின்னஞ்சல் முகவரிக்கு அனுப்பி வைக்கும்படியும் தங்களைக் கேட்டுக் கொள்கிறேன்.",
+            "எனவே கீழ்க்குறிப்பிட்டுள்ள நூலகங்களுக்கு விடுபட்ட மேற்படி இதழினை அனுப்பி வைக்கும்படியும், அனுப்பப்பட்ட "
+            "விவரத்தினை இவ்வலுவலக மின்னஞ்சல் முகவரி (dlodindigul1Gmail.com)க்கு அனுப்பி வைக்கும்படியும் தங்களைக் கேட்டுக் கொள்கிறேன்.",
             "குறிப்பிட்ட காலக் கெடுவிற்குள் தங்களிடம் இருந்து எவ்வித தகவலும் பெறப்படவில்லை எனில் எதிர்வரும் கேட்புப் "
             "பட்டியலில் இருந்து மேற்கண்ட நூலகங்களுக்கு அனுப்பாத இதழ்களுக்கான தொகை பிடித்தம் செய்யப்படும் என்ற "
             "விவரத்தினையும் தெரிவித்துக் கொள்கிறேன்.",
@@ -325,7 +325,7 @@ LETTER = {
             "for the dates mentioned below. The following issues have been reported as not received.",
             "Hence, I kindly request you to arrange for the dispatch of the missing issues to the concerned libraries "
             "at the earliest.",
-            "I also request you to inform me by email of the date on which the missing issues will be supplied at "
+            "I also request you to inform me by email(dlodindigul1@gmail.com) of the date on which the missing issues will be supplied at "
             "the earliest. If no response or confirmation is received from your end, the cost of the missing issues "
             "will be deducted from the forthcoming quarterly invoice.",
         ],
