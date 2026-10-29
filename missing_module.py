@@ -15,6 +15,7 @@ app.py-ல் `init_missing(app, get_conn, classify_lang, parse_email_list)` எ
 """
 
 import io
+import os
 import re
 import unicodedata
 from datetime import timedelta
@@ -89,6 +90,12 @@ def _key(v):
     return " ".join(v.replace("\xa0", " ").split()).casefold()
 
 
+def _addr(v):
+    """முகவரியின் வரி மாற்றங்கள் (Enter) அப்படியே இருக்கும்; \\r\\n -> \\n, ஒவ்வொரு வரியின் ஓரத்து இடைவெளி நீக்கம், வெற்று வரிகள் நீக்கம்."""
+    lines = (v or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return "\n".join(ln.strip() for ln in lines if ln.strip())
+
+
 def _code_key(v):
     return re.sub(r"[\s\-_./]+", "", v or "").upper()
 
@@ -149,7 +156,7 @@ def _build_report(cur, magazine, dfrom, dto):
                 "librarian": ((r["librarian_name_en"] or r["librarian_name"]) if en else r["librarian_name"]) or "",
                 "date": lm.fmt_d(r["expected_date"]),
                 "phone": r["phone"] or "",
-                "address": ((r["address_en"] or r["address"]) if en else r["address"]) or "",
+                "address": _addr((r["address_en"] or r["address"]) if en else r["address"]),
                 "status": lab["s_nr"] if r["status"] == "Not received" else lab["s_un"],
             })
         groups.append({"magazine": m["name"], "lang": m["lang"], "vendorCode": m["code"],
@@ -315,7 +322,7 @@ def api_missing_libraries():
 def api_missing_library_save():
     body = request.get_json(force=True, silent=True) or {}
     code = (body.get("code") or "").strip()
-    vals = [(body.get(c) or "").strip() for c in LIB_COLS]
+    vals = [(_addr(body.get(c)) if c in ("address", "address_en") else (body.get(c) or "").strip()) for c in LIB_COLS]
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -407,6 +414,7 @@ def api_missing_libraries_upload():
                             unknown.append(code)
                         continue
                     vals = [lm._txt(row[k]) if len(row) > k else "" for k in range(2, 8)]
+                    vals[2], vals[5] = _addr(vals[2]), _addr(vals[5])      # முகவரி: வரி மாற்றங்கள் அப்படியே
                     if not any(vals):
                         empty += 1
                         continue
@@ -434,6 +442,150 @@ def api_missing_libraries_upload():
             len(unknown), ", ".join(unknown[:10]), "…" if len(unknown) > 10 else ""))
     return jsonify({"success": True, "updated": updated, "emptyRows": empty, "warnings": warn,
                     "message": "✅ %d நூலகங்களின் விவரம் புதுப்பிக்கப்பட்டது; %d வரிசைகளில் புதிய தகவல் இல்லை." % (updated, empty)})
+
+
+# ---- நூலகங்கள் / நூலகர் முகவரி & தொலைபேசி — Excel / PDF பதிவிறக்கம் ------------------------------------ #
+FONT_REG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "fonts", "NotoSansTamil-Regular.ttf")
+FONT_BOLD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static", "fonts", "NotoSansTamil-Bold.ttf")
+
+LIBX_LABELS = {
+    "ta": {"title": "நூலகங்கள் / நூலகர் முகவரி மற்றும் தொலைபேசி எண்", "office": "மாவட்ட நூலக அலுவலகம், திண்டுக்கல்",
+           "sno": "வ.எண்.", "code": "நூலகக் குறியீடு", "lib": "நூலகம்", "cat": "வகை", "librarian": "நூலகர் பெயர்",
+           "phone": "தொலைபேசி எண்", "addr": "முகவரி", "page": "பக்கம்", "total": "மொத்த நூலகங்கள்", "date": "நாள்"},
+    "en": {"title": "Libraries - Librarian Address & Phone Directory", "office": "District Library Office, Dindigul",
+           "sno": "S.No.", "code": "Library Code", "lib": "Library", "cat": "Category", "librarian": "Librarian",
+           "phone": "Phone", "addr": "Address", "page": "Page", "total": "Total libraries", "date": "Date"},
+}
+
+
+def _libx_rows(lang):
+    """வடிகட்டிய (category, q) நூலகப் பட்டியல் -> (rows, category) ; lang=en எனில் English புலங்கள் (காலி எனில் தமிழ்)."""
+    cat = (request.args.get("category") or "").strip()
+    q = _key(request.args.get("q") or "")
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT code, name, category, name_en, librarian_name, librarian_name_en, phone, "
+                        "address, address_en FROM lib_libraries ORDER BY code")
+            db = cur.fetchall()
+    finally:
+        conn.close()
+    en = lang == "en"
+    out = []
+    for r in db:
+        if cat and r["category"] != cat:
+            continue
+        if q and q not in _key("%s %s" % (r["code"], r["name"])):
+            continue
+        out.append({
+            "code": r["code"] or "",
+            "library": ((r["name_en"] or r["name"]) if en else r["name"]) or "",
+            "category": r["category"] or "",
+            "librarian": ((r["librarian_name_en"] or r["librarian_name"]) if en else r["librarian_name"]) or "",
+            "phone": r["phone"] or "",
+            "address": _addr((r["address_en"] or r["address"]) if en else r["address"]),
+        })
+    out.sort(key=lambda x: (lm._category_sort_key(x["category"]), x["code"]))
+    for i, x in enumerate(out, start=1):
+        x["sno"] = i
+    return out, cat
+
+
+def _libx_xlsx(rows, lab, cat):
+    import xlsxwriter
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"in_memory": True})
+    ws = wb.add_worksheet("Libraries")
+    ttl = wb.add_format({"bold": True, "font_size": 14, "align": "center", "valign": "vcenter"})
+    sub = wb.add_format({"font_size": 10, "align": "center", "font_color": "#44506f"})
+    head = wb.add_format({"bold": True, "bg_color": "#1e4d8c", "font_color": "#ffffff", "border": 1,
+                          "text_wrap": True, "align": "center", "valign": "vcenter"})
+    cell = wb.add_format({"border": 1, "text_wrap": True, "valign": "top", "num_format": "@"})
+    num = wb.add_format({"border": 1, "valign": "top", "align": "center"})
+    keys = ["sno", "code", "lib", "cat", "librarian", "phone", "addr"]
+    ws.merge_range(0, 0, 0, len(keys) - 1, lab["office"] + " - " + lab["title"], ttl)
+    ws.merge_range(1, 0, 1, len(keys) - 1, "%s: %s%s   |   %s: %d" % (
+        lab["date"], lm.fmt_d(lm.today_ist()), ("   |   " + cat) if cat else "", lab["total"], len(rows)), sub)
+    ws.set_row(0, 24)
+    for c, k in enumerate(keys):
+        ws.write(3, c, lab[k], head)
+    ws.set_row(3, 28)
+    for i, x in enumerate(rows, start=4):
+        ws.write_number(i, 0, x["sno"], num)
+        for c, v in enumerate([x["code"], x["library"], x["category"], x["librarian"], x["phone"], x["address"]], start=1):
+            ws.write_string(i, c, v, cell)
+    for c, w in enumerate([8, 16, 36, 22, 24, 18, 34]):
+        ws.set_column(c, c, w)
+    ws.freeze_panes(4, 0)
+    ws.autofilter(3, 0, 3 + max(len(rows), 1), len(keys) - 1)
+    ws.set_landscape()
+    ws.set_paper(9)
+    ws.fit_to_pages(1, 0)
+    ws.repeat_rows(3)
+    wb.close()
+    return buf.getvalue()
+
+
+def _libx_pdf(rows, lab, cat):
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+
+    class _Pdf(FPDF):
+        def footer(self):
+            self.set_y(-10)
+            self.set_font("Tamil", size=8)
+            self.cell(0, 5, "%s %d / {nb}" % (lab["page"], self.page_no()), align="C")
+
+    pdf = _Pdf(orientation="L", unit="mm", format="A4")
+    pdf.set_margins(10, 10, 10)
+    pdf.set_auto_page_break(auto=True, margin=14)
+    pdf.add_font("Tamil", "", FONT_REG)
+    pdf.add_font("Tamil", "B", FONT_BOLD)
+    pdf.set_text_shaping(True)
+    pdf.alias_nb_pages()
+    pdf.add_page()
+    pdf.set_font("Tamil", "B", 14)
+    pdf.cell(0, 8, lab["office"], align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Tamil", "B", 12)
+    pdf.cell(0, 7, lab["title"], align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Tamil", size=9)
+    pdf.cell(0, 6, "%s: %s%s   |   %s: %d" % (lab["date"], lm.fmt_d(lm.today_ist()), ("   |   " + cat) if cat else "",
+                                              lab["total"], len(rows)), align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+    pdf.set_font("Tamil", size=8)
+    widths = (12, 26, 60, 34, 44, 32, 69)          # மொத்தம் 277 மி.மீ (A4 landscape - 20)
+    head_style = FontFace(emphasis="BOLD", color=(255, 255, 255), fill_color=(30, 77, 140))
+    with pdf.table(col_widths=widths, text_align=("CENTER", "LEFT", "LEFT", "LEFT", "LEFT", "LEFT", "LEFT"),
+                   headings_style=head_style, line_height=4.4, padding=1, borders_layout="ALL") as table:
+        h = table.row()
+        for k in ("sno", "code", "lib", "cat", "librarian", "phone", "addr"):
+            h.cell(lab[k], align="C")
+        for x in rows:
+            r = table.row()
+            for v in (str(x["sno"]), x["code"], x["library"], x["category"], x["librarian"], x["phone"], x["address"]):
+                r.cell(v)
+    return bytes(pdf.output())
+
+
+@miss_bp.route("/api/admin/missing/libraries-export")
+@_api
+def api_missing_libraries_export():
+    """நூலகப் பட்டியல் (code, நூலகம், வகை, நூலகர், தொலைபேசி, முகவரி) — format=xlsx|pdf, lang=ta|en, category, q."""
+    fmt = (request.args.get("format") or "xlsx").lower()
+    lang = "en" if (request.args.get("lang") or "ta").lower() == "en" else "ta"
+    rows, cat = _libx_rows(lang)
+    lab = LIBX_LABELS[lang]
+    stamp = lm.today_ist().isoformat()
+    try:
+        if fmt == "pdf":
+            body, mime, ext = _libx_pdf(rows, lab, cat), "application/pdf", "pdf"
+        else:
+            body, mime, ext = _libx_xlsx(rows, lab, cat), \
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "xlsx"
+    except ImportError as e:
+        return jsonify({"success": False, "message": "தேவையான நூலகம் இல்லை: %s (requirements.txt-ஐ நிறுவவும்)" % e}), 500
+    return Response(body, mimetype=mime,
+                    headers={"Content-Disposition": "attachment; filename=library_directory_%s_%s.%s" % (lang, stamp, ext)})
 
 
 MISSING_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
@@ -526,7 +678,7 @@ async function loadReport() {
     return '<div class="gh">' + esc(L.mag) + ': ' + esc(g.magazine) + al + ' <small>(' + esc(L.vendor) + ': ' + esc(g.vendorCode || '-') + ' · ' + g.rows.length + ')</small></div>' +
       '<div class="scroll"><table><thead><tr><th>' + [L.sno, L.code, L.lib, L.librarian, L.date, L.phone, L.addr, L.status].map(esc).join('</th><th>') + '</th></tr></thead><tbody>' +
       (g.rows.map(x => '<tr><td>' + x.sno + '</td><td>' + esc(x.code) + '</td><td>' + esc(x.library) + '</td><td>' + esc(x.librarian) + '</td><td>' + esc(x.date) +
-        '</td><td>' + esc(x.phone) + '</td><td>' + esc(x.address) + '</td><td>' + esc(x.status) + '</td></tr>').join('') ||
+        '</td><td>' + esc(x.phone) + '</td><td style="white-space:pre-line">' + esc(x.address) + '</td><td>' + esc(x.status) + '</td></tr>').join('') ||
         '<tr><td colspan="8" class="ok-c">' + esc(L.none) + '</td></tr>') + '</tbody></table></div>';
   }).join('');
 }
@@ -578,7 +730,14 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:120px} .sm{padding:
 </div>
 <div class="card">
   <h2>② நூலகம் வாரியாகத் திருத்த</h2>
-  <input type="text" id="flt" placeholder="code அல்லது நூலகப் பெயரைத் தேடு…" oninput="render()" style="max-width:360px;margin-bottom:10px">
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+    <input type="text" id="flt" placeholder="code அல்லது நூலகப் பெயரைத் தேடு…" oninput="render()" style="max-width:300px">
+    <select id="fcat" onchange="render()" style="max-width:220px"><option value="">எல்லா வகைகளும்</option></select>
+    <select id="flang" style="max-width:130px" title="பதிவிறக்க மொழி"><option value="ta">தமிழ்</option><option value="en">English</option></select>
+    <button class="alt" onclick="dl('xlsx')">📥 Excel பதிவிறக்கு</button>
+    <button class="alt" onclick="dl('pdf')">📄 PDF பதிவிறக்கு</button>
+  </div>
+  <div class="muted" style="margin:-4px 0 8px">மேலே தேடல் / வகை தேர்ந்தால் அந்தப் பட்டியல் மட்டுமே Excel / PDF-ல் வரும். English தேர்ந்தால் English விவரம் இல்லாத இடத்தில் தமிழ் வரும்.</div>
   <div id="lmsg" class="msg"></div>
   <div class="scroll"><table><thead><tr><th>Code</th><th>நூலகம்</th><th>நூலகர் பெயர்</th><th>தொலைபேசி</th><th>முகவரி</th><th>Library (English)</th><th>Librarian (English)</th><th>Address (English)</th><th></th></tr></thead><tbody id="ltb"></tbody></table></div>
 </div>
@@ -598,13 +757,24 @@ const F = ['librarian_name', 'phone', 'address', 'name_en', 'librarian_name_en',
 async function load() {
   const d = await api('/api/admin/missing/libraries');
   if (!d.success) { msg('lmsg', false, esc(d.message)); return; }
-  LIBS = d.items; render();
+  LIBS = d.items;
+  const cats = [...new Set(LIBS.map(x => x.category).filter(Boolean))].sort();
+  $('fcat').innerHTML = '<option value="">எல்லா வகைகளும்</option>' + cats.map(c => '<option>' + esc(c) + '</option>').join('');
+  render();
+}
+function dl(fmt) {
+  const p = new URLSearchParams({format: fmt, lang: $('flang').value});
+  if ($('fcat').value) p.set('category', $('fcat').value);
+  if ($('flt').value.trim()) p.set('q', $('flt').value.trim());
+  location.href = '/api/admin/missing/libraries-export?' + p.toString();
 }
 function render() {
   const q = $('flt').value.trim().toLowerCase();
-  $('ltb').innerHTML = LIBS.map((x, i) => [x, i]).filter(([x]) => !q || (x.code + ' ' + x.name).toLowerCase().includes(q)).map(([x, i]) =>
+  $('ltb').innerHTML = LIBS.map((x, i) => [x, i]).filter(([x]) => (!q || (x.code + ' ' + x.name).toLowerCase().includes(q)) && (!$('fcat').value || x.category === $('fcat').value)).map(([x, i]) =>
     '<tr><td>' + esc(x.code) + '</td><td>' + esc(x.name) + '</td>' +
-    F.map(k => '<td><input id="l_' + k + i + '" value="' + esc(x[k]) + '"></td>').join('') +
+    F.map(k => (k === 'address' || k === 'address_en')
+       ? '<td><textarea id="l_' + k + i + '" rows="6" style="width:100%;min-width:200px;font:inherit;font-size:13px;padding:5px 7px">' + esc(x[k]) + '</textarea></td>'
+       : '<td><input id="l_' + k + i + '" value="' + esc(x[k]) + '"></td>').join('') +
     '<td><button class="sm" onclick="saveLib(' + i + ')">சேமி</button></td></tr>').join('');
 }
 async function saveLib(i) {
