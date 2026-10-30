@@ -101,6 +101,12 @@ def _addr(v):
     return "\n".join(ln.strip() for ln in lines if ln.strip())
 
 
+def _vendor_key(code):
+    """Vendor Code குழு ஒப்பீடு — app.py-ன் vendor_code_key போலவே: இடைவெளிகள் நீக்கம், பெரிய எழுத்து, வேறு வகைக் கோடுகள் -> '-'."""
+    c = re.sub(r"[\s\u00a0\u200b\ufeff]+", "", (code or "")).upper()
+    return re.sub(r"[\u2010-\u2015\u2212]", "-", c)
+
+
 def _code_key(v):
     return re.sub(r"[\s\-_./]+", "", v or "").upper()
 
@@ -579,6 +585,7 @@ def api_missing_no_email():
         conn.close()
     items = [{"name": m["name"], "vendorName": m["vendorName"], "code": m["code"], "lang": m["lang"]}
              for m in mags if not m["email"]]
+    items.sort(key=lambda x: (_vendor_key(x["code"]) or "~", x["name"]))   # ஒரே Vendor Code குழு அருகருகே
     return jsonify({"success": True, "items": items, "total": len(mags)})
 
 
@@ -601,13 +608,27 @@ def api_missing_save_email():
             if cur.rowcount == 0:
                 conn.rollback()
                 return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை."}), 404
+            # அதே Vendor Code குழுவில் Email காலியாக உள்ள மற்ற இதழ்களுக்கும் தானாகச் சேர்க்கும்
+            # (ஏற்கனவே Email உள்ள இதழ்கள் மாற்றப்படாது)
+            cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (name,))
+            key = _vendor_key((cur.fetchone() or {}).get("tnpfts_code"))
+            others = []
+            if key:
+                cur.execute("SELECT name, tnpfts_code FROM magazines "
+                            "WHERE name<>%s AND COALESCE(TRIM(email_id),'')='' ORDER BY name", (name,))
+                others = [r["name"] for r in cur.fetchall() if _vendor_key(r["tnpfts_code"]) == key]
+                if others:
+                    cur.execute("UPDATE magazines SET email_id=%s WHERE name = ANY(%s)", (email, others))
         conn.commit()
     except Exception as e:  # noqa: BLE001
         conn.rollback()
         return jsonify({"success": False, "message": str(e)}), 500
     finally:
         conn.close()
-    return jsonify({"success": True, "message": "'%s' Email சேமிக்கப்பட்டது (Vendor Bank Master-லும் மாறியது)." % name})
+    msg_txt = "'%s' Email சேமிக்கப்பட்டது (Vendor Bank Master-லும் மாறியது)." % name
+    if others:
+        msg_txt += " அதே Vendor Code குழுவின் %d இதழ்களுக்கும் தானாகச் சேர்க்கப்பட்டது: %s." % (len(others), ", ".join(others))
+    return jsonify({"success": True, "message": msg_txt, "alsoSaved": others})
 
 
 # ---- நூலக விவரங்கள் (நூலகர் பெயர், தொலைபேசி, முகவரி) ------------------------------------------------- #
@@ -943,7 +964,7 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
 
 <div class="card" id="p2" style="display:none">
   <h2>② Email முகவரி இல்லாத இதழ்கள்</h2>
-  <p class="muted" style="margin:0 0 8px">இங்கே சேமிக்கும் Email, Vendor Bank Master-லும் (அதே புலம்) உடனே மாறும். பல முகவரிகளைக் காற்புள்ளியால் பிரிக்கலாம்.</p>
+  <p class="muted" style="margin:0 0 8px">இங்கே சேமிக்கும் Email, Vendor Bank Master-லும் (அதே புலம்) உடனே மாறும். பல முகவரிகளைக் காற்புள்ளியால் பிரிக்கலாம். 🔗 ஒரு இதழுக்கு Email சேமித்தால், அதே Vendor Code உள்ள Email இல்லாத மற்ற இதழ்களுக்கும் தானாகச் சேரும்.</p>
   <div id="emsg" class="msg"></div>
   <div class="scroll"><table><thead><tr><th>#</th><th>இதழ்</th><th>Vendor பெயர்</th><th>Vendor Code</th><th>Email</th><th></th></tr></thead><tbody id="etb"></tbody></table></div>
 </div>
