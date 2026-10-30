@@ -465,6 +465,41 @@ def api_librarian_ordered_export():
                     headers={"Content-Disposition": f"attachment; filename=ordered_magazines_{code}_{stamp}.{ext}"})
 
 
+# ---- இந்த மாதம் / முந்தைய மாதம்: வந்தவை - வராதவை ---------------------------------------------------- #
+TA_MONTHS = ["ஜனவரி", "பிப்ரவரி", "மார்ச்", "ஏப்ரல்", "மே", "ஜூன்",
+             "ஜூலை", "ஆகஸ்ட்", "செப்டம்பர்", "அக்டோபர்", "நவம்பர்", "டிசம்பர்"]
+
+
+def month_bounds(d, offset=0):
+    """d-ன் மாதம் (offset=1 -> முந்தைய மாதம்) முதல் நாள், கடைசி நாள்."""
+    first = d.replace(day=1)
+    for _ in range(offset):
+        first = (first - timedelta(days=1)).replace(day=1)
+    nxt = (first + timedelta(days=32)).replace(day=1)
+    return first, nxt - timedelta(days=1)
+
+
+@lib_bp.route("/api/librarian/month")
+@librarian_api()
+def api_librarian_month():
+    offset = 1 if request.args.get("offset") == "1" else 0
+    first, last = month_bounds(today_ist(), offset)
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT s.magazine, s.expected_date, r.status FROM lib_schedule s "
+                "JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine AND r.expected_date=s.expected_date "
+                "WHERE s.code=%s AND s.expected_date BETWEEN %s AND %s "
+                "ORDER BY s.expected_date DESC, s.magazine", (session["lib_code"], first, last))
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    pick = lambda st: [{"magazine": r["magazine"], "dateLabel": fmt_d(r["expected_date"])} for r in rows if r["status"] == st]
+    return jsonify({"success": True, "offset": offset, "label": f"{TA_MONTHS[first.month - 1]} {first.year}",
+                    "received": pick("Received"), "notReceived": pick("Not received")})
+
+
 # =========================================================================== #
 # 2. Excel / CSV வாசிப்பு (Quarter ஏற்றுதல்)
 # =========================================================================== #
@@ -976,13 +1011,13 @@ go.onclick=async()=>{go.disabled=true;
 DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>இதழ்கள் வருகை பதிவு</title>
 <style>""" + BASE_CSS + """
-.day{background:#1e4d8c;color:#fff;border-radius:10px;padding:8px 12px;margin:16px 0 8px;font-weight:700;font-size:14px}
-.sec{border-radius:12px;padding:11px 14px;margin:22px 0 6px;font-weight:800;font-size:15px}
+.day{background:#1e4d8c;color:#fff;border-radius:10px;padding:9px 14px;margin:16px 0 8px;font-weight:700;font-size:16px}
+.sec{border-radius:12px;padding:13px 16px;margin:24px 0 8px;font-weight:800;font-size:19px}
 .sec.unreg{background:#fff3cd;color:#7a5600;border:1.5px solid #f0c75e}
 .sec.pend{background:#fdecea;color:#a12b20;border:1.5px solid #f2b8b1}
 .sec.this{background:#e8eefb;color:#0f2347;border:1.5px solid #b9c7e6}
 .row{background:#fff;border-radius:12px;padding:12px 14px;margin-bottom:8px;box-shadow:0 2px 8px rgba(15,35,71,.07);display:flex;gap:12px;align-items:center;flex-wrap:wrap}
-.row .nm{flex:1;min-width:180px;font-weight:600} .row .nm small{display:block;color:#6b7694;font-weight:400;font-size:12px;margin-top:2px}
+.row .nm{flex:1;min-width:180px;font-weight:700;font-size:16px} .row .nm small{display:block;color:#6b7694;font-weight:400;font-size:12px;margin-top:2px}
 .opts{display:flex;gap:8px} .opts label{margin:0;display:block}
 .opts input{display:none}
 .opts span{display:inline-block;padding:9px 14px;border-radius:9px;border:1.5px solid #c5cee3;font-size:14px;font-weight:600;color:#44506f;background:#fff;cursor:pointer;user-select:none}
@@ -991,8 +1026,9 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 .bar{position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #d6ddee;padding:10px 14px;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap;z-index:5}
 .bar .info{font-size:14px;color:#1b2540;font-weight:600} .bar .alt{background:#e8eefb;color:#1e4d8c}
 .chip{display:inline-block;background:#e8eefb;color:#1e4d8c;border-radius:999px;padding:3px 10px;font-size:12px;margin-right:6px}
-.ttl{flex:1;min-width:240px;text-align:center;line-height:1.45}
-.ttl .l1{font-size:19px;font-weight:800} .ttl .l2{font-size:16px;font-weight:700} .ttl .l3{font-size:16px;font-weight:700;color:#ffe08a} .ttl .l4{font-size:15px;font-weight:600;margin-top:2px;border-top:1px solid rgba(255,255,255,.35);padding-top:4px;display:inline-block}
+.top{padding:22px 24px}
+.ttl{flex:1;min-width:260px;text-align:center;line-height:1.5}
+.ttl .l1{font-size:clamp(22px,4.2vw,36px);font-weight:800} .ttl .l2{font-size:clamp(19px,3.4vw,29px);font-weight:700} .ttl .l3{font-size:clamp(19px,3.4vw,29px);font-weight:800;color:#ffe08a} .ttl .l4{font-size:clamp(18px,3.1vw,26px);font-weight:700;margin-top:4px;border-top:2px solid rgba(255,255,255,.4);padding-top:6px;display:inline-block}
 .nav{display:flex;gap:8px;flex-wrap:wrap}
 .tools{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .tools input[type=search]{flex:1;min-width:200px;padding:11px 12px;border:1.5px solid #c5cee3;border-radius:10px;font-size:15px}
@@ -1001,11 +1037,15 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 .boxes{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}
 @media(max-width:640px){.boxes{grid-template-columns:1fr}}
 .bx{border-radius:14px;overflow:hidden;background:#fff;box-shadow:0 4px 18px rgba(15,35,71,.08)}
-.bx h3{margin:0;padding:10px 14px;font-size:15px;color:#fff}
+.bx h3{margin:0;padding:12px 14px;font-size:19px;color:#fff;line-height:1.35}
 .bx.rc h3{background:#1b8a43} .bx.nr h3{background:#c0392b}
 .mq{height:150px;overflow-y:auto;padding:6px 14px;scrollbar-width:thin}
-.mq div.it{padding:6px 0;border-bottom:1px dashed #d6ddee;font-size:14px;font-weight:600}
+.mq div.it{padding:7px 0;border-bottom:1px dashed #d6ddee;font-size:16px;font-weight:600}
 .mq .none{color:#6b7694;font-size:13px;padding:10px 0}
+.seg{display:flex;gap:8px;margin:0 0 12px;flex-wrap:wrap}
+.seg button{background:#e8eefb;color:#1e4d8c;border:2px solid #b9c7e6;font-size:17px;padding:10px 20px}
+.seg button.on{background:#1e4d8c;color:#fff;border-color:#1e4d8c}
+.hint2{margin-top:8px;font-size:13px;color:#5a6685;width:100%}
 #toast{position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);background:#1b6b34;color:#fff;padding:16px 28px;border-radius:14px;font-size:18px;font-weight:800;box-shadow:0 8px 30px rgba(0,0,0,.3);z-index:50;display:none}
 </style></head><body>
 <div class="top"><div class="ttl"><div class="l1">தமிழ்நாடு அரசு பொது நூலகத்துறை</div><div class="l2">மாவட்ட நூலக ஆணைக்குழு, திண்டுக்கல்</div><div class="l3" id="libName">…</div><div class="l4">பருவ இதழ் வருகைப் பதிவேடு</div></div>
@@ -1016,11 +1056,12 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
     <button id="ordBtn" type="button">📋 உங்கள் நூலகத்திற்கு ஆணையிடப்பட்ட இதழ்கள்</button>
     <div class="dl" id="dl"><a class="btn btn2" href="/api/librarian/ordered-export?fmt=pdf">⬇️ PDF பதிவிறக்கம்</a><a class="btn btn2" href="/api/librarian/ordered-export?fmt=xlsx">⬇️ Excel பதிவிறக்கம்</a></div>
   </div>
+  <div class="seg"><button type="button" id="mCur" class="on">📅 இந்த மாதம்</button><button type="button" id="mPrev">⏪ முந்தைய மாதம்</button></div>
   <div class="boxes">
-    <div class="bx rc"><h3 id="rcT">🟢 இந்த வாரம் வந்த இதழ்கள்</h3><div class="mq" id="mqRc"></div></div>
-    <div class="bx nr"><h3 id="nrT">🔴 இந்த வாரம் வராத இதழ்கள்</h3><div class="mq" id="mqNr"></div></div>
+    <div class="bx rc"><h3 id="rcT">🟢 இந்த மாதம் வந்த இதழ்கள்</h3><div class="mq" id="mqRc"></div></div>
+    <div class="bx nr"><h3 id="nrT">🔴 இந்த மாதம் வராத இதழ்கள்</h3><div class="mq" id="mqNr"></div></div>
   </div>
-  <div class="card tools"><input type="search" id="q" placeholder="🔍 இதழின் பெயரைத் தேடுக…" autocomplete="off"></div>
+  <div class="card tools"><input type="search" id="q" placeholder="🔍 இதழின் பெயரைத் தேடுக…" autocomplete="off"><div class="hint2">💡 "வரவில்லை" எனக் குறித்த இதழ் பின்னர் வந்தால்: இங்கே பெயரைத் தேடி, ✅ Received தேர்ந்து, 💾 சேமி அழுத்தவும்.</div></div>
   <div id="list"></div>
   <div id="msg" class="msg"></div>
 </div>
@@ -1036,7 +1077,7 @@ let ROWS=[];
 function el(t,a,x){const e=document.createElement(t);if(a)for(const k in a)e.setAttribute(k,a[k]);if(x!==undefined)e.textContent=x;return e}
 function update(){const n=ROWS.length,m=document.querySelectorAll('.opts input:checked').length;cnt.textContent='தேர்ந்தவை: '+m+' / '+n}
 function fillBox(id,t,title,names){
-  const b=document.getElementById(id);b.innerHTML='';document.getElementById(t).textContent=title+' ('+names.length+')';
+  const b=document.getElementById(id);b.innerHTML='';b.scrollTop=0;document.getElementById(t).textContent=title+' ('+names.length+')';
   if(!names.length){b.appendChild(el('div',{class:'none'},'— இல்லை —'));return}
   const add=()=>names.forEach(n=>b.appendChild(el('div',{class:'it'},n)));add();
   if(b.scrollHeight>b.clientHeight+4){add();b.dataset.loop=b.scrollHeight/2}else b.dataset.loop=''}
@@ -1046,6 +1087,14 @@ const paused={mqRc:false,mqNr:false};
   ['mouseleave','touchend','touchcancel','focusout'].forEach(e=>b.addEventListener(e,()=>{setTimeout(()=>{paused[id]=false},1500)}))});
 setInterval(()=>{['mqRc','mqNr'].forEach(id=>{const b=document.getElementById(id),h=parseFloat(b.dataset.loop);
   if(!h||paused[id])return;b.scrollTop+=1;if(b.scrollTop>=h)b.scrollTop-=h})},45);
+let MOFF=0;
+async function loadBoxes(){
+  try{const r=await fetch('/api/librarian/month?offset='+MOFF);const d=await r.json();if(!d.success)return;
+    const p=MOFF?('முந்தைய மாதம் ('+d.label+')'):('இந்த மாதம் ('+d.label+')');
+    const f=x=>x.magazine+' — '+x.dateLabel;
+    fillBox('mqRc','rcT','🟢 '+p+' வந்த இதழ்கள்',d.received.map(f));
+    fillBox('mqNr','nrT','🔴 '+p+' வராத இதழ்கள்',d.notReceived.map(f))}catch(e){}}
+function setMonth(o){MOFF=o;document.getElementById('mCur').className=o?'':'on';document.getElementById('mPrev').className=o?'on':'';loadBoxes()}
 function applyFilter(){
   const q=document.getElementById('q').value.trim().toLowerCase();
   document.querySelectorAll('#list .row').forEach(r=>{r.style.display=(!q||(r.getAttribute('data-n')||'').includes(q))?'':'none'});
@@ -1063,8 +1112,7 @@ function applyFilter(){
 function toast(t){const e=document.getElementById('toast');e.textContent=t;e.style.display='block';clearTimeout(toast.t);toast.t=setTimeout(()=>{e.style.display='none'},2200)}
 function render(d){
   const prevOpen=!!document.querySelector('#list details[open]');
-  fillBox('mqRc','rcT','🟢 இந்த வாரம் வந்த இதழ்கள்',d.rows.filter(r=>r.status==='Received').map(r=>r.magazine));
-  fillBox('mqNr','nrT','🔴 இந்த வாரம் வராத இதழ்கள்',d.rows.filter(r=>r.status==='Not received').map(r=>r.magazine));
+  loadBoxes();
   const h=document.getElementById('head');h.innerHTML='';
   document.getElementById('libName').textContent=d.library.name||'';
   const s=el('div',{style:'margin-top:6px'});s.appendChild(el('span',{class:'chip'},d.library.category||''));s.appendChild(el('span',{class:'chip'},d.library.code||''));
@@ -1107,6 +1155,8 @@ async function load(){
   if(!d.success){msg.className='msg err';msg.textContent=d.message||'பிழை';return}
   render(d)}
 document.getElementById('q').addEventListener('input',applyFilter);
+document.getElementById('mCur').onclick=()=>setMonth(0);
+document.getElementById('mPrev').onclick=()=>setMonth(1);
 document.getElementById('ordBtn').onclick=()=>document.getElementById('dl').classList.toggle('show');
 document.getElementById('allRc').onclick=()=>{document.querySelectorAll('.opts input[value="Received"][data-sec="this"]').forEach(i=>i.checked=true);update()};
 document.getElementById('save').onclick=async()=>{
