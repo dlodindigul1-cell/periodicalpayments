@@ -5863,6 +5863,31 @@ function _pdfHelper(fnName, targetId) {
           <div id="masterVendorFormStatus" class="status"></div>
         </div>
 
+        <div class="card" id="vemCard">
+          <div class="card-title">📧 Email ID மட்டும் — தனிப் பட்டியல் &amp; திருத்தம்</div>
+          <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:10px;">
+            <div style="flex:1; min-width:220px; position:relative;">
+              <span style="position:absolute;left:13px;top:50%;transform:translateY(-50%);font-size:16px;">🔍</span>
+              <input type="text" id="vemSearch" placeholder="இதழ் / Vendor Code / Email தேடுங்கள்..." oninput="renderVendorEmails()"
+                style="padding-left:38px; width:100%;">
+            </div>
+            <label style="display:flex;align-items:center;gap:6px;margin:0;font-weight:600;"><input type="checkbox" id="vemOnlyEmpty" onchange="renderVendorEmails()"> Email இல்லாதவை மட்டும்</label>
+            <button class="btn-secondary" onclick="loadVendorEmails()">🔄 புதுப்பி</button>
+          </div>
+          <label style="display:flex;align-items:center;gap:6px;margin:0 0 6px;font-weight:600;"><input type="checkbox" id="vemGroupAll"> குழு முழுவதற்கும் மாற்று — அதே Vendor Code உள்ள எல்லா இதழ்களிலும் (ஏற்கனவே உள்ள Email-ஐயும்) இந்த Email வரும்</label>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">டிக் இல்லையெனில்: இந்த இதழின் Email மட்டும் மாறும்; குழுவில் Email காலியாக உள்ளவை மட்டும் நிரம்பும். பல Email எனில் காற்புள்ளியால் பிரிக்கவும். காலியாக்கிச் சேமித்தால் அந்த இதழின் Email நீங்கும்.</div>
+          <div id="vemCount" style="font-size:13px;font-weight:700;margin-bottom:6px;"></div>
+          <div id="vemStatus" class="status"></div>
+          <div class="data-table-wrap" style="max-height:480px;">
+            <table class="data-table">
+              <thead><tr>
+                <th class="ctr" style="width:50px;">S.No</th><th>இதழ் பெயர்</th><th>Vendor Code</th><th style="min-width:260px;">Email ID</th><th class="ctr" style="width:90px;">சேமி</th>
+              </tr></thead>
+              <tbody id="vemTableBody"><tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted);">ஏற்றப்படுகிறது...</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-title">📋 Vendor / Bank பட்டியல்</div>
           <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap; margin-bottom:16px;">
@@ -6155,6 +6180,7 @@ function _pdfHelper(fnName, targetId) {
       document.getElementById('mastersVendorPanel').style.display = 'block';
       clearVendorMasterForm();
       loadMasterVendorsList();
+      loadVendorEmails();
     }
 
     function showMastersDeleteTxn() {
@@ -7189,6 +7215,7 @@ function _pdfHelper(fnName, targetId) {
         if (result.success) {
           setStatus('masterVendorFormStatus', 'success', '✅ ' + result.message);
           loadMasterVendorsList();
+          loadVendorEmails();
         } else {
           setStatus('masterVendorFormStatus', 'error', '❌ ' + result.message);
         }
@@ -7382,6 +7409,68 @@ function _pdfHelper(fnName, targetId) {
       if (accounts.size > 1)
         msg += '<br>⚠️ இந்த Code-ல் வெவ்வேறு Bank A/C எண்கள் (' + accounts.size + ') உள்ளன — நிரப்பப்பட்டதைச் சரிபார்க்கவும்.';
       setStatus('masterVendorFormStatus', 'success', msg);
+    }
+
+    // ─── Vendor Bank Master: Email மட்டும் தனிப் பட்டியல் + திருத்தம் ───
+    let allVendorEmails = [];
+    async function loadVendorEmails() {
+      const tb = document.getElementById('vemTableBody');
+      tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted);"><span class="spinner dark"></span> ஏற்றப்படுகிறது...</td></tr>';
+      try {
+        const res = await fetch('/api/admin/vendor-emails');
+        const d = await res.json();
+        if (!d.success) { tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:#c0392b;">' + _ccEsc(d.message || 'பிழை') + '</td></tr>'; return; }
+        allVendorEmails = d.rows || [];
+        renderVendorEmails();
+      } catch (e) {
+        tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:#c0392b;">பிழை: ' + _ccEsc(e.message) + '</td></tr>';
+      }
+    }
+    function renderVendorEmails() {
+      const q = document.getElementById('vemSearch').value.trim().toLowerCase();
+      const onlyEmpty = document.getElementById('vemOnlyEmpty').checked;
+      const noMail = allVendorEmails.filter(r => !r.email).length;
+      const html = [];
+      let n = 0;
+      allVendorEmails.forEach((r, idx) => {
+        if (onlyEmpty && r.email) return;
+        if (q && !(r.name.toLowerCase().includes(q) || (r.code || '').toLowerCase().includes(q) || (r.email || '').toLowerCase().includes(q))) return;
+        n++;
+        html.push('<tr><td class="ctr">' + n + '</td><td>' + _ccEsc(r.name) + '</td><td>' + _ccEsc(r.code || '-') + '</td>' +
+          '<td><input type="text" id="vem_' + idx + '" value="' + _ccEsc(r.email) + '" placeholder="name@example.com" style="width:100%;" ' +
+          'onkeydown="if(event.key===\'Enter\'){event.preventDefault();saveVendorEmail(' + idx + ');}"></td>' +
+          '<td class="ctr"><button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="saveVendorEmail(' + idx + ')">💾</button></td></tr>');
+      });
+      document.getElementById('vemTableBody').innerHTML = html.length ? html.join('') :
+        '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--muted);">பதிவுகள் எதுவும் இல்லை</td></tr>';
+      document.getElementById('vemCount').textContent = 'காட்டுவது: ' + n + ' / ' + allVendorEmails.length + '  ·  Email இல்லாதவை: ' + noMail;
+    }
+    async function saveVendorEmail(idx) {
+      const r = allVendorEmails[idx];
+      const inp = document.getElementById('vem_' + idx);
+      if (!r || !inp) return;
+      const email = inp.value.trim();
+      const group = document.getElementById('vemGroupAll').checked;
+      if (email === (r.email || '') && !group) { setStatus('vemStatus', 'error', 'ℹ️ மாற்றம் எதுவும் இல்லை.'); return; }
+      if (!email && !confirm("'" + r.name + "' இதழின் Email-ஐ நீக்கவா?")) return;
+      if (group && email && !confirm('அதே Vendor Code குழுவின் எல்லா இதழ்களிலும் (ஏற்கனவே உள்ள Email-ஐயும்) இந்த Email-ஆக மாற்றவா?')) return;
+      setStatus('vemStatus', 'loading', '<span class="spinner dark"></span> சேமிக்கப்படுகிறது...');
+      try {
+        const res = await fetch('/api/admin/vendor-emails/save', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: r.name, email: email, group: group })
+        });
+        const d = await res.json();
+        if (d.success) {
+          setStatus('vemStatus', 'success', '✅ ' + _ccEsc(d.message));
+          await loadVendorEmails();
+          if (typeof loadMasterVendorsList === 'function') loadMasterVendorsList();
+        } else {
+          setStatus('vemStatus', 'error', '❌ ' + _ccEsc(d.message));
+        }
+      } catch (e) {
+        setStatus('vemStatus', 'error', '❌ பிழை: ' + _ccEsc(e.message));
+      }
     }
 
     function filterMasterVendorsTable() {

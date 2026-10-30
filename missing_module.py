@@ -589,6 +589,74 @@ def api_missing_no_email():
     return jsonify({"success": True, "items": items, "total": len(mags)})
 
 
+def _apply_email(cur, name, email, overwrite_group=False):
+    """name இதழுக்கு email சேமி (email காலியெனில் அந்த இதழ் மட்டும் நீக்கம்).
+    email இருந்தால் அதே Vendor Code குழுவில்: overwrite_group=False -> Email காலியானவை மட்டும் நிரப்பும்;
+    True -> குழுவின் எல்லா இதழ்களும் மாறும். -> (இதழ் கிடைத்ததா, குழுவில் மாறிய மற்ற இதழ்கள்)"""
+    cur.execute("UPDATE magazines SET email_id=%s WHERE name=%s", (email, name))
+    if cur.rowcount == 0:
+        return False, []
+    others = []
+    if email:
+        cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (name,))
+        key = _vendor_key((cur.fetchone() or {}).get("tnpfts_code"))
+        if key:
+            sql = "SELECT name, tnpfts_code FROM magazines WHERE name<>%s"
+            if not overwrite_group:
+                sql += " AND COALESCE(TRIM(email_id),'')=''"
+            cur.execute(sql + " ORDER BY name", (name,))
+            others = [r["name"] for r in cur.fetchall() if _vendor_key(r["tnpfts_code"]) == key]
+            if others:
+                cur.execute("UPDATE magazines SET email_id=%s WHERE name = ANY(%s)", (email, others))
+    return True, others
+
+
+# ---- Master Data → Vendor Bank Master: Email மட்டும் தனிப் பட்டியல் + திருத்தம் ---------------------- #
+@miss_bp.route("/api/admin/vendor-emails")
+@_api
+def api_vendor_emails():
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            mags, _r, _a = _load_master(cur)
+    finally:
+        conn.close()
+    rows = [{"name": m["name"], "code": m["code"], "vendorName": m["vendorName"], "email": m["email"]} for m in mags]
+    rows.sort(key=lambda x: (_vendor_key(x["code"]) or "~", x["name"]))   # ஒரே Vendor Code குழு அருகருகே
+    return jsonify({"success": True, "rows": rows})
+
+
+@miss_bp.route("/api/admin/vendor-emails/save", methods=["POST"])
+@_api
+def api_vendor_emails_save():
+    body = request.get_json(force=True, silent=True) or {}
+    name = (body.get("name") or "").strip()
+    email = (body.get("email") or "").strip()
+    if not name:
+        return jsonify({"success": False, "message": "இதழ் பெயர் அவசியம்."}), 400
+    if email:
+        ok_list, bad_list = _parse_email(email)
+        if bad_list or not ok_list:
+            return jsonify({"success": False, "message": "தவறான Email முகவரி: " + ", ".join(bad_list or [email])}), 400
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            found, others = _apply_email(cur, name, email, bool(body.get("group")))
+            if not found:
+                conn.rollback()
+                return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை."}), 404
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+    txt = ("'%s' Email சேமிக்கப்பட்டது." % name) if email else ("'%s' Email நீக்கப்பட்டது." % name)
+    if others:
+        txt += " அதே Vendor Code குழுவின் %d இதழ்களுக்கும் சேர்க்கப்பட்டது: %s." % (len(others), ", ".join(others))
+    return jsonify({"success": True, "message": txt, "alsoSaved": others})
+
+
 @miss_bp.route("/api/admin/missing/save-email", methods=["POST"])
 @_api
 def api_missing_save_email():
@@ -603,22 +671,11 @@ def api_missing_save_email():
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
-            # Vendor Bank Master பயன்படுத்தும் அதே புலம் (magazines.email_id)
-            cur.execute("UPDATE magazines SET email_id=%s WHERE name=%s", (email, name))
-            if cur.rowcount == 0:
+            # Vendor Bank Master பயன்படுத்தும் அதே புலம் (magazines.email_id); அதே Vendor Code குழுவின் காலி Email-களும் நிரம்பும்
+            found, others = _apply_email(cur, name, email, False)
+            if not found:
                 conn.rollback()
                 return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை."}), 404
-            # அதே Vendor Code குழுவில் Email காலியாக உள்ள மற்ற இதழ்களுக்கும் தானாகச் சேர்க்கும்
-            # (ஏற்கனவே Email உள்ள இதழ்கள் மாற்றப்படாது)
-            cur.execute("SELECT tnpfts_code FROM magazines WHERE name=%s", (name,))
-            key = _vendor_key((cur.fetchone() or {}).get("tnpfts_code"))
-            others = []
-            if key:
-                cur.execute("SELECT name, tnpfts_code FROM magazines "
-                            "WHERE name<>%s AND COALESCE(TRIM(email_id),'')='' ORDER BY name", (name,))
-                others = [r["name"] for r in cur.fetchall() if _vendor_key(r["tnpfts_code"]) == key]
-                if others:
-                    cur.execute("UPDATE magazines SET email_id=%s WHERE name = ANY(%s)", (email, others))
         conn.commit()
     except Exception as e:  # noqa: BLE001
         conn.rollback()
