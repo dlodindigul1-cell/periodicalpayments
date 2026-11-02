@@ -549,7 +549,11 @@ def month_bounds(d, offset=0):
 @librarian_api()
 def api_librarian_month():
     offset = 1 if request.args.get("offset") == "1" else 0
-    first, last = month_bounds(today_ist(), offset)
+    rng = _get_range()      # Admin பதிவுக் காலம் அமைத்திருந்தால் அதுவே "இந்த மாதம்"; முந்தைய மாதம் = "தேதி முதல்" மாதத்துக்கு முந்தைய நாட்காட்டி மாதம்
+    if rng:
+        first, last = (month_bounds(rng[0], 1) if offset else rng)
+    else:
+        first, last = month_bounds(today_ist(), offset)
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -562,7 +566,9 @@ def api_librarian_month():
     finally:
         conn.close()
     pick = lambda st: [{"magazine": r["magazine"], "dateLabel": fmt_d(r["expected_date"])} for r in rows if r["status"] == st]
-    return jsonify({"success": True, "offset": offset, "label": f"{TA_MONTHS[first.month - 1]} {first.year}",
+    label = (f"{first.strftime('%d.%m.%Y')} – {last.strftime('%d.%m.%Y')}" if (rng and not offset)
+             else f"{TA_MONTHS[first.month - 1]} {first.year}")
+    return jsonify({"success": True, "offset": offset, "label": label, "hasRange": bool(rng),
                     "received": pick("Received"), "notReceived": pick("Not received")})
 
 
@@ -1227,7 +1233,8 @@ setInterval(()=>{['mqRc','mqNr'].forEach(id=>{const b=document.getElementById(id
 let MOFF=0;
 async function loadBoxes(){
   try{const r=await fetch('/api/librarian/month?offset='+MOFF);const d=await r.json();if(!d.success)return;
-    const p=MOFF?('முந்தைய மாதம் ('+d.label+')'):('இந்த மாதம் ('+d.label+')');
+    document.getElementById('mCur').textContent=d.hasRange?'📅 பதிவுக் காலம்':'📅 இந்த மாதம்';
+    const p=MOFF?('முந்தைய மாதம் ('+d.label+')'):(d.hasRange?d.label:('இந்த மாதம் ('+d.label+')'));
     const f=x=>x.magazine+' — '+x.dateLabel;
     fillBox('mqRc','rcT','🟢 '+p+' வந்த இதழ்கள்',d.received.map(f));
     fillBox('mqNr','nrT','🔴 '+p+' வராத இதழ்கள்',d.notReceived.map(f))}catch(e){}}
