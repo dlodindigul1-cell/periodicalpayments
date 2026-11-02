@@ -1377,6 +1377,7 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
   <div class="tabs"><button class="tab on" id="t1">✅ பதிவு செய்தவை (Received)</button><button class="tab" id="t2">⏳ இன்னும் வராதவை</button><button class="tab" id="t3">⚠️ பதிவே செய்யாதவை</button></div>
   <div class="flt">
     <div><label>நூலக வகை</label><select id="fcat"><option value="">எல்லாம்</option></select></div>
+    <div><label>நூலகம்</label><select id="flib"><option value="">எல்லா நூலகங்களும் (சுருக்கம்)</option></select></div>
     <div><label>தேதி முதல்</label><input type="date" id="ffrom"></div>
     <div><label>தேதி வரை</label><input type="date" id="fto"></div>
     <div style="display:flex;gap:8px"><button id="fgo">🔍 காட்டு</button><button id="fweek" class="alt">இந்த வாரம்</button></div>
@@ -1447,13 +1448,43 @@ $('lgo').onclick=async()=>{
   const fd=new FormData();fd.append('file',f);const d=await api('/api/admin/librarian/upload-libraries',{method:'POST',body:fd});
   say('lmsg',d.success,d.message);if(d.success){loadOverview();loadLibs()}};
 
-function qs(extra){const p=new URLSearchParams({status:MODE});if($('fcat').value)p.set('category',$('fcat').value);
+function qs(extra){const p=new URLSearchParams({status:MODE});if($('fcat').value)p.set('category',$('fcat').value);if($('flib').value)p.set('code',$('flib').value);
   if($('ffrom').value)p.set('from',$('ffrom').value);if($('fto').value)p.set('to',$('fto').value);for(const k in (extra||{}))p.set(k,extra[k]);return p.toString()}
 const HEADS={
   received:['நூலகம்','வகை','Received','தாமதமாகப் பதிவானவை','அதிக தாமதம் (நாள்)','Admin பதிவு','கடைசிப் பதிவு',''],
   notreceived:['நூலகம்','வகை','இன்னும் வராதவை','இதழ்கள்','பழைய தேதி','கடைசிப் பதிவு',''],
   unregistered:['நூலகம்','வகை','பதிவு செய்யாதவை','இதழ்கள்','முதல் தேதி','இதுவரை பதிவு செய்தவை','']};
+function buildDetailTable(rows){
+      const t=el('table');const h=el('tr');
+      (MODE==='received'?['இதழ்','Periodicity','எதிர்பார்த்தது → வந்தது','பதிவு நேரம்','பதிவு செய்தவர்']:MODE==='notreceived'?['தேதி','இதழ்','Periodicity','பதிவு நேரம்','பதிவு செய்தவர்','நூலகர் திரையில்']:['தேதி','இதழ்','Periodicity','நூலகர் திரையில்']).forEach(x=>h.appendChild(el('th',null,x)));t.appendChild(h);
+      rows.forEach(w=>{const rr=el('tr');
+        if(MODE==='received'){rr.appendChild(td(w.magazine));rr.appendChild(td(w.periodicity));
+          rr.appendChild(td(w.date+' → '+(w.markedDate||'')+(w.delay>0?' ('+w.delay+' நாள் தாமதம்)':''),w.delay>0?'warn-c':'ok-c'));rr.appendChild(td(w.markedAt));rr.appendChild(td(w.markedBy))}
+        else if(MODE==='notreceived'){rr.appendChild(td(w.date));rr.appendChild(td(w.magazine));rr.appendChild(td(w.periodicity));rr.appendChild(td(w.markedAt));rr.appendChild(td(w.markedBy));rr.appendChild(td(w.onLibrarianScreen?'✔ தெரியும்':'— (நூலகர் திரைக்கு வெளியே)'))}
+        else{rr.appendChild(td(w.date));rr.appendChild(td(w.magazine));rr.appendChild(td(w.periodicity));rr.appendChild(td(w.onLibrarianScreen?'✔ தெரியும்':'— (நூலகர் திரைக்கு வெளியே)'))}
+        t.appendChild(rr)});
+  return t}
+async function loadLibDetail(){
+  // ஒரு தனி நூலகம் தேர்ந்தால்: இதழ் வாரி விவரம் நேரடியாக
+  const th=$('stab').querySelector('thead'),tb=$('stab').querySelector('tbody'),k=$('kpi');th.innerHTML='';tb.innerHTML='';k.innerHTML='';
+  const r=await api('/api/admin/librarian/detail?'+qs());
+  const sel=$('flib').selectedOptions[0];const nm=sel?sel.textContent:'';
+  const lbl={received:'Received இதழ்கள்',notreceived:'இன்னும் வராத இதழ்கள்',unregistered:'பதிவு செய்யப்படாத இதழ்கள்'}[MODE];
+  k.appendChild(el('div',null,'📚 '+nm+' — '+lbl+': '+r.rows.length));
+  if(MODE==='received'){const late=r.rows.filter(w=>w.delay>0).length;k.appendChild(el('div',null,'தாமதமாகப் பதிவானவை: '+late))}
+  const tr=el('tr'),c=el('td');c.colSpan=8;
+  const bar=el('div',{style:'margin-bottom:8px'});const mb=el('button',{class:'sm alt',type:'button'},'✏️ இந்த நூலகத்துக்குப் பதிவு');
+  mb.onclick=()=>openMark($('flib').value,$('fcat').value||((LIBS.find(x=>x.libraries.some(l=>l.code===$('flib').value))||{}).category||''));bar.appendChild(mb);c.appendChild(bar);
+  if(!r.rows.length)c.appendChild(el('div',{class:'muted'},'பதிவுகள் இல்லை.'));
+  else{c.appendChild(buildDetailTable(r.rows));if(r.rows.length>=2000)c.appendChild(el('div',{class:'muted'},'முதல் 2000 வரிசைகள் மட்டும் — முழுமைக்கு Excel பதிவிறக்கவும்.'))}
+  tr.appendChild(c);tb.appendChild(tr)}
+function fillFlib(){
+  const f=$('flib'),keep=f.value,cat=$('fcat').value;f.length=1;
+  (LIBS||[]).filter(x=>!cat||x.category===cat).forEach(x=>x.libraries.forEach(l=>f.appendChild(el('option',{value:l.code},l.name))));
+  if([...f.options].some(o=>o.value===keep))f.value=keep}
+$('fcat').onchange=()=>{$('flib').value='';fillFlib()};
 async function loadSummary(){
+  if($('flib').value)return loadLibDetail();
   const d=await api('/api/admin/librarian/summary?'+qs());
   const th=$('stab').querySelector('thead'),tb=$('stab').querySelector('tbody');th.innerHTML='';tb.innerHTML='';
   const hr=el('tr');HEADS[MODE].forEach(h=>hr.appendChild(el('th',null,h)));th.appendChild(hr);
@@ -1473,15 +1504,7 @@ async function loadSummary(){
     tr.onclick=async()=>{ if(open){sub.remove();open=false;return}
       open=true;sub=el('tr',{class:'sub'});const c=el('td');c.colSpan=8;c.textContent='ஏற்றுகிறது…';sub.appendChild(c);tr.after(sub);
       const r=await api('/api/admin/librarian/detail?'+qs({code:i.code}));c.textContent='';
-      const t=el('table');const h=el('tr');
-      (MODE==='received'?['இதழ்','Periodicity','எதிர்பார்த்தது → வந்தது','பதிவு நேரம்','பதிவு செய்தவர்']:MODE==='notreceived'?['தேதி','இதழ்','Periodicity','பதிவு நேரம்','பதிவு செய்தவர்','நூலகர் திரையில்']:['தேதி','இதழ்','Periodicity','நூலகர் திரையில்']).forEach(x=>h.appendChild(el('th',null,x)));t.appendChild(h);
-      r.rows.forEach(w=>{const rr=el('tr');
-        if(MODE==='received'){rr.appendChild(td(w.magazine));rr.appendChild(td(w.periodicity));
-          rr.appendChild(td(w.date+' → '+(w.markedDate||'')+(w.delay>0?' ('+w.delay+' நாள் தாமதம்)':''),w.delay>0?'warn-c':'ok-c'));rr.appendChild(td(w.markedAt));rr.appendChild(td(w.markedBy))}
-        else if(MODE==='notreceived'){rr.appendChild(td(w.date));rr.appendChild(td(w.magazine));rr.appendChild(td(w.periodicity));rr.appendChild(td(w.markedAt));rr.appendChild(td(w.markedBy));rr.appendChild(td(w.onLibrarianScreen?'✔ தெரியும்':'— (4 வாரத்துக்கு மேல்)'))}
-        else{rr.appendChild(td(w.date));rr.appendChild(td(w.magazine));rr.appendChild(td(w.periodicity));rr.appendChild(td(w.onLibrarianScreen?'✔ தெரியும்':'— (4 வாரத்துக்கு மேல்)'))}
-        t.appendChild(rr)});
-      c.appendChild(t);if(r.rows.length>=2000)c.appendChild(el('div',{class:'muted'},'முதல் 2000 வரிசைகள் மட்டும் — முழுமைக்கு Excel பதிவிறக்கவும்.'))};
+      c.appendChild(buildDetailTable(r.rows));if(r.rows.length>=2000)c.appendChild(el('div',{class:'muted'},'முதல் 2000 வரிசைகள் மட்டும் — முழுமைக்கு Excel பதிவிறக்கவும்.'))};
     tb.appendChild(tr)})
 }
 function setMode(m){MODE=m;$('t1').classList.toggle('on',m==='received');$('t2').classList.toggle('on',m==='notreceived');$('t3').classList.toggle('on',m==='unregistered');loadSummary()}
@@ -1493,7 +1516,7 @@ $('fxl').onclick=()=>{location.href='/api/admin/librarian/export?'+qs()};
 /* ---------- ③ Admin பதிவு ---------- */
 async function loadLibs(){
   const d=await api('/api/admin/librarian/libraries');LIBS=d.categories||[];
-  const c=$('mcat');c.length=1;LIBS.forEach(x=>c.appendChild(el('option',{value:x.category},x.category+' ('+x.libraries.length+')')));fillLibs()}
+  const c=$('mcat');c.length=1;LIBS.forEach(x=>c.appendChild(el('option',{value:x.category},x.category+' ('+x.libraries.length+')')));fillLibs();fillFlib()}
 function fillLibs(){const l=$('mlib');l.length=1;const c=LIBS.find(x=>x.category===$('mcat').value);if(c)c.libraries.forEach(x=>l.appendChild(el('option',{value:x.code},x.name)))}
 $('mcat').onchange=fillLibs;
 function mcount(){$('mcnt').textContent='தேர்ந்தவை: '+document.querySelectorAll('#mlist .opts input:checked').length+' / '+MROWS.length}
