@@ -106,6 +106,8 @@ def ensure_schema():
             cur.execute("CREATE INDEX IF NOT EXISTS idx_lib_receipts_date ON lib_receipts (expected_date)")
             # யார் பதிவு செய்தார்: librarian / admin (பழைய பதிவுகள் = librarian)
             cur.execute("ALTER TABLE lib_receipts ADD COLUMN IF NOT EXISTS marked_by TEXT NOT NULL DEFAULT 'librarian'")
+            # Admin அமைப்புகள் (எ.கா. நூலகர் பதிவுக் காலம்): key → value
+            cur.execute("CREATE TABLE IF NOT EXISTS lib_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             cur.execute("SELECT COUNT(*) AS n FROM lib_libraries")
             if cur.fetchone()["n"] == 0 and os.path.exists(SEED_CSV):
                 with open(SEED_CSV, newline="", encoding="utf-8-sig") as f:
@@ -245,11 +247,27 @@ def _row_json(r, ws):
             "nrAllowed": today_ist() > d + timedelta(days=NR_WAIT_DAYS)}
 
 
-def _library_week_payload(code, weeks_back):
+def _get_range():
+    """Admin அமைத்த நூலகர் பதிவுக் காலம் → (from_date, to_date); அமைக்கவில்லை எனில் None."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT key, value FROM lib_settings WHERE key IN ('reg_from','reg_to')")
+            kv = {r["key"]: r["value"] for r in cur.fetchall()}
+    finally:
+        conn.close()
+    a, b = parse_iso(kv.get("reg_from")), parse_iso(kv.get("reg_to"))
+    return (a, b) if a and b and a <= b else None
+
+
+def _library_week_payload(code, weeks_back, apply_range=False):
     """ஒரு நூலகத்துக்கு: இந்த வாரம் + முந்தைய வாரங்களில் (weeks_back வாரம் வரை; None = வரம்பின்றி)
     'இன்னும் வராதவை' (Not received) மற்றும் 'பதிவு செய்யாதவை'. நூலகர் திரையும் Admin பதிவுத் திரையும் இதையே பயன்படுத்தும்."""
     today = today_ist()
     ws, we = week_bounds(today)
+    rng = _get_range() if apply_range else None
+    if rng:
+        r_lo, r_hi = rng[0], min(rng[1], today)     # எதிர்காலத் தேதிகள் எப்போதும் தடை
     join = ("LEFT JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine "
             "AND r.expected_date=s.expected_date ")
     conn = _get_conn()
@@ -259,15 +277,21 @@ def _library_week_payload(code, weeks_back):
             lib = cur.fetchone()
             if not lib:
                 return None
-            cur.execute(
-                "SELECT s.magazine, s.periodicity, s.expected_date, r.status FROM lib_schedule s " + join +
-                "WHERE s.code=%s AND s.expected_date BETWEEN %s AND %s ORDER BY s.expected_date, s.magazine",
-                (code, ws, we))
-            this_rows = cur.fetchall()
+            a, b = (max(ws, r_lo), min(we, r_hi)) if rng else (ws, we)
+            this_rows = []
+            if a <= b:
+                cur.execute(
+                    "SELECT s.magazine, s.periodicity, s.expected_date, r.status FROM lib_schedule s " + join +
+                    "WHERE s.code=%s AND s.expected_date BETWEEN %s AND %s ORDER BY s.expected_date, s.magazine",
+                    (code, a, b))
+                this_rows = cur.fetchall()
             sql = ("SELECT s.magazine, s.periodicity, s.expected_date, r.status FROM lib_schedule s " + join +
                    "WHERE s.code=%s AND s.expected_date < %s")
             params = [code, ws]
-            if weeks_back:
+            if rng:
+                sql += " AND s.expected_date >= %s AND s.expected_date <= %s"
+                params += [r_lo, r_hi]
+            elif weeks_back:
                 sql += " AND s.expected_date >= %s"
                 params.append(ws - timedelta(weeks=weeks_back))
             sql += " AND (r.code IS NULL OR r.status='Not received') ORDER BY s.expected_date, s.magazine"
@@ -277,7 +301,8 @@ def _library_week_payload(code, weeks_back):
         conn.close()
     return {
         "success": True, "library": dict(lib),
-        "weekStart": fmt_d(ws), "weekEnd": fmt_d(we), "today": today.isoformat(), "carryWeeks": weeks_back or 0,
+        "weekStart": fmt_d(ws), "weekEnd": fmt_d(we), "today": today.isoformat(), "carryWeeks": 0 if rng else (weeks_back or 0),
+        "range": {"from": r_lo.strftime("%d.%m.%Y"), "to": r_hi.strftime("%d.%m.%Y")} if rng else None,
         "rows": [_row_json(r, ws) for r in this_rows],
         "earlierNotReceived": [_row_json(r, ws) for r in earlier if r["status"] == "Not received"],
         "earlierUnregistered": [_row_json(r, ws) for r in earlier if not r["status"]],
@@ -287,8 +312,13 @@ def _library_week_payload(code, weeks_back):
 def _save_entries(code, entries, weeks_back, by):  # by="librarian" எனில் Not received காத்திருப்பு விதி பொருந்தும்; Admin-க்கு இல்லை
     """Received / Not received சேமிப்பு. எதிர்காலத் தேதி (இந்த வாரத்துக்குப் பிந்தையவை) எப்போதும் தடை.
     weeks_back: இந்த வாரத்துக்கு முந்தைய எத்தனை வாரம் வரை அனுமதி (None = வரம்பின்றி — Admin)."""
-    ws, we = week_bounds(today_ist())
-    lo = ws - timedelta(weeks=weeks_back) if weeks_back else None
+    today = today_ist()
+    ws, we = week_bounds(today)
+    rng = _get_range() if by != "admin" else None
+    if rng:   # Admin அமைத்த பதிவுக் காலம் (இன்றைய தேதி வரை மட்டும்)
+        win_lo, win_hi = rng[0], min(rng[1], today)
+    else:
+        win_lo, win_hi = (ws - timedelta(weeks=weeks_back) if weeks_back else None), we
     clean = {}
     for e in entries:
         d = parse_iso(e.get("date"))
@@ -297,9 +327,11 @@ def _save_entries(code, entries, weeks_back, by):  # by="librarian" எனில
             pass
         elif not mag or st not in STATUSES:
             st = None
-        if not mag or st is None or not d or d > we or (lo and d < lo):
-            return jsonify({"success": False,
-                            "message": "தவறான பதிவு (இந்த வாரம் மற்றும் அதற்கு முந்தையவை மட்டுமே; எதிர்காலத் தேதிகள் முடியாது)."}), 400
+        if not mag or st is None or not d or d > win_hi or (win_lo and d < win_lo):
+            msg = ("இந்த இதழ் தற்போதைய பதிவுக் காலத்துக்கு (%s – %s) வெளியே உள்ளது; பதிவு செய்ய முடியாது." %
+                   (win_lo.strftime("%d.%m.%Y"), win_hi.strftime("%d.%m.%Y"))) if rng else \
+                  "தவறான பதிவு (இந்த வாரம் மற்றும் அதற்கு முந்தையவை மட்டுமே; எதிர்காலத் தேதிகள் முடியாது)."
+            return jsonify({"success": False, "message": msg}), 400
         clean[(mag, d)] = (code, mag, d, st, by)
     rows = list(clean.values())
     if not rows:
@@ -360,7 +392,7 @@ def _save_entries(code, entries, weeks_back, by):  # by="librarian" எனில
 @lib_bp.route("/api/librarian/week")
 @librarian_api()
 def api_librarian_week():
-    data = _library_week_payload(session["lib_code"], CARRY_WEEKS)
+    data = _library_week_payload(session["lib_code"], CARRY_WEEKS, apply_range=True)
     if data is None:
         return jsonify({"success": False, "needLibrary": True, "message": "நூலகம் கண்டறியப்படவில்லை."}), 400
     return jsonify(data)
@@ -902,6 +934,10 @@ def api_admin_detail():
     status, rows = _detail_rows(limit=2000)
     ws, _we = week_bounds(today_ist())
     lo = ws - timedelta(weeks=CARRY_WEEKS)
+    rng = _get_range()
+    hi = None
+    if rng:
+        lo, hi = rng[0], min(rng[1], today_ist())
     out = []
     for r in rows:
         mk = r["marked_at"]
@@ -912,7 +948,7 @@ def api_admin_detail():
             "markedDate": fmt_d(mk.astimezone(IST).date()) if mk else "",
             "markedBy": _who(r["marked_by"]),
             "delay": _delay_days(mk, r["expected_date"]) if r["status"] == "Received" else 0,
-            "onLibrarianScreen": r["expected_date"] >= lo,
+            "onLibrarianScreen": r["expected_date"] >= lo and (hi is None or r["expected_date"] <= hi),
         })
     return jsonify({"success": True, "rows": out})
 
@@ -993,6 +1029,40 @@ def api_admin_mark_save():
     if not ok:
         return jsonify({"success": False, "message": "நூலகம் கண்டறியப்படவில்லை."}), 404
     return _save_entries(code, body.get("entries") or [], None, "admin")
+
+
+@lib_bp.route("/api/admin/librarian/range", methods=["GET", "POST"])
+@admin_api
+def api_admin_range():
+    """நூலகர் பதிவுத் திரையில் காட்ட வேண்டிய தேதி வரம்பு — Admin அமைக்கும்/அழிக்கும்."""
+    if request.method == "GET":
+        rng = _get_range()
+        return jsonify({"success": True, "carryWeeks": CARRY_WEEKS,
+                        "from": rng[0].isoformat() if rng else "", "to": rng[1].isoformat() if rng else ""})
+    body = request.get_json(force=True, silent=True) or {}
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            if body.get("clear"):
+                cur.execute("DELETE FROM lib_settings WHERE key IN ('reg_from','reg_to')")
+                msg = "↺ வரம்பு நீக்கப்பட்டது — இனி இந்த வாரம் + முந்தைய %d வாரங்கள் காட்டப்படும்." % CARRY_WEEKS
+            else:
+                a, b = parse_iso(body.get("from")), parse_iso(body.get("to"))
+                if not a or not b:
+                    return jsonify({"success": False, "message": "இரண்டு தேதிகளையும் தேர்ந்தெடுக்கவும்."}), 400
+                if a > b:
+                    return jsonify({"success": False, "message": "\"தேதி முதல்\" என்பது \"தேதி வரை\"க்குப் பிந்தையதாக இருக்கக்கூடாது."}), 400
+                for k, v in (("reg_from", a.isoformat()), ("reg_to", b.isoformat())):
+                    cur.execute("INSERT INTO lib_settings (key, value) VALUES (%s, %s) "
+                                "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value", (k, v))
+                msg = "✅ நூலகர் பதிவுக் காலம்: %s – %s" % (a.strftime("%d.%m.%Y"), b.strftime("%d.%m.%Y"))
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+    return jsonify({"success": True, "message": msg})
 
 
 @lib_bp.route("/api/admin/librarian/mark-clear-all", methods=["POST"])
@@ -1189,9 +1259,9 @@ function render(d){
   const h=document.getElementById('head');h.innerHTML='';
   document.getElementById('libName').textContent=d.library.name||'';
   const s=el('div',{style:'margin-top:6px'});s.appendChild(el('span',{class:'chip'},d.library.category||''));s.appendChild(el('span',{class:'chip'},d.library.code||''));
-  s.appendChild(el('span',{class:'chip'},'📅 இந்த வாரம்: '+d.weekStart+' – '+d.weekEnd));h.appendChild(s);
+  s.appendChild(el('span',{class:'chip'},d.range?('📅 பதிவுக் காலம்: '+d.range.from+' – '+d.range.to):('📅 இந்த வாரம்: '+d.weekStart+' – '+d.weekEnd)));h.appendChild(s);
   const early=d.earlierUnregistered.length+d.earlierNotReceived.length;
-  if(early)h.appendChild(el('div',{class:'muted',style:'margin-top:8px'},'முந்தைய வாரங்களின் இதழ்கள் அதிகபட்சம் '+d.carryWeeks+' வாரங்கள் வரை இங்கே தெரியும்.'));
+  if(early&&!d.range)h.appendChild(el('div',{class:'muted',style:'margin-top:8px'},'முந்தைய வாரங்களின் இதழ்கள் அதிகபட்சம் '+d.carryWeeks+' வாரங்கள் வரை இங்கே தெரியும்.'));
   ROWS=[];list.innerHTML='';
   function addRows(parent,rows,k,early){
     let last='';
@@ -1216,7 +1286,7 @@ function render(d){
     list.appendChild(el('div',{class:'sec '+k},title+' ('+rows.length+')'));
     if(hint)list.appendChild(el('div',{class:'muted',style:'margin:0 2px 4px'},hint));
     addRows(list,rows,k,early)});
-  if(!d.rows.length)list.appendChild(el('div',{class:'card muted',style:'margin-top:14px'},'இந்த வாரத்துக்கு ('+d.weekStart+' – '+d.weekEnd+') வர வேண்டிய இதழ்கள் எதுவும் இல்லை.'));
+  if(!d.rows.length)list.appendChild(el('div',{class:'card muted',style:'margin-top:14px'},d.range?'இந்தப் பதிவுக் காலத்தில் ('+d.range.from+' – '+d.range.to+') பதிவு செய்ய வேண்டிய இதழ்கள் எதுவும் இல்லை.':'இந்த வாரத்துக்கு ('+d.weekStart+' – '+d.weekEnd+') வர வேண்டிய இதழ்கள் எதுவும் இல்லை.'));
   else if(!openRows.length)list.appendChild(el('div',{class:'card',style:'margin-top:14px;background:#e6f6ea;color:#1b6b34;font-weight:700'},'✅ இந்த வாரத்துக்கான எல்லா இதழ்களும் Received எனப் பதிவாகிவிட்டன.'));
   if(doneRows.length){
     const det=el('details',{style:'margin-top:18px'});
@@ -1323,6 +1393,17 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
   <div id="mlist"></div>
   <div class="mbar" id="mbar"><span id="mcnt" style="font-weight:600"></span><button id="mallrc" class="alt" type="button">இந்த வாரம் — எல்லாம் Received</button><button id="msave" type="button">💾 சேமி (Admin)</button></div>
   <div id="mclrw" style="display:none;margin-top:14px;padding-top:12px;border-top:1px dashed #c5cee3"><button id="mclr" class="danger sm" type="button">🗑 இந்த நூலகத்தின் எல்லாப் பதிவுகளையும் நீக்கு</button> <span class="muted">எல்லா வாரங்களின் Received / Not received பதிவுகளும் நீங்கும்</span></div>
+</div>
+<div class="card" id="rcard">
+  <h2>④ நூலகர் பதிவுக் காலம் (தேதி வரம்பு)</h2>
+  <p class="muted" style="margin:0 0 6px">நூலகர் திரையில் எந்தத் தேதி முதல் எந்தத் தேதி வரையிலான இதழ்கள் பதிவுக்குக் காட்டப்பட வேண்டும் என்பதை இங்கே அமைக்கவும். எதிர்காலத் தேதிகளை நூலகர் பதிய முடியாது. வரம்பு அமைக்காவிட்டால் இந்த வாரம் + முந்தைய வாரங்கள் காட்டப்படும். இது Admin ③ திரையைப் பாதிக்காது.</p>
+  <div class="flt">
+    <div><label>தேதி முதல்</label><input type="date" id="rfrom"></div>
+    <div><label>தேதி வரை</label><input type="date" id="rto"></div>
+    <div style="display:flex;gap:8px"><button id="rsave" type="button">💾 சேமி</button><button id="rclr" class="alt" type="button">↺ தானியங்கி</button></div>
+  </div>
+  <div id="rmsg" class="msg"></div>
+  <div id="rstat" class="muted" style="margin-top:8px"></div>
 </div>
 </div>
 <div id="cfov"><div class="box"><h3>⚠️ பதிவுகளை நீக்கவா?</h3><p id="cftxt"></p>
@@ -1450,5 +1531,15 @@ $('msave').onclick=async()=>{
   try{const d=await api('/api/admin/librarian/mark-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:MCODE,entries})});
     say('mmsg',d.success,d.message||'');if(d.success){await loadMark();loadSummary()}}
   catch(e){say('mmsg',false,'சேமிக்க முடியவில்லை: '+e)}finally{$('msave').disabled=false}};
-loadOverview().then(loadSummary);loadLibs();
+function fdot(s){const p=(s||'').split('-');return p.length===3?p[2]+'.'+p[1]+'.'+p[0]:''}
+async function loadRange(){
+  const d=await api('/api/admin/librarian/range');$('rfrom').value=d.from||'';$('rto').value=d.to||'';
+  $('rstat').textContent=(d.from&&d.to)?('தற்போது: நூலகர் திரை '+fdot(d.from)+' முதல் '+fdot(d.to)+' வரை (இன்றைய தேதி வரை மட்டும்) காட்டும்.'):('தற்போது வரம்பு அமைக்கப்படவில்லை — இந்த வாரம் + முந்தைய '+d.carryWeeks+' வாரங்கள் காட்டப்படும்.')}
+async function postRange(body){
+  try{const d=await api('/api/admin/librarian/range',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    say('rmsg',d.success,d.message||'');if(d.success)loadRange()}
+  catch(e){say('rmsg',false,'சேமிக்க முடியவில்லை: '+e)}}
+$('rsave').onclick=()=>postRange({from:$('rfrom').value,to:$('rto').value});
+$('rclr').onclick=()=>postRange({clear:true});
+loadOverview().then(loadSummary);loadLibs();loadRange();
 </script></body></html>"""
