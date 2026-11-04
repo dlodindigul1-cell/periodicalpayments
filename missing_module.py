@@ -336,6 +336,7 @@ LETTER = {
         "head2": "திண்டுக்கல் மாவட்ட நூலக ஆணைக்குழு",
         "salute": "அன்புடையீர்",
         "date": "நாள்",
+        "title": "நூலகத்தில் {mag} கிடைக்கப் பெறாததற்கான அறிவிப்பு",
         "paras": [
             "திண்டுக்கல் மாவட்ட நூலக ஆணைக்குழுவின் கீழ் செயல்படும் நூலகங்களுக்கு தங்களின் பருவ இதழான {mag} "
             "விநியோகம் செய்ய ஆணை பிறப்பிக்கப் பட்டுள்ளது.",
@@ -356,6 +357,7 @@ LETTER = {
         "head2": "DINDIGUL DISTRICT LOCAL LIBRARY AUTHORITY",
         "salute": "Dear Sir / Madam,",
         "date": "Date",
+        "title": "Intimation of Non-Receipt of Magazine – {mag}",
         "paras": [
             "We have subscribed to the magazines {mag} for the year {fy}.",
             "We have received reports from the concerned librarians regarding the non-receipt of periodical issues "
@@ -391,9 +393,22 @@ def _fy_text(d):
     return lm.quarter_label(d).split("-Q")[0]
 
 
+MAG_MARK = "\x00"      # பத்தியில் இதழ் பெயர் வரும் இடம் (அதை மட்டும் Bold + பெரிய எழுத்தில் காட்ட)
+
+
 def _letter_paras(group, today):
+    """-> பத்திகள்; ஒவ்வொன்றும் [(உரை, இதழ்_பெயரா?), ...] பகுதிகளின் பட்டியல்."""
     L = LETTER[group["lang"]]
-    return [p.format(mag=group["magazine"], fy=_fy_text(today)) for p in L["paras"]]
+    out = []
+    for p in L["paras"]:
+        txt = p.format(mag=MAG_MARK + group["magazine"] + MAG_MARK, fy=_fy_text(today))
+        parts = txt.split(MAG_MARK)
+        out.append([(t, i % 2 == 1) for i, t in enumerate(parts) if t])
+    return out
+
+
+def _letter_title(group):
+    return LETTER[group["lang"]]["title"].format(mag=group["magazine"])
 
 
 def build_letter_pdf(group, today):
@@ -418,11 +433,24 @@ def build_letter_pdf(group, today):
     pdf.cell(110, 6, L["salute"], new_x="LEFT", new_y="TOP")
     pdf.set_xy(125, y)
     pdf.cell(0, 6, "%s: %s" % (L["date"], lm.fmt_d(today)), align="R", new_x="LMARGIN", new_y="NEXT")
-    pdf.ln(3)
-    for i, p in enumerate(paras):
-        pdf.set_x(pdf.l_margin + 10)
-        pdf.multi_cell(0, 5.6, p, align="J", new_x="LMARGIN", new_y="NEXT")
-        pdf.ln(2.5)
+    pdf.ln(4)
+    pdf.set_font("Tamil", "BU", 13)                                    # தலைப்பு: Bold + Underline, பெரிய எழுத்து
+    pdf.multi_cell(0, 7, _letter_title(group), align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(4)
+    old_l = pdf.l_margin
+    for p in paras:
+        pdf.set_left_margin(old_l + 10)                               # பத்தி உள்தள்ளல் (அடுத்த வரிகளுக்கும்)
+        pdf.set_x(old_l + 10)
+        for txt, is_mag in p:
+            if is_mag:
+                pdf.set_font("Tamil", "B", 12)                         # இதழ் பெயர்: Bold, சற்றுப் பெரிது
+            else:
+                pdf.set_font("Tamil", "", 10)
+            pdf.write(5.8, txt)
+        pdf.set_font("Tamil", "", 10)
+        pdf.ln(5.8 + 2.5)
+        pdf.set_left_margin(old_l)
+        pdf.set_x(old_l)
     if en:
         pdf.set_font("Tamil", size=9)
         pdf.cell(0, 6, L["list_line"], new_x="LMARGIN", new_y="NEXT")
@@ -464,15 +492,19 @@ def build_letter_html(group, today):
         "<td style='%s;text-align:center'>%s</td><td style='%s;text-align:center'>%s</td><td style='%s'>%s</td></tr>" % (
             td, x["sno"], td, e(x["library"]), td, multi(x["date"]), td, e(x["code"]), td, e(x["phone"]),
             td, multi(x["address"])) for x in _letter_rows(group))
-    ps = "".join("<p style='margin:0 0 12px 28px;text-align:justify'>%s</p>" % e(p) for p in paras)
+    def rich(p):
+        return "".join("<b style='font-size:17px'>%s</b>" % e(t) if m else e(t) for t, m in p)
+    ps = "".join("<p style='margin:0 0 12px 28px;text-align:justify'>%s</p>" % rich(p) for p in paras)
+    title = ("<p style='text-align:center;font-weight:700;font-size:18px;text-decoration:underline;margin:0 0 14px'>%s</p>"
+             % e(_letter_title(group)))
     listline = "<p style='margin:0 0 6px'>%s</p>" % e(L["list_line"]) if en else ""
     return (
         "<div style=\"font-family:'Noto Sans Tamil','Latha',Arial,sans-serif;font-size:14px;color:#111;max-width:760px\">"
         "<div style='text-align:center;font-weight:700'>%s<br>%s</div><br>"
         "<table style='width:100%%'><tr><td>%s</td><td style='text-align:right'>%s: %s</td></tr></table><br>"
-        "%s%s<table style='border-collapse:collapse;width:100%%'><thead><tr>%s</tr></thead><tbody>%s</tbody></table>"
+        "%s%s%s<table style='border-collapse:collapse;width:100%%'><thead><tr>%s</tr></thead><tbody>%s</tbody></table>"
         "<p style='margin:18px 0 0;text-align:right'>%s<br>%s</p></div>" % (
-            e(L["head1"]), e(L["head2"]), e(L["salute"]), e(L["date"]), lm.fmt_d(today), ps, listline, head, body,
+            e(L["head1"]), e(L["head2"]), e(L["salute"]), e(L["date"]), lm.fmt_d(today), title, ps, listline, head, body,
             e(L["sign"][0]), e(L["sign"][1])))
 
 
@@ -1171,16 +1203,18 @@ async function loadReport() {
     const L = g.labels;
     const al = g.aliases.length ? ' · ' + esc(g.aliases.join(', ')) : '';
     const act = g.rows.length
-      ? '<span class="noprint" style="float:right;display:flex;gap:6px;flex-wrap:wrap"><button class="sm alt" onclick="letterPdf(' + gi + ')">📄 கடிதம் PDF</button>' +
+      ? '<span style="display:flex;gap:6px;flex-wrap:wrap"><button class="sm alt" onclick="letterPdf(' + gi + ')">📄 கடிதம் PDF</button>' +
         '<button class="sm" onclick="sendMail(' + gi + ')">✉️ Mail அனுப்பு</button></span>' : '';
     const em = g.rows.length
-      ? '<div class="noprint muted" style="margin:-2px 0 6px">' + (g.email ? '📧 ' + esc(g.email) : '<span class="bad-c">Email இல்லை — "② Email இல்லாத இதழ்கள்" தாவலில் சேர்க்கவும்</span>') +
-        (g.lastMail ? ' · கடைசியாக அனுப்பியது: ' + esc(g.lastMail) : '') + '</div>' : '';
-    return '<div class="gh">' + act + esc(L.mag) + ': ' + esc(g.magazine) + al + ' <small>(' + esc(L.vendor) + ': ' + esc(g.vendorCode || '-') + ' · ' + g.rows.length + ')</small></div>' + em +
+      ? '<span class="muted">' + (g.email ? '📧 ' + esc(g.email) : '<span class="bad-c">Email இல்லை — "② Email இல்லாத இதழ்கள்" தாவலில் சேர்க்கவும்</span>') +
+        (g.lastMail ? ' · கடைசியாக அனுப்பியது: ' + esc(g.lastMail) : '') + '</span>' : '';
+    const bar = g.rows.length
+      ? '<div class="noprint" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 4px">' + em + act + '</div>' : '';
+    return '<div class="gh">' + esc(L.mag) + ': ' + esc(g.magazine) + al + ' <small>(' + esc(L.vendor) + ': ' + esc(g.vendorCode || '-') + ' · ' + g.rows.length + ')</small></div>' +
       '<div class="scroll"><table><thead><tr><th>' + [L.sno, L.code, L.lib, L.librarian, L.date, L.phone, L.addr].map(esc).join('</th><th>') + '</th></tr></thead><tbody>' +
       (g.rows.map(x => '<tr><td>' + x.sno + '</td><td>' + esc(x.code) + '</td><td>' + esc(x.library) + '</td><td>' + esc(x.librarian) + '</td><td>' + esc(x.date) +
         '</td><td>' + esc(x.phone) + '</td><td style="white-space:pre-line">' + esc(x.address) + '</td></tr>').join('') ||
-        '<tr><td colspan="7" class="ok-c">' + esc(L.none) + '</td></tr>') + '</tbody></table></div>';
+        '<tr><td colspan="7" class="ok-c">' + esc(L.none) + '</td></tr>') + '</tbody></table></div>' + bar;
   }).join('');
 }
 async function sendSample() {
