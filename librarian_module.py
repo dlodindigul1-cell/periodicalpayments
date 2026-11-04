@@ -1069,27 +1069,29 @@ def _pend_range():
 @lib_bp.route("/api/admin/librarian/pending-summary")
 @admin_api
 def api_admin_pending_summary():
-    """நூலகம் வாரியாக: அனுமதிக்கப்பட்ட இதழ்கள் (தனித்த இதழ் பெயர்கள்), பதிவு செய்தவை, பதிவு செய்யாதவை (இதழ் × தேதி வரிசைகள்)."""
+    """நூலகம் வாரியாக, இதழ் (magazine) எண்ணிக்கையில்:
+       அனுமதிக்கப்பட்ட இதழ்கள் = அட்டவணையில் உள்ள தனித்த இதழ்கள்;
+       பதிவு செய்யாதவை = இன்று வரை வர வேண்டிய தேதிகளில் குறைந்தது ஒன்றுக்காவது Received / Not received குறிக்காத இதழ்கள்;
+       பதிவு செய்தவை = மீதமுள்ளவை (இன்று வரை வர வேண்டிய எல்லாத் தேதிகளுக்கும் பதிவு உள்ளவை, அல்லது இன்னும் வர வேண்டிய தேதியே இல்லாதவை).
+       ஆகவே பதிவு செய்தவை + பதிவு செய்யாதவை = அனுமதிக்கப்பட்ட இதழ்கள்."""
     dfrom, dto_cap, dto_raw = _pend_range()
     cat = (request.args.get("category") or "").strip()
-    due_w, due_p = ["s.expected_date <= %s"], [dto_cap]
-    allow_w, allow_p = [], []
+    rng_w, rng_p = [], []
     if dfrom:
-        due_w.append("s.expected_date >= %s"); due_p.append(dfrom)
-        allow_w.append("s0.expected_date >= %s"); allow_p.append(dfrom)
+        rng_w.append("s.expected_date >= %s"); rng_p.append(dfrom)
     if dto_raw:
-        allow_w.append("s0.expected_date <= %s"); allow_p.append(dto_raw)
-    allow_sql = (" AND " + " AND ".join(allow_w)) if allow_w else ""
-    sql = ("SELECT l.code, l.name, l.category, "
-           " (SELECT COUNT(DISTINCT s0.magazine) FROM lib_schedule s0 WHERE s0.code=l.code" + allow_sql + ") AS allowed, "
-           " COALESCE(x.reg, 0) AS reg, COALESCE(x.unreg, 0) AS unreg "
+        rng_w.append("s.expected_date <= %s"); rng_p.append(dto_raw)
+    sql = ("SELECT l.code, l.name, l.category, COUNT(m.magazine) AS allowed, COALESCE(SUM(m.pend), 0) AS unreg "
            "FROM lib_libraries l LEFT JOIN ("
-           " SELECT s.code, COUNT(r.code) AS reg, COUNT(*) - COUNT(r.code) AS unreg "
+           " SELECT s.code, s.magazine, "
+           "  MAX(CASE WHEN r.code IS NULL AND s.expected_date <= %s THEN 1 ELSE 0 END) AS pend "
            " FROM lib_schedule s LEFT JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine "
            "  AND r.expected_date=s.expected_date "
-           " WHERE " + " AND ".join(due_w) + " GROUP BY s.code) x ON x.code=l.code "
-           + ("WHERE l.category=%s " if cat else ""))
-    params = allow_p + due_p + ([cat] if cat else [])
+           + (" WHERE " + " AND ".join(rng_w) if rng_w else "") +
+           " GROUP BY s.code, s.magazine) m ON m.code=l.code "
+           + ("WHERE l.category=%s " if cat else "") +
+           "GROUP BY l.code, l.name, l.category")
+    params = [dto_cap] + rng_p + ([cat] if cat else [])
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -1097,8 +1099,11 @@ def api_admin_pending_summary():
             rows = cur.fetchall()
     finally:
         conn.close()
-    items = [{"code": r["code"], "name": r["name"], "category": r["category"], "allowed": int(r["allowed"] or 0),
-              "registered": int(r["reg"] or 0), "unregistered": int(r["unreg"] or 0)} for r in rows]
+    items = []
+    for r in rows:
+        allowed, unreg = int(r["allowed"] or 0), int(r["unreg"] or 0)
+        items.append({"code": r["code"], "name": r["name"], "category": r["category"],
+                      "allowed": allowed, "registered": allowed - unreg, "unregistered": unreg})
     items.sort(key=lambda i: (_category_sort_key(i["category"]), i["name"]))
     return jsonify({"success": True, "items": items, "upTo": fmt_d(dto_cap)})
 
@@ -1613,7 +1618,7 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
 
 <div class="card" id="pcard">
   <h2>📊 சுருக்கம் — பதிவு செய்யாதவை (Received / Not received எதுவும் குறிக்காதவை)</h2>
-  <p class="muted" style="margin:0 0 6px"><b>அனுமதிக்கப்பட்ட இதழ்கள்</b> = அந்த நூலகத்துக்கு அட்டவணையில் உள்ள இதழ்களின் எண்ணிக்கை. <b>பதிவு செய்தவை / செய்யாதவை</b> = இன்று வரை வர வேண்டிய இதழ் வருகைகளில் (இதழ் × தேதி) Received அல்லது Not received குறித்தவை / எதுவுமே குறிக்காதவை. வரிசையைக் கிளிக் செய்தால் அந்த நூலகத்தின் இதழ் விவரம் வரும்.</p>
+  <p class="muted" style="margin:0 0 6px">எல்லா எண்ணிக்கையும் <b>இதழ்கள்</b> அடிப்படையில் (வார / இருவார / மாத இதழ் எதுவானாலும் ஒரு இதழ் = 1). <b>அனுமதிக்கப்பட்ட இதழ்கள்</b> = அந்த நூலகத்துக்கு அட்டவணையில் உள்ள இதழ்கள். <b>பதிவு செய்யாதவை</b> = இன்று வரை வர வேண்டிய தேதிகளில் குறைந்தது ஒன்றுக்காவது Received / Not received குறிக்காத இதழ்கள். <b>பதிவு செய்தவை</b> = மீதமுள்ளவை (செய்தவை + செய்யாதவை = அனுமதிக்கப்பட்டவை). வரிசையைக் கிளிக் செய்தால் அந்த நூலகத்தின் இதழ் விவரம் வரும்.</p>
   <div class="flt">
     <div><label>நூலக வகை</label><select id="pcat"><option value="">எல்லாம்</option></select></div>
     <div><label>நூலகத்தின் பெயர்</label><select id="plib"><option value="">— எல்லா நூலகங்களும் (சுருக்கம்) —</option></select></div>
@@ -1816,7 +1821,7 @@ async function loadPend(){
     if($('plib').value){
       const d=await api('/api/admin/librarian/pending-detail?'+pq({code:$('plib').value}));
       if(!d.success){tb.appendChild(el('tr')).appendChild(td(d.message||'பிழை','muted'));return}
-      k.appendChild(el('div',null,'📚 '+d.library.name));k.appendChild(el('div',null,'பதிவு செய்யாத இதழ் வருகைகள்: '+d.total+' ('+d.upTo+' வரை)'));
+      k.appendChild(el('div',null,'📚 '+d.library.name));k.appendChild(el('div',null,'பதிவு செய்யாத இதழ்கள்: '+d.items.length));k.appendChild(el('div',null,'பதிவு செய்யாத தேதிகள் (மொத்தம்): '+d.total+' ('+d.upTo+' வரை)'));
       const hr=el('tr');['வ.எண்.','இதழ் பெயர்','பதிவு செய்யாத காலம்'].forEach(h=>hr.appendChild(el('th',null,h)));th.appendChild(hr);
       if(!d.items.length){const tr=el('tr'),c=td('✅ பதிவு செய்யாத இதழ்கள் இல்லை.','ok-c');c.colSpan=3;tr.appendChild(c);tb.appendChild(tr)}
       d.items.forEach((m,i)=>{const tr=el('tr');tr.appendChild(td(i+1));
@@ -1831,7 +1836,7 @@ async function loadPend(){
       const d=await api('/api/admin/librarian/pending-summary?'+pq());
       const hr=el('tr');['வ.எண்.','நூலகம் பெயர்','அனுமதிக்கப்பட்ட இதழ்கள்','பதிவு செய்தவை','பதிவு செய்யாதவை'].forEach(h=>hr.appendChild(el('th',null,h)));th.appendChild(hr);
       const tot=d.items.reduce((a,i)=>a+i.unregistered,0),clean=d.items.filter(i=>i.unregistered===0).length;
-      k.appendChild(el('div',null,'நூலகங்கள்: '+d.items.length));k.appendChild(el('div',null,'பதிவு செய்யாதவை (மொத்தம்): '+tot+' ('+d.upTo+' வரை)'));k.appendChild(el('div',null,'எல்லாம் பதிவு செய்த நூலகங்கள்: '+clean));
+      k.appendChild(el('div',null,'நூலகங்கள்: '+d.items.length));k.appendChild(el('div',null,'பதிவு செய்யாத இதழ்கள் (மொத்தம்): '+tot+' ('+d.upTo+' வரை)'));k.appendChild(el('div',null,'எல்லாம் பதிவு செய்த நூலகங்கள்: '+clean));
       if(!d.items.length){const tr=el('tr'),c=td('நூலகங்கள் இல்லை.','muted');c.colSpan=5;tr.appendChild(c);tb.appendChild(tr)}
       d.items.forEach((i,n)=>{const tr=el('tr',{class:'lib'});tr.appendChild(td(n+1));tr.appendChild(td(i.name));tr.appendChild(td(i.allowed));
         tr.appendChild(td(i.registered,'ok-c'));tr.appendChild(td(i.unregistered,i.unregistered?'bad-c':'ok-c'));
