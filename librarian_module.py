@@ -442,16 +442,16 @@ def api_librarian_profile():
 def api_librarian_profile_save():
     body = request.get_json(force=True, silent=True) or {}
     name = " ".join((body.get("name") or "").split())
-    phone = " ".join((body.get("phone") or "").split())
+    phone = "".join((body.get("phone") or "").split())
     address = _addr_clean(body.get("address"))
     if not name or not phone or not address:
         return jsonify({"success": False, "message": "LIBRARIAN NAME, MOBILE NUMBER, ADDRESS — மூன்றையும் நிரப்பவும்."}), 400
     if _is_tamil(name) or _is_tamil(address):
         return jsonify({"success": False, "message": "தயவு செய்து ஆங்கிலத்தில் உள்ளிடவும் (Please enter in English)."}), 400
-    if len(name) > 100 or len(phone) > 60 or len(address) > 500:
+    if len(name) > 100 or len(address) > 500:
         return jsonify({"success": False, "message": "உள்ளீடு மிக நீளமாக உள்ளது."}), 400
-    if any(ch not in "0123456789+-,/() " for ch in phone) or sum(ch.isdigit() for ch in phone) < 6:
-        return jsonify({"success": False, "message": "தொலைபேசி எண் தவறு (எண்கள், + - , / மட்டும்; குறைந்தது 6 இலக்கம்)."}), 400
+    if not (len(phone) == 10 and phone.isascii() and phone.isdigit()):
+        return jsonify({"success": False, "message": "MOBILE NUMBER சரியாக 10 இலக்கங்களாக இருக்க வேண்டும் (எண்கள் மட்டும்)."}), 400
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -1274,7 +1274,7 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
       <div id="pView"><div class="muted">ஏற்றுகிறது…</div></div>
       <div id="pForm" style="display:none">
         <label for="pName">LIBRARIAN NAME</label><input type="text" id="pName" maxlength="100" autocomplete="off"><div class="warn" id="wName">⚠️ தயவு செய்து ஆங்கிலத்தில் உள்ளிடவும் (Please enter in English)</div>
-        <label for="pPhone">MOBILE NUMBER</label><input type="text" id="pPhone" maxlength="60" inputmode="tel" autocomplete="off">
+        <label for="pPhone">MOBILE NUMBER</label><input type="text" id="pPhone" maxlength="10" inputmode="numeric" pattern="[0-9]{10}" autocomplete="off" placeholder="10 இலக்க எண்"><div class="warn" id="wPhone">⚠️ MOBILE NUMBER சரியாக 10 இலக்கங்கள் இருக்க வேண்டும்</div>
         <label for="pAddr">ADDRESS</label><textarea id="pAddr" maxlength="500"></textarea><div class="warn" id="wAddr">⚠️ தயவு செய்து ஆங்கிலத்தில் உள்ளிடவும் (Please enter in English)</div>
         <div class="acts"><button type="button" id="pSave">💾 சேமி</button><button type="button" class="cn" id="pCancel">ரத்து</button></div>
         <div id="pMsg" class="msg"></div>
@@ -1418,18 +1418,22 @@ async function loadProf(){
     else document.getElementById('pView').textContent=d.message||'பிழை'}
   catch(e){document.getElementById('pView').textContent='விவரங்களை ஏற்ற முடியவில்லை.'}}
 document.getElementById('pEdit').onclick=()=>{
-  ['pName','pAddr'].forEach(i=>document.getElementById(i).classList.remove('bad'));document.getElementById('wName').style.display='none';document.getElementById('wAddr').style.display='none';
+  ['pName','pAddr'].forEach(i=>document.getElementById(i).classList.remove('bad'));document.getElementById('wName').style.display='none';document.getElementById('wAddr').style.display='none';document.getElementById('wPhone').style.display='none';document.getElementById('pPhone').classList.remove('bad');
   document.getElementById('pName').value=PROF.name;document.getElementById('pPhone').value=PROF.phone;document.getElementById('pAddr').value=PROF.address;
   const m=document.getElementById('pMsg');m.className='msg';m.textContent='';
   document.getElementById('pView').style.display='none';document.getElementById('pEdit').style.display='none';document.getElementById('pForm').style.display=''};
 document.getElementById('pCancel').onclick=showProf;
 const TAMIL=/[\u0B80-\u0BFF]/;
 function chkTa(inp,w){const bad=TAMIL.test(inp.value);document.getElementById(w).style.display=bad?'block':'none';inp.classList.toggle('bad',bad);return bad}
+function chkPh(){const i=document.getElementById('pPhone');const v=i.value.replace(/[^0-9]/g,'');if(v!==i.value)i.value=v;
+  const bad=v.length>0&&v.length<10;document.getElementById('wPhone').style.display=bad?'block':'none';i.classList.toggle('bad',bad);return v.length!==10}
+['input','keyup','change','blur'].forEach(ev=>document.getElementById('pPhone').addEventListener(ev,chkPh));
 ['pName:wName','pAddr:wAddr'].forEach(x=>{const [i,w]=x.split(':'),e=document.getElementById(i);
   ['input','keyup','compositionupdate','change'].forEach(ev=>e.addEventListener(ev,()=>chkTa(e,w)))});
 document.getElementById('pSave').onclick=async()=>{
   const m=document.getElementById('pMsg'),b=document.getElementById('pSave');
   if(chkTa(document.getElementById('pName'),'wName')|chkTa(document.getElementById('pAddr'),'wAddr')){m.className='msg err';m.textContent='தயவு செய்து ஆங்கிலத்தில் உள்ளிடவும் (Please enter in English).';return}
+  if(chkPh()){document.getElementById('wPhone').style.display='block';m.className='msg err';m.textContent='MOBILE NUMBER சரியாக 10 இலக்கங்கள் இருக்க வேண்டும்.';return}
   b.disabled=true;
   try{const r=await fetch('/api/librarian/profile-save',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({name:document.getElementById('pName').value,phone:document.getElementById('pPhone').value,address:document.getElementById('pAddr').value})});
