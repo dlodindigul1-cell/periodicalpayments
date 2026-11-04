@@ -1609,7 +1609,7 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
     <div><label>நூலகம்</label><select id="flib"><option value="">எல்லா நூலகங்களும் (சுருக்கம்)</option></select></div>
     <div><label>தேதி முதல்</label><input type="date" id="ffrom"></div>
     <div><label>தேதி வரை</label><input type="date" id="fto"></div>
-    <div style="display:flex;gap:8px"><button id="fgo">🔍 காட்டு</button><button id="fweek" class="alt">இந்த வாரம்</button></div>
+    <div style="display:flex;gap:8px"><button id="fgo">🔍 காட்டு</button><button id="fweek" class="alt">இந்த வாரம்</button><button id="fperiod" class="alt" type="button" title="நூலகர் பதிவுக் காலத்தை மீண்டும் இடு">↺ பதிவுக் காலம்</button></div>
   </div>
   <div class="kpi" id="kpi"></div>
   <div style="margin:6px 0 10px"><button id="fxl" class="sm alt">📥 Excel பதிவிறக்கு</button> <span class="muted">வரிசையைக் கிளிக் செய்தால் இதழ்கள் விரியும் · "✏️ பதிவு" பொத்தான் அந்த நூலகத்துக்கு Admin பதிவுக்குக் கொண்டு செல்லும்</span></div>
@@ -1622,9 +1622,9 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
   <div class="flt">
     <div><label>நூலக வகை</label><select id="pcat"><option value="">எல்லாம்</option></select></div>
     <div><label>நூலகத்தின் பெயர்</label><select id="plib"><option value="">— எல்லா நூலகங்களும் (சுருக்கம்) —</option></select></div>
-    <div><label>தேதி முதல்</label><input type="date" id="pfrom"></div>
+    <div><label>தேதி முதல் (நூலகர் பதிவுக் காலம்)</label><input type="date" id="pfrom"></div>
     <div><label>தேதி வரை</label><input type="date" id="pto"></div>
-    <div><button id="pgo" type="button">🔍 காட்டு</button></div>
+    <div><button id="pgo" type="button">🔍 காட்டு</button> <button id="pperiod" class="alt" type="button" title="நூலகர் பதிவுக் காலத்தை மீண்டும் இடு">↺ பதிவுக் காலம்</button></div>
   </div>
   <div class="kpi" id="pkpi"></div>
   <div class="scroll"><table id="ptab"><thead></thead><tbody></tbody></table></div>
@@ -1756,6 +1756,7 @@ function setMode(m){MODE=m;$('t1').classList.toggle('on',m==='received');$('t2')
 $('t1').onclick=()=>setMode('received');$('t2').onclick=()=>setMode('notreceived');$('t3').onclick=()=>setMode('unregistered');
 $('fgo').onclick=loadSummary;
 $('fweek').onclick=()=>{$('ffrom').value=OV.weekStart;$('fto').value=OV.weekEnd;loadSummary()};
+$('fperiod').onclick=()=>{applyRange();loadSummary()};
 $('fxl').onclick=()=>{location.href='/api/admin/librarian/export?'+qs()};
 
 /* ---------- ③ Admin பதிவு ---------- */
@@ -1814,7 +1815,7 @@ function fillPlib(){const f=$('plib'),keep=f.value,cat=$('pcat').value;f.length=
   (LIBS||[]).filter(x=>!cat||x.category===cat).forEach(x=>x.libraries.forEach(l=>f.appendChild(el('option',{value:l.code},l.name))));
   if([...f.options].some(o=>o.value===keep))f.value=keep}
 $('pcat').onchange=()=>{$('plib').value='';fillPlib();loadPend()};
-$('plib').onchange=()=>loadPend();$('pgo').onclick=()=>loadPend();
+$('plib').onchange=()=>loadPend();$('pgo').onclick=()=>loadPend();$('pperiod').onclick=()=>{applyRange();loadPend()};
 async function loadPend(){
   const th=$('ptab').querySelector('thead'),tb=$('ptab').querySelector('tbody'),k=$('pkpi');th.innerHTML='';tb.innerHTML='';k.innerHTML='';
   try{
@@ -1844,14 +1845,18 @@ async function loadPend(){
     }
   }catch(e){if(e!==0)tb.appendChild(el('tr')).appendChild(td('ஏற்ற முடியவில்லை: '+e,'muted'))}}
 function fdot(s){const p=(s||'').split('-');return p.length===3?p[2]+'.'+p[1]+'.'+p[0]:''}
-async function loadRange(){
+let RANGE={from:'',to:''};
+function applyRange(){['ffrom','pfrom'].forEach(i=>$(i).value=RANGE.from||'');['fto','pto'].forEach(i=>$(i).value=RANGE.to||'')}
+async function loadRange(apply){
   const d=await api('/api/admin/librarian/range');$('rfrom').value=d.from||'';$('rto').value=d.to||'';
-  $('rstat').textContent=(d.from&&d.to)?('தற்போது: நூலகர் திரை '+fdot(d.from)+' முதல் '+fdot(d.to)+' வரை (இன்றைய தேதி வரை மட்டும்) காட்டும்.'):('தற்போது வரம்பு அமைக்கப்படவில்லை — இந்த வாரம் + முந்தைய '+d.carryWeeks+' வாரங்கள் காட்டப்படும்.')}
+  RANGE={from:d.from||'',to:d.to||''};if(apply)applyRange();
+  $('rstat').textContent=(d.from&&d.to)?('தற்போது: நூலகர் திரை '+fdot(d.from)+' முதல் '+fdot(d.to)+' வரை (இன்றைய தேதி வரை மட்டும்) காட்டும்.'):('தற்போது வரம்பு அமைக்கப்படவில்லை — இந்த வாரம் + முந்தைய '+d.carryWeeks+' வாரங்கள் காட்டப்படும்.');
+  return d}
 async function postRange(body){
   try{const d=await api('/api/admin/librarian/range',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    say('rmsg',d.success,d.message||'');if(d.success)loadRange()}
+    say('rmsg',d.success,d.message||'');if(d.success){await loadRange(true);loadSummary()}}
   catch(e){say('rmsg',false,'சேமிக்க முடியவில்லை: '+e)}}
 $('rsave').onclick=()=>postRange({from:$('rfrom').value,to:$('rto').value});
 $('rclr').onclick=()=>postRange({clear:true});
-loadOverview().then(loadSummary);loadLibs();loadRange();
+loadRange(true).catch(()=>{}).then(()=>loadOverview()).then(loadSummary);loadLibs();
 </script></body></html>"""
