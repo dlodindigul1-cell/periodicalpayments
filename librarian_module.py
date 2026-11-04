@@ -897,7 +897,11 @@ def _filters():
     cat = (request.args.get("category") or "").strip()
     dfrom, dto = parse_iso(request.args.get("from")), parse_iso(request.args.get("to"))
     code = (request.args.get("code") or "").strip()
+    q = (request.args.get("q") or "").strip()
     where, params = [], []
+    if q:   # நூலகம் பெயர் / code தேடல் (பதிவிறக்கத்துக்கு)
+        where.append("(l.name ILIKE %s OR l.code ILIKE %s)")
+        params += ["%" + q + "%", "%" + q + "%"]
     if cat:
         where.append("l.category = %s")
         params.append(cat)
@@ -1023,39 +1027,171 @@ def api_admin_detail():
     return jsonify({"success": True, "rows": out})
 
 
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _json_of(r):
+    """view function-ன் jsonify முடிவிலிருந்து dict (அதே request args பயன்படுத்தும்)."""
+    resp = r[0] if isinstance(r, tuple) else r
+    return resp.get_json()
+
+
+def _xlsx_bytes(sheets):
+    """sheets = [(name, headers, rows, widths)]"""
+    import xlsxwriter
+    buf = io.BytesIO()
+    wb = xlsxwriter.Workbook(buf, {"in_memory": True})
+    head = wb.add_format({"bold": True, "bg_color": "#1e4d8c", "font_color": "#ffffff", "border": 1, "text_wrap": True})
+    for name, headers, rows, widths in sheets:
+        ws = wb.add_worksheet(name[:31])
+        for c, h in enumerate(headers):
+            ws.write(0, c, h, head)
+        for i, r in enumerate(rows, start=1):
+            for c, v in enumerate(r):
+                ws.write(i, c, "" if v is None else v)
+        for c, w in enumerate(widths):
+            ws.set_column(c, c, w)
+        ws.freeze_panes(1, 0)
+    wb.close()
+    return buf.getvalue()
+
+
+def _pdf_table(title, info_lines, headers, rows, widths, aligns=None, landscape=True):
+    """தமிழ் PDF அட்டவணை (fpdf2 + Noto Sans Tamil)."""
+    from fpdf import FPDF
+    from fpdf.fonts import FontFace
+    pdf = FPDF(orientation="L" if landscape else "P", unit="mm", format="A4")
+    pdf.set_margins(12, 12, 12)
+    pdf.set_auto_page_break(auto=True, margin=12)
+    pdf.add_font("Tamil", "", os.path.join(_FONT_DIR, "NotoSansTamil-Regular.ttf"))
+    pdf.add_font("Tamil", "B", os.path.join(_FONT_DIR, "NotoSansTamil-Bold.ttf"))
+    pdf.set_text_shaping(True)
+    pdf.add_page()
+    for txt, size in [(HEAD_LINES[0], 14), (HEAD_LINES[1], 12), (title, 12)]:
+        pdf.set_font("Tamil", "B", size)
+        pdf.multi_cell(0, 7, txt, align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(1)
+    pdf.set_font("Tamil", "", 9)
+    for ln in info_lines:
+        pdf.multi_cell(0, 5, ln, align="L", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(2)
+    usable = pdf.w - pdf.l_margin - pdf.r_margin
+    tot = float(sum(widths))
+    cw = tuple(w * usable / tot for w in widths)
+    head = FontFace(emphasis="BOLD", color=(255, 255, 255), fill_color=(30, 77, 140))
+    with pdf.table(col_widths=cw, text_align=tuple(aligns or ["LEFT"] * len(headers)), headings_style=head,
+                   line_height=5.5, padding=1.2, borders_layout="ALL") as t:
+        h = t.row()
+        for c in headers:
+            h.cell(c)
+        if not rows:
+            t.row().cell("— பதிவுகள் இல்லை —", colspan=len(headers), align="C")
+        for r in rows:
+            row = t.row()
+            for v in r:
+                row.cell("" if v is None else str(v))
+    return bytes(pdf.output())
+
+
+def _export_info(extra=None):
+    """வடிகட்டி விவரம் (PDF தலைப்புக்குக் கீழ்)."""
+    a = request.args
+    out = []
+    if (a.get("category") or "").strip():
+        out.append("நூலக வகை: " + a.get("category").strip())
+    f, t = parse_iso(a.get("from")), parse_iso(a.get("to"))
+    if f or t:
+        out.append("காலம்: %s – %s" % (fmt_d(f) if f else "…", fmt_d(t) if t else "…"))
+    if (a.get("q") or "").strip():
+        out.append("தேடல்: " + a.get("q").strip())
+    out += (extra or [])
+    out.append("தயாரித்த தேதி: " + fmt_d(today_ist()))
+    return out
+
+
+STATUS_TITLES = {"received": "நூலகர் பதிவு நிலை — பதிவு செய்தவை (Received)",
+                 "notreceived": "நூலகர் பதிவு நிலை — இன்னும் வராதவை",
+                 "unregistered": "நூலகர் பதிவு நிலை — பதிவே செய்யாதவை"}
+
+
+def _summary_table(status, items):
+    """திரையில் உள்ள நூலகம் வாரியான அட்டவணை → (headers, rows, widths, aligns)."""
+    if status == "received":
+        hd = ["வ.எண்.", "நூலகம்", "வகை", "Received", "தாமதமாகப் பதிவானவை", "அதிக தாமதம் (நாள்)", "Admin பதிவு", "கடைசிப் பதிவு"]
+        rows = [[n, i["name"], i["category"], i["count"], i["late"], i["maxLate"] or "", i["byAdmin"] or "", i["lastAt"]]
+                for n, i in enumerate(items, 1)]
+        return hd, rows, [11, 54, 38, 16, 30, 22, 16, 30], ["C", "L", "L", "C", "C", "C", "C", "C"]
+    if status == "notreceived":
+        hd = ["வ.எண்.", "நூலகம்", "வகை", "இன்னும் வராதவை", "இதழ்கள்", "பழைய தேதி", "கடைசிப் பதிவு"]
+        rows = [[n, i["name"], i["category"], i["count"], i["magazines"], i["firstDue"], i["lastAt"]]
+                for n, i in enumerate(items, 1)]
+        return hd, rows, [11, 62, 40, 22, 16, 24, 32], ["C", "L", "L", "C", "C", "C", "C"]
+    hd = ["வ.எண்.", "நூலகம்", "வகை", "பதிவு செய்யாதவை", "இதழ்கள்", "முதல் தேதி", "இதுவரை பதிவு செய்தவை"]
+    rows = [[n, i["name"], i["category"], i["count"], i["magazines"], i["firstDue"], i["recordedTotal"]]
+            for n, i in enumerate(items, 1)]
+    return hd, rows, [11, 62, 40, 22, 16, 24, 28], ["C", "L", "L", "C", "C", "C", "C"]
+
+
+def _detail_table(status, rows):
+    """இதழ் வாரி விவரம் → (headers, rows, widths, aligns)."""
+    def at(r):
+        return r["marked_at"].astimezone(IST).strftime("%d/%m/%Y %H:%M") if r["marked_at"] else ""
+    if status == "received":
+        hd = ["நூலகம்", "இதழ்", "Periodicity", "எதிர்பார்த்த தேதி", "பதிவு நேரம்", "பதிவு செய்தவர்", "தாமதம் (நாள்)"]
+        out = [[r["name"], r["magazine"], r["periodicity"] or "", fmt_d(r["expected_date"]), at(r), _who(r["marked_by"]),
+                _delay_days(r["marked_at"], r["expected_date"])] for r in rows]
+        return hd, out, [48, 56, 22, 24, 30, 20, 18], ["L", "L", "L", "C", "C", "C", "C"]
+    if status == "notreceived":
+        hd = ["நூலகம்", "இதழ்", "Periodicity", "தேதி", "பதிவு நேரம்", "பதிவு செய்தவர்"]
+        out = [[r["name"], r["magazine"], r["periodicity"] or "", fmt_d(r["expected_date"]), at(r), _who(r["marked_by"])]
+               for r in rows]
+        return hd, out, [52, 60, 24, 24, 32, 22], ["L", "L", "L", "C", "C", "C"]
+    hd = ["நூலகம்", "இதழ்", "Periodicity", "தேதி"]
+    out = [[r["name"], r["magazine"], r["periodicity"] or "", fmt_d(r["expected_date"])] for r in rows]
+    return hd, out, [65, 80, 28, 28], ["L", "L", "L", "C"]
+
+
 @lib_bp.route("/api/admin/librarian/export")
 @admin_api
 def api_admin_export():
-    import xlsxwriter
-    status, rows = _detail_rows()
+    fmt = (request.args.get("fmt") or "xlsx").lower()
+    status, rows = _detail_rows(limit=3000 if fmt == "pdf" else None)
+    stamp = today_ist().isoformat()
+    if fmt == "pdf":
+        if (request.args.get("code") or "").strip():   # ஒரு நூலகம் — இதழ் வாரி விவரம்
+            hd, trs, w, al = _detail_table(status, rows)
+            nm = rows[0]["name"] if rows else (request.args.get("code") or "")
+            info = _export_info(["நூலகம்: " + nm, "வரிசைகள்: %d" % len(trs)])
+        else:                                           # திரையில் உள்ள நூலகம் வாரி அட்டவணை
+            d = _json_of(api_admin_summary())
+            hd, trs, w, al = _summary_table(status, d["items"])
+            info = _export_info(["நூலகங்கள்: %d / %d" % (len(d["items"]), d["totalLibraries"]),
+                                 "மொத்த வரிசைகள்: %d" % d["totalRows"]])
+        body = _pdf_table(STATUS_TITLES[status], info, hd, trs, w, al, landscape=True)
+        return Response(body, mimetype="application/pdf",
+                        headers={"Content-Disposition": f"attachment; filename=librarian_{status}_{stamp}.pdf"})
+    # Excel: தாள் 1 = நூலகம் வாரி சுருக்கம், தாள் 2 = இதழ் வாரி விவரம்
     names = {"received": "Received", "notreceived": "Not received yet", "unregistered": "Not registered"}
-    buf = io.BytesIO()
-    wb = xlsxwriter.Workbook(buf, {"in_memory": True})
-    ws = wb.add_worksheet(names[status])
-    head = wb.add_format({"bold": True, "bg_color": "#1e4d8c", "font_color": "#ffffff", "border": 1})
+    d = _json_of(api_admin_summary())
+    shd, srows, sw, _al = _summary_table(status, d["items"])
     cols = ["Library Code", "Library", "Category", "Magazine", "Periodicity", "Expected Date"]
     if status != "unregistered":
         cols += ["Status", "Marked At", "Marked By"]
     if status == "received":
         cols += ["Delay (days)"]
-    for c, h in enumerate(cols):
-        ws.write(0, c, h, head)
-    for i, r in enumerate(rows, start=1):
+    drows = []
+    for r in rows:
         vals = [r["code"], r["name"], r["category"], r["magazine"], r["periodicity"] or "", fmt_d(r["expected_date"])]
         if status != "unregistered":
             vals += [r["status"], r["marked_at"].astimezone(IST).strftime("%d/%m/%Y %H:%M") if r["marked_at"] else "",
                      _who(r["marked_by"])]
         if status == "received":
             vals += [_delay_days(r["marked_at"], r["expected_date"])]
-        for c, v in enumerate(vals):
-            ws.write(i, c, v)
-    for c, w in enumerate([14, 38, 22, 34, 14, 14, 14, 18, 12, 12]):
-        ws.set_column(c, c, w)
-    ws.freeze_panes(1, 0)
-    wb.close()
-    fname = f"librarian_{status}_{today_ist().isoformat()}.xlsx"
-    return Response(buf.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": f"attachment; filename={fname}"})
+        drows.append(vals)
+    body = _xlsx_bytes([("Summary " + names[status], shd, srows, [max(8, int(x * 0.7)) for x in sw]),
+                        (names[status], cols, drows, [14, 38, 22, 34, 14, 14, 14, 18, 12, 12])])
+    return Response(body, mimetype=XLSX_MIME,
+                    headers={"Content-Disposition": f"attachment; filename=librarian_{status}_{stamp}.xlsx"})
 
 
 # ---- Admin: சுருக்கம் — பதிவு செய்யாதவை (Received / Not received எதுவும் குறிக்காதவை) ----------------- #
@@ -1143,6 +1279,52 @@ def api_admin_pending_detail():
                       "first": fmt_d(d[0]), "last": fmt_d(d[-1]), "dates": [fmt_d(x) for x in d]})
     return jsonify({"success": True, "library": {"code": code, "name": lib["name"], "category": lib["category"]},
                     "items": items, "total": sum(i["count"] for i in items), "upTo": fmt_d(dto_cap)})
+
+
+@lib_bp.route("/api/admin/librarian/pending-export")
+@admin_api
+def api_admin_pending_export():
+    """சுருக்கம் — பதிவு செய்யாதவை: Excel / PDF (திரையில் உள்ள வடிகட்டிகளுடன்)."""
+    fmt = (request.args.get("fmt") or "xlsx").lower()
+    code = (request.args.get("code") or "").strip()
+    q = (request.args.get("q") or "").strip().lower()
+    flt = (request.args.get("flt") or "").strip()
+    stamp = today_ist().isoformat()
+    if code:
+        d = _json_of(api_admin_pending_detail())
+        if not d.get("success"):
+            return jsonify(d), 404
+        hd = ["வ.எண்.", "இதழ் பெயர்", "Periodicity", "பதிவு செய்யாத இதழ்கள்", "காலம்", "தேதிகள்"]
+        trs = [[n, m["magazine"], m["periodicity"], m["count"],
+                m["first"] if m["first"] == m["last"] else m["first"] + " – " + m["last"], ", ".join(m["dates"])]
+               for n, m in enumerate(d["items"], 1)]
+        widths, al = [11, 55, 22, 24, 38, 126], ["C", "L", "L", "C", "C", "L"]
+        info = _export_info(["நூலகம்: " + d["library"]["name"],
+                             "பதிவு செய்யாத தேதிகள் (மொத்தம்): %d (%s வரை)" % (d["total"], d["upTo"])])
+        fname = f"pending_{code}_{stamp}"
+    else:
+        d = _json_of(api_admin_pending_summary())
+        items = [i for i in d["items"]
+                 if (not q or q in i["name"].lower() or q in i["code"].lower())
+                 and (flt != "pending" or i["unregistered"] > 0) and (flt != "clean" or i["unregistered"] == 0)]
+        hd = ["வ.எண்.", "நூலகம் பெயர்", "வகை", "அனுமதிக்கப்பட்ட இதழ்கள்", "பதிவு செய்தவை", "பதிவு செய்யாதவை"]
+        trs = [[n, i["name"], i["category"], i["allowed"], i["registered"], i["unregistered"]]
+               for n, i in enumerate(items, 1)]
+        widths, al = [11, 82, 48, 32, 26, 28], ["C", "L", "L", "C", "C", "C"]
+        extra = []
+        if flt:
+            extra.append("வடிகட்டி: " + ("பதிவு செய்யாதவை உள்ள நூலகங்கள் மட்டும்" if flt == "pending"
+                                         else "எல்லாம் பதிவு செய்த நூலகங்கள் மட்டும்"))
+        extra.append("நூலகங்கள்: %d · பதிவு செய்யாத இதழ்கள் (மொத்தம்): %d (%s வரை)"
+                     % (len(items), sum(i["unregistered"] for i in items), d["upTo"]))
+        info = _export_info(extra)
+        fname = f"pending_summary_{stamp}"
+    title = "சுருக்கம் — பதிவு செய்யாதவை (Received / Not received எதுவும் குறிக்காதவை)"
+    if fmt == "pdf":
+        return Response(_pdf_table(title, info, hd, trs, widths, al, landscape=True), mimetype="application/pdf",
+                        headers={"Content-Disposition": f"attachment; filename={fname}.pdf"})
+    return Response(_xlsx_bytes([("பதிவு செய்யாதவை", hd, trs, [max(8, int(w * 0.8)) for w in widths])]),
+                    mimetype=XLSX_MIME, headers={"Content-Disposition": f"attachment; filename={fname}.xlsx"})
 
 
 # ---- Admin: ஒரு நூலகத்துக்காக Admin பதிவு செய்தல் ------------------------------------------------ #
@@ -1557,6 +1739,7 @@ ADMIN_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 .wrap{max-width:1100px} h2{margin:0 0 8px;font-size:17px;color:#0f2347}
 .tabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap} .tab{background:#e8eefb;color:#1e4d8c;flex:1;min-width:150px} .tab.on{background:#1e4d8c;color:#fff}
 .flt{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end}
+.flt>div{min-width:0} .flt input,.flt select{max-width:100%;box-sizing:border-box} .btnrow{display:flex;flex-wrap:wrap;gap:8px}
 table{width:100%;border-collapse:collapse;font-size:14px} th{background:#1e4d8c;color:#fff;text-align:left;padding:8px 10px;position:sticky;top:0}
 td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{cursor:pointer} tr.lib:hover{background:#f3f6fd}
 .sub{background:#f8faff} .sub table th{background:#5b7fb8}
@@ -1609,10 +1792,11 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
     <div><label>நூலகம்</label><select id="flib"><option value="">எல்லா நூலகங்களும் (சுருக்கம்)</option></select></div>
     <div><label>தேதி முதல்</label><input type="date" id="ffrom"></div>
     <div><label>தேதி வரை</label><input type="date" id="fto"></div>
-    <div style="display:flex;gap:8px"><button id="fgo">🔍 காட்டு</button><button id="fweek" class="alt">இந்த வாரம்</button><button id="fperiod" class="alt" type="button" title="நூலகர் பதிவுக் காலத்தை மீண்டும் இடு">↺ பதிவுக் காலம்</button></div>
+    <div><label>🔎 தேடு (நூலகம் / code)</label><input type="search" id="fq" placeholder="பெயரைத் தட்டச்சு செய்க"></div>
+    <div class="btnrow"><button id="fgo">🔍 காட்டு</button><button id="fweek" class="alt">இந்த வாரம்</button><button id="fperiod" class="alt" type="button" title="நூலகர் பதிவுக் காலத்தை மீண்டும் இடு">↺ பதிவுக் காலம்</button></div>
   </div>
   <div class="kpi" id="kpi"></div>
-  <div style="margin:6px 0 10px"><button id="fxl" class="sm alt">📥 Excel பதிவிறக்கு</button> <span class="muted">வரிசையைக் கிளிக் செய்தால் இதழ்கள் விரியும் · "✏️ பதிவு" பொத்தான் அந்த நூலகத்துக்கு Admin பதிவுக்குக் கொண்டு செல்லும்</span></div>
+  <div style="margin:6px 0 10px"><button id="fxl" class="sm alt">📥 Excel பதிவிறக்கு</button> <button id="fpdf" class="sm alt">📄 PDF பதிவிறக்கு</button> <span class="muted">வரிசையைக் கிளிக் செய்தால் இதழ்கள் விரியும் · "✏️ பதிவு" பொத்தான் அந்த நூலகத்துக்கு Admin பதிவுக்குக் கொண்டு செல்லும்</span></div>
   <div class="scroll"><table id="stab"><thead></thead><tbody></tbody></table></div>
 </div>
 
@@ -1624,10 +1808,14 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
     <div><label>நூலகத்தின் பெயர்</label><select id="plib"><option value="">— எல்லா நூலகங்களும் (சுருக்கம்) —</option></select></div>
     <div><label>தேதி முதல் (நூலகர் பதிவுக் காலம்)</label><input type="date" id="pfrom"></div>
     <div><label>தேதி வரை</label><input type="date" id="pto"></div>
-    <div><button id="pgo" type="button">🔍 காட்டு</button> <button id="pperiod" class="alt" type="button" title="நூலகர் பதிவுக் காலத்தை மீண்டும் இடு">↺ பதிவுக் காலம்</button></div>
+    <div><label>🔎 தேடு (நூலகம் / code)</label><input type="search" id="psrch" placeholder="பெயரைத் தட்டச்சு செய்க"></div>
+    <div><label>நிலை வடிகட்டி</label><select id="pflt"><option value="">எல்லாம்</option><option value="pending">பதிவு செய்யாதவை உள்ளவை மட்டும்</option><option value="clean">எல்லாம் பதிவு செய்தவை மட்டும்</option></select></div>
+    <div class="btnrow"><button id="pgo" type="button">🔍 காட்டு</button> <button id="phide" class="alt" type="button" style="display:none">🔼 மறை</button> <button id="pperiod" class="alt" type="button" title="நூலகர் பதிவுக் காலத்தை மீண்டும் இடு">↺ பதிவுக் காலம்</button></div>
   </div>
+  <div class="btnrow" style="margin:8px 0"><button id="pxl" class="sm alt" type="button">📥 Excel பதிவிறக்கு</button><button id="ppdf" class="sm alt" type="button">📄 PDF பதிவிறக்கு</button></div>
   <div class="kpi" id="pkpi"></div>
   <div class="scroll"><table id="ptab"><thead></thead><tbody></tbody></table></div>
+  <div id="phidebar" style="display:none;margin-top:10px;text-align:center"><button id="phide2" class="alt sm" type="button">🔼 மறை</button></div>
 </div>
 
 <div class="card" id="mcard">
@@ -1692,6 +1880,12 @@ $('lgo').onclick=async()=>{
   const fd=new FormData();fd.append('file',f);const d=await api('/api/admin/librarian/upload-libraries',{method:'POST',body:fd});
   say('lmsg',d.success,d.message);if(d.success){loadOverview();loadLibs()}};
 
+let SUMD=null,PSUM=null;
+function _mq(i,q){q=(q||'').trim().toLowerCase();return !q||(i.name||'').toLowerCase().includes(q)||(i.code||'').toLowerCase().includes(q)}
+function filterSum(d){const items=d.items.filter(i=>_mq(i,$('fq').value));
+  return Object.assign({},d,{items,totalRows:items.reduce((a,i)=>a+i.count,0),lateTotal:items.reduce((a,i)=>a+(i.late||0),0)})}
+function filterPend(d){const f=$('pflt').value;
+  return Object.assign({},d,{items:d.items.filter(i=>_mq(i,$('psrch').value)&&(f==='pending'?i.unregistered>0:f==='clean'?i.unregistered===0:true))})}
 function qs(extra){const p=new URLSearchParams({status:MODE});if($('fcat').value)p.set('category',$('fcat').value);if($('flib').value)p.set('code',$('flib').value);
   if($('ffrom').value)p.set('from',$('ffrom').value);if($('fto').value)p.set('to',$('fto').value);for(const k in (extra||{}))p.set(k,extra[k]);return p.toString()}
 const HEADS={
@@ -1730,7 +1924,9 @@ $('fcat').onchange=()=>{$('flib').value='';fillFlib()};
 async function loadSummary(){
   if(typeof loadPend==='function')loadPend();
   if($('flib').value)return loadLibDetail();
-  const d=await api('/api/admin/librarian/summary?'+qs());
+  SUMD=await api('/api/admin/librarian/summary?'+qs());renderSummary()}
+function renderSummary(){
+  const d=filterSum(SUMD);
   const th=$('stab').querySelector('thead'),tb=$('stab').querySelector('tbody');th.innerHTML='';tb.innerHTML='';
   const hr=el('tr');HEADS[MODE].forEach(h=>hr.appendChild(el('th',null,h)));th.appendChild(hr);
   const k=$('kpi');k.innerHTML='';
@@ -1757,7 +1953,9 @@ $('t1').onclick=()=>setMode('received');$('t2').onclick=()=>setMode('notreceived
 $('fgo').onclick=loadSummary;
 $('fweek').onclick=()=>{$('ffrom').value=OV.weekStart;$('fto').value=OV.weekEnd;loadSummary()};
 $('fperiod').onclick=()=>{applyRange();loadSummary()};
-$('fxl').onclick=()=>{location.href='/api/admin/librarian/export?'+qs()};
+$('fxl').onclick=()=>{location.href='/api/admin/librarian/export?'+qs({fmt:'xlsx',q:$('fq').value})};
+$('fpdf').onclick=()=>{location.href='/api/admin/librarian/export?'+qs({fmt:'pdf',q:$('fq').value})};
+$('fq').oninput=()=>{if(!$('flib').value&&SUMD)renderSummary()};
 
 /* ---------- ③ Admin பதிவு ---------- */
 async function loadLibs(){
@@ -1816,7 +2014,18 @@ function fillPlib(){const f=$('plib'),keep=f.value,cat=$('pcat').value;f.length=
   if([...f.options].some(o=>o.value===keep))f.value=keep}
 $('pcat').onchange=()=>{$('plib').value='';fillPlib();loadPend()};
 $('plib').onchange=()=>loadPend();$('pgo').onclick=()=>loadPend();$('pperiod').onclick=()=>{applyRange();loadPend()};
-async function loadPend(){
+function hidePend(){
+  const th=$('ptab').querySelector('thead'),tb=$('ptab').querySelector('tbody');
+  th.innerHTML='';tb.innerHTML='';$('pkpi').innerHTML='';
+  $('phide').style.display='none';$('phidebar').style.display='none';
+  $('pcard').scrollIntoView({behavior:'smooth',block:'start'});
+}
+$('phide').onclick=hidePend;$('phide2').onclick=hidePend;
+$('pxl').onclick=()=>{location.href='/api/admin/librarian/pending-export?'+pq({fmt:'xlsx',code:$('plib').value,q:$('psrch').value,flt:$('pflt').value})};
+$('ppdf').onclick=()=>{location.href='/api/admin/librarian/pending-export?'+pq({fmt:'pdf',code:$('plib').value,q:$('psrch').value,flt:$('pflt').value})};
+$('psrch').oninput=()=>{if(!$('plib').value&&PSUM)loadPend(true)};$('pflt').onchange=()=>{if(!$('plib').value&&PSUM)loadPend(true)};
+async function loadPend(cached){
+  $('phide').style.display='';$('phidebar').style.display='';
   const th=$('ptab').querySelector('thead'),tb=$('ptab').querySelector('tbody'),k=$('pkpi');th.innerHTML='';tb.innerHTML='';k.innerHTML='';
   try{
     if($('plib').value){
@@ -1834,7 +2043,8 @@ async function loadPend(){
       const b2=el('button',{class:'sm',type:'button',style:'margin-left:8px'},'✏️ இந்த நூலகத்துக்குப் பதிவு');
       b2.onclick=()=>openMark(d.library.code,d.library.category);bc.appendChild(b1);bc.appendChild(b2);bt.appendChild(bc);tb.appendChild(bt);
     }else{
-      const d=await api('/api/admin/librarian/pending-summary?'+pq());
+      if(!(cached&&PSUM))PSUM=await api('/api/admin/librarian/pending-summary?'+pq());
+      const d=filterPend(PSUM);
       const hr=el('tr');['வ.எண்.','நூலகம் பெயர்','அனுமதிக்கப்பட்ட இதழ்கள்','பதிவு செய்தவை','பதிவு செய்யாதவை'].forEach(h=>hr.appendChild(el('th',null,h)));th.appendChild(hr);
       const tot=d.items.reduce((a,i)=>a+i.unregistered,0),clean=d.items.filter(i=>i.unregistered===0).length;
       k.appendChild(el('div',null,'நூலகங்கள்: '+d.items.length));k.appendChild(el('div',null,'பதிவு செய்யாத இதழ்கள் (மொத்தம்): '+tot+' ('+d.upTo+' வரை)'));k.appendChild(el('div',null,'எல்லாம் பதிவு செய்த நூலகங்கள்: '+clean));
