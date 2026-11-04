@@ -106,6 +106,9 @@ def ensure_schema():
             cur.execute("CREATE INDEX IF NOT EXISTS idx_lib_receipts_date ON lib_receipts (expected_date)")
             # யார் பதிவு செய்தார்: librarian / admin (பழைய பதிவுகள் = librarian)
             cur.execute("ALTER TABLE lib_receipts ADD COLUMN IF NOT EXISTS marked_by TEXT NOT NULL DEFAULT 'librarian'")
+            # நூலகர் விவரங்கள் (Master) — missing_module.py-ம் இதே நெடுவரிசைகளை உருவாக்கும் (IF NOT EXISTS என்பதால் முரண் இல்லை)
+            for _c in ("name_en", "librarian_name", "librarian_name_en", "phone", "address", "address_en"):
+                cur.execute("ALTER TABLE lib_libraries ADD COLUMN IF NOT EXISTS %s TEXT NOT NULL DEFAULT ''" % _c)
             # Admin அமைப்புகள் (எ.கா. நூலகர் பதிவுக் காலம்): key → value
             cur.execute("CREATE TABLE IF NOT EXISTS lib_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
             cur.execute("SELECT COUNT(*) AS n FROM lib_libraries")
@@ -403,6 +406,63 @@ def api_librarian_week():
 def api_librarian_save():
     entries = (request.get_json(force=True, silent=True) or {}).get("entries") or []
     return _save_entries(session["lib_code"], entries, CARRY_WEEKS, "librarian")
+
+
+# ---- நூலகர் விவரங்கள் (பெயர் / தொலைபேசி / முகவரி) — நூலகரே திருத்தலாம்; Master (lib_libraries)-ல் பதிவாகும் ---- #
+# தமிழ் புலங்கள் மட்டுமே பயன்படும் (librarian_name, phone, address). தமிழ் காலியாக இருந்தால் காட்ட மட்டும் English மதிப்பு.
+def _addr_clean(v):
+    """முகவரியின் வரி மாற்றங்கள் (Enter) அப்படியே; வெற்று வரிகள் / ஓர இடைவெளி நீக்கம்."""
+    lines = (v or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return "\n".join(ln.strip() for ln in lines if ln.strip())
+
+
+@lib_bp.route("/api/librarian/profile")
+@librarian_api()
+def api_librarian_profile():
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT librarian_name, librarian_name_en, phone, address, address_en "
+                        "FROM lib_libraries WHERE code=%s", (session["lib_code"],))
+            r = cur.fetchone()
+    finally:
+        conn.close()
+    if not r:
+        return jsonify({"success": False, "message": "நூலகம் கண்டறியப்படவில்லை."}), 404
+    return jsonify({"success": True,
+                    "name": r["librarian_name"] or r["librarian_name_en"] or "",
+                    "phone": r["phone"] or "",
+                    "address": r["address"] or r["address_en"] or ""})
+
+
+@lib_bp.route("/api/librarian/profile-save", methods=["POST"])
+@librarian_api()
+def api_librarian_profile_save():
+    body = request.get_json(force=True, silent=True) or {}
+    name = " ".join((body.get("name") or "").split())
+    phone = " ".join((body.get("phone") or "").split())
+    address = _addr_clean(body.get("address"))
+    if not name or not phone or not address:
+        return jsonify({"success": False, "message": "நூலகர் பெயர், தொலைபேசி எண், முகவரி — மூன்றையும் நிரப்பவும்."}), 400
+    if len(name) > 100 or len(phone) > 60 or len(address) > 500:
+        return jsonify({"success": False, "message": "உள்ளீடு மிக நீளமாக உள்ளது."}), 400
+    if any(ch not in "0123456789+-,/() " for ch in phone) or sum(ch.isdigit() for ch in phone) < 6:
+        return jsonify({"success": False, "message": "தொலைபேசி எண் தவறு (எண்கள், + - , / மட்டும்; குறைந்தது 6 இலக்கம்)."}), 400
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE lib_libraries SET librarian_name=%s, phone=%s, address=%s, updated_at=now() WHERE code=%s",
+                        (name, phone, address, session["lib_code"]))
+            if cur.rowcount == 0:
+                conn.rollback()
+                return jsonify({"success": False, "message": "நூலகம் கண்டறியப்படவில்லை."}), 404
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": "சேமிக்க முடியவில்லை: %s" % e}), 500
+    finally:
+        conn.close()
+    return jsonify({"success": True, "name": name, "phone": phone, "address": address})
 
 
 # ---- ஆணையிடப்பட்ட இதழ்கள் பட்டியல் (PDF / Excel) ------------------------------------------------ #
@@ -1185,6 +1245,15 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 #nrov h3{margin:0 0 10px;font-size:18px;color:#7a5600}
 #nrov p{margin:0 0 10px;font-size:15px;line-height:1.55;color:#1b2540}
 #nrov .until{background:#fff3cd;border-radius:10px;padding:10px 12px;font-weight:800;color:#7a5600;margin:12px 0}
+.prof{margin-top:14px;border:1.5px solid #b9c7e6;background:#f5f8fe;border-radius:12px;padding:12px 14px}
+.prof h4{margin:0 0 8px;font-size:15px;color:#1e4d8c;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.prof h4 button{padding:5px 12px;font-size:13px;background:#e8eefb;color:#1e4d8c;border:1.5px solid #b9c7e6}
+.prof .pr{display:flex;gap:8px;margin:4px 0;font-size:15px;line-height:1.5} .prof .pr b{min-width:96px;color:#44506f;font-weight:600}
+.prof .pr span{flex:1;white-space:pre-line;font-weight:600}
+.prof input[type=text],.prof textarea{width:100%;padding:10px 12px;border:1.5px solid #c5cee3;border-radius:10px;font-size:15px;font-family:inherit}
+.prof textarea{min-height:88px;resize:vertical}
+.prof .acts{display:flex;gap:8px;margin-top:10px}
+.prof .acts .cn{background:#e8eefb;color:#1e4d8c}
 #toast{position:fixed;left:50%;top:40%;transform:translate(-50%,-50%);background:#1b6b34;color:#fff;padding:16px 28px;border-radius:14px;font-size:18px;font-weight:800;box-shadow:0 8px 30px rgba(0,0,0,.3);z-index:50;display:none}
 </style></head><body>
 <div class="top"><div class="ttl"><div class="l1">தமிழ்நாடு அரசு பொது நூலகத்துறை</div><div class="l2">மாவட்ட நூலக ஆணைக்குழு, திண்டுக்கல்</div><div class="l3" id="libName">…</div><div class="l4">பருவ இதழ் வருகைப் பதிவேடு</div></div>
@@ -1194,6 +1263,17 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
   <div class="card">
     <button id="ordBtn" type="button">📋 உங்கள் நூலகத்திற்கு ஆணையிடப்பட்ட இதழ்கள்</button>
     <div class="dl" id="dl"><a class="btn btn2" href="/api/librarian/ordered-export?fmt=pdf">⬇️ PDF பதிவிறக்கம்</a><a class="btn btn2" href="/api/librarian/ordered-export?fmt=xlsx">⬇️ Excel பதிவிறக்கம்</a></div>
+    <div class="prof" id="prof">
+      <h4>👤 நூலகர் விவரங்கள் <button type="button" id="pEdit" style="display:none">✏️ திருத்து</button></h4>
+      <div id="pView"><div class="muted">ஏற்றுகிறது…</div></div>
+      <div id="pForm" style="display:none">
+        <label for="pName">நூலகர் பெயர்</label><input type="text" id="pName" maxlength="100" autocomplete="off">
+        <label for="pPhone">தொலைபேசி எண்</label><input type="text" id="pPhone" maxlength="60" inputmode="tel" autocomplete="off">
+        <label for="pAddr">நூலக முகவரி</label><textarea id="pAddr" maxlength="500"></textarea>
+        <div class="acts"><button type="button" id="pSave">💾 சேமி</button><button type="button" class="cn" id="pCancel">ரத்து</button></div>
+        <div id="pMsg" class="msg"></div>
+      </div>
+    </div>
   </div>
   <div class="seg"><button type="button" id="mCur" class="on">📅 இந்த மாதம்</button><button type="button" id="mPrev">⏪ முந்தைய மாதம்</button></div>
   <div class="boxes">
@@ -1319,6 +1399,32 @@ document.getElementById('save').onclick=async()=>{
   try{const r=await fetch('/api/librarian/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entries})});
     const d=await r.json();const y=window.scrollY;if(d.success){msg.className='msg';msg.textContent='';await load();window.scrollTo(0,y);toast('✅ சேமிக்கப்பட்டது')}else{msg.className='msg err';msg.textContent=d.message||'பிழை'}}
   catch(e){msg.className='msg err';msg.textContent='சேமிக்க முடியவில்லை: '+e}finally{b.disabled=false}};
+let PROF={name:'',phone:'',address:''};
+function showProf(){
+  const v=document.getElementById('pView');v.innerHTML='';
+  [['நூலகர் பெயர்',PROF.name],['தொலைபேசி',PROF.phone],['முகவரி',PROF.address]].forEach(([k,x])=>{
+    const r=el('div',{class:'pr'});r.appendChild(el('b',null,k));r.appendChild(el('span',null,x||'— பதிவு இல்லை —'));v.appendChild(r)});
+  document.getElementById('pView').style.display='';document.getElementById('pForm').style.display='none';
+  document.getElementById('pEdit').style.display=''}
+async function loadProf(){
+  try{const r=await fetch('/api/librarian/profile');const d=await r.json();
+    if(d.success){PROF={name:d.name,phone:d.phone,address:d.address};showProf()}
+    else document.getElementById('pView').textContent=d.message||'பிழை'}
+  catch(e){document.getElementById('pView').textContent='விவரங்களை ஏற்ற முடியவில்லை.'}}
+document.getElementById('pEdit').onclick=()=>{
+  document.getElementById('pName').value=PROF.name;document.getElementById('pPhone').value=PROF.phone;document.getElementById('pAddr').value=PROF.address;
+  const m=document.getElementById('pMsg');m.className='msg';m.textContent='';
+  document.getElementById('pView').style.display='none';document.getElementById('pEdit').style.display='none';document.getElementById('pForm').style.display=''};
+document.getElementById('pCancel').onclick=showProf;
+document.getElementById('pSave').onclick=async()=>{
+  const m=document.getElementById('pMsg'),b=document.getElementById('pSave');b.disabled=true;
+  try{const r=await fetch('/api/librarian/profile-save',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:document.getElementById('pName').value,phone:document.getElementById('pPhone').value,address:document.getElementById('pAddr').value})});
+    const d=await r.json();
+    if(d.success){PROF={name:d.name,phone:d.phone,address:d.address};showProf();toast('✅ நூலகர் விவரங்கள் சேமிக்கப்பட்டன')}
+    else{m.className='msg err';m.textContent=d.message||'பிழை'}}
+  catch(e){m.className='msg err';m.textContent='சேமிக்க முடியவில்லை: '+e}finally{b.disabled=false}};
+loadProf();
 load();
 </script></body></html>"""
 
