@@ -1762,6 +1762,10 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
 .opts input:checked + span.nr{background:#c0392b;border-color:#c0392b;color:#fff}
 .opts span.cl{font-size:13px;color:#6b7694;border-style:dashed}
 .opts input:checked + span.cl{background:#6b7694;border-color:#6b7694;border-style:solid;color:#fff}
+#pdov{position:fixed;inset:0;background:rgba(15,35,71,.55);z-index:55;display:none;align-items:center;justify-content:center;padding:16px}
+#pdov .box{background:#fff;border-radius:16px;max-width:860px;width:100%;max-height:90vh;overflow:auto;padding:18px 20px;box-shadow:0 10px 40px rgba(0,0,0,.35);border-top:6px solid #1e4d8c}
+#pdov .hd{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px} #pdov .hd h3{margin:0;font-size:18px;color:#0f2347;flex:1;min-width:200px}
+#pdov .ft{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid #e3e8f4}
 #cfov{position:fixed;inset:0;background:rgba(15,35,71,.55);z-index:60;display:none;align-items:center;justify-content:center;padding:16px}
 #cfov .box{background:#fff;border-radius:16px;max-width:440px;width:100%;padding:20px 22px;box-shadow:0 10px 40px rgba(0,0,0,.35);border-top:6px solid #c0392b}
 #cfov h3{margin:0 0 10px;font-size:18px;color:#a12b20} #cfov p{margin:0 0 14px;font-size:15px;line-height:1.55}
@@ -1848,6 +1852,12 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
   <div id="rstat" class="muted" style="margin-top:8px"></div>
 </div>
 </div>
+<div id="pdov"><div class="box">
+  <div class="hd"><h3 id="pdtitle"></h3><span class="chip" id="pdcat"></span><button id="pdx1" class="alt sm" type="button">✖ மூடு</button></div>
+  <div class="kpi" id="pdkpi"></div>
+  <div class="scroll"><table id="pdtab"><thead></thead><tbody></tbody></table></div>
+  <div class="ft"><button id="pdmark" class="sm" type="button">✏️ இந்த நூலகத்துக்குப் பதிவு</button><button id="pdxl" class="sm alt" type="button">📥 Excel</button><button id="pdpdf" class="sm alt" type="button">📄 PDF</button><button id="pdx2" class="alt sm" type="button" style="margin-left:auto">✖ மூடு</button></div>
+</div></div>
 <div id="cfov"><div class="box"><h3>⚠️ பதிவுகளை நீக்கவா?</h3><p id="cftxt"></p>
 <div style="display:flex;gap:10px"><button id="cfno" class="alt" style="flex:1" type="button">ரத்து</button><button id="cfyes" class="danger" style="flex:1" type="button">ஆம், நீக்கு</button></div></div></div>
 <script>
@@ -2028,6 +2038,29 @@ $('phide').onclick=hidePend;$('phide2').onclick=hidePend;
 $('pxl').onclick=()=>{location.href='/api/admin/librarian/pending-export?'+pq({fmt:'xlsx',code:$('plib').value,flt:$('pflt').value})};
 $('ppdf').onclick=()=>{location.href='/api/admin/librarian/pending-export?'+pq({fmt:'pdf',code:$('plib').value,flt:$('pflt').value})};
 $('pflt').onchange=()=>{if(!$('plib').value&&PSUM)loadPend(true)};
+let PDCUR=null;
+function closePend(){$('pdov').style.display='none';PDCUR=null}
+async function openPendDetail(i){
+  PDCUR=i;$('pdtitle').textContent='📚 '+i.name;$('pdcat').textContent=i.category||'';
+  const th=$('pdtab').querySelector('thead'),tb=$('pdtab').querySelector('tbody'),k=$('pdkpi');th.innerHTML='';tb.innerHTML='';k.innerHTML='';
+  tb.appendChild(el('tr')).appendChild(td('ஏற்றுகிறது…','muted'));$('pdov').style.display='flex';
+  try{
+    const d=await api('/api/admin/librarian/pending-detail?'+pq({code:i.code}));tb.innerHTML='';
+    if(!d.success){tb.appendChild(el('tr')).appendChild(td(d.message||'பிழை','muted'));return}
+    k.appendChild(el('div',null,'பதிவு செய்யாத இதழ்கள்: '+d.items.length));k.appendChild(el('div',null,'பதிவு செய்யாத தேதிகள் (மொத்தம்): '+d.total+' ('+d.upTo+' வரை)'));
+    const hr=el('tr');['வ.எண்.','இதழ் பெயர்','பதிவு செய்யாத காலம்'].forEach(h=>hr.appendChild(el('th',null,h)));th.appendChild(hr);
+    if(!d.items.length){const tr=el('tr'),c=td('✅ பதிவு செய்யாத இதழ்கள் இல்லை.','ok-c');c.colSpan=3;tr.appendChild(c);tb.appendChild(tr)}
+    d.items.forEach((m,n)=>{const tr=el('tr');tr.appendChild(td(n+1));
+      const nm=td(m.magazine);if(m.periodicity)nm.appendChild(el('div',{class:'muted'},m.periodicity));tr.appendChild(nm);
+      const c=el('td');c.appendChild(el('div',{class:'bad-c'},(m.first===m.last?m.first:m.first+' – '+m.last)+'  ('+m.count+' இதழ்)'));
+      c.appendChild(el('div',{class:'muted'},m.dates.join(', ')));tr.appendChild(c);tb.appendChild(tr)});
+  }catch(e){tb.innerHTML='';tb.appendChild(el('tr')).appendChild(td('ஏற்ற முடியவில்லை: '+e,'muted'))}}
+$('pdx1').onclick=closePend;$('pdx2').onclick=closePend;
+$('pdov').onclick=e=>{if(e.target===$('pdov'))closePend()};
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&PDCUR)closePend()});
+$('pdmark').onclick=()=>{if(!PDCUR)return;const i=PDCUR;closePend();openMark(i.code,i.category)};
+$('pdxl').onclick=()=>{if(PDCUR)location.href='/api/admin/librarian/pending-export?'+pq({fmt:'xlsx',code:PDCUR.code})};
+$('pdpdf').onclick=()=>{if(PDCUR)location.href='/api/admin/librarian/pending-export?'+pq({fmt:'pdf',code:PDCUR.code})};
 async function loadPend(cached){
   $('phide').style.display='';$('phidebar').style.display='';
   const th=$('ptab').querySelector('thead'),tb=$('ptab').querySelector('tbody'),k=$('pkpi');th.innerHTML='';tb.innerHTML='';k.innerHTML='';
@@ -2055,7 +2088,7 @@ async function loadPend(cached){
       if(!d.items.length){const tr=el('tr'),c=td('நூலகங்கள் இல்லை.','muted');c.colSpan=5;tr.appendChild(c);tb.appendChild(tr)}
       d.items.forEach((i,n)=>{const tr=el('tr',{class:'lib'});tr.appendChild(td(n+1));tr.appendChild(td(i.name));tr.appendChild(td(i.allowed));
         tr.appendChild(td(i.registered,'ok-c'));tr.appendChild(td(i.unregistered,i.unregistered?'bad-c':'ok-c'));
-        tr.onclick=()=>{if(!$('pcat').value)$('pcat').value=i.category;fillPlib();$('plib').value=i.code;loadPend()};tb.appendChild(tr)})
+        tr.onclick=()=>openPendDetail(i);tb.appendChild(tr)})
     }
   }catch(e){if(e!==0)tb.appendChild(el('tr')).appendChild(td('ஏற்ற முடியவில்லை: '+e,'muted'))}}
 function fdot(s){const p=(s||'').split('-');return p.length===3?p[2]+'.'+p[1]+'.'+p[0]:''}
