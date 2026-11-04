@@ -1098,6 +1098,7 @@ td{padding:7px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} .scroll{
 td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
 #libModal{display:none;position:fixed;inset:0;background:rgba(15,35,71,.55);z-index:1000;align-items:center;justify-content:center;padding:14px}
 #libBox{background:#fff;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.35);width:min(760px,100%);max-height:86vh;display:flex;flex-direction:column;padding:16px 18px}
+#rout.noaddr .acol{display:none}
 #libBox h3{margin:0;font-size:17px;color:#0f2347} #libBody td:first-child{width:60px}
 @media print{ #libModal{display:none!important} .top,.tabs,.noprint{display:none!important} .card{box-shadow:none;border:0}}
 </style></head><body>
@@ -1121,6 +1122,7 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
     <button onclick="loadReport()">📋 காட்டு</button>
     <button class="alt sm" onclick="exportXlsx()">⬇️ Excel</button>
     <button class="alt sm" onclick="window.print()">🖨️ Print</button>
+    <button class="alt sm" id="addrBtn" onclick="toggleAddr()">🏠 முகவரி காட்டு</button>
   </div>
   <div class="noprint" style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     <input type="text" id="smail" placeholder="Sample Mail பெற உங்கள் Email" style="max-width:300px">
@@ -1130,7 +1132,7 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
   <div id="rmsg" class="msg"></div>
   <div id="unm" class="noprint"></div>
   <div id="mailres" class="noprint"></div>
-  <div id="rout"></div>
+  <div id="rout" class="noaddr"></div>
 </div>
 
 <div class="card" id="p2" style="display:none">
@@ -1195,6 +1197,10 @@ function qs(mag, only) {
   return q;
 }
 let GROUPS = [], RQUARTER = '';
+function toggleAddr() {      // முகவரி நெடுவரிசை — இயல்பாக மறைவு; PDF / Mail / Excel-ல் எப்போதும் உண்டு
+  const hidden = $('rout').classList.toggle('noaddr');
+  $('addrBtn').textContent = hidden ? '🏠 முகவரி காட்டு' : '🏠 முகவரி மறை';
+}
 let LIBSEL = null;
 function libClose() { $('libModal').style.display = 'none'; LIBSEL = null; }
 async function viewLibs(gi) {      // இந்த இதழ் செல்லும் நூலகங்கள் — திரை நடுவில் Popup
@@ -1268,9 +1274,9 @@ async function loadReport() {
       ? '<div class="noprint" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 4px">' + em + act + '</div>' : '';
     return '<div class="gh">' + esc(L.mag) + ': ' + esc(g.magazine) + al + ' <small>(' + esc(L.vendor) + ': ' + esc(g.vendorCode || '-') + ' · ' + g.rows.length + ')</small>' +
       ' <button class="sm alt noprint" style="margin-left:8px" onclick="viewLibs(' + gi + ')">🏛️ இந்த இதழ் செல்லும் நூலகங்களைப் பார்</button></div>' +
-      '<div class="scroll"><table><thead><tr><th>' + [L.sno, L.code, L.lib, L.librarian, L.date, L.phone, L.addr].map(esc).join('</th><th>') + '</th></tr></thead><tbody>' +
+      '<div class="scroll"><table><thead><tr><th>' + [L.sno, L.code, L.lib, L.librarian, L.date, L.phone].map(esc).join('</th><th>') + '</th><th class="acol">' + esc(L.addr) + '</th></tr></thead><tbody>' +
       (g.rows.map(x => '<tr><td>' + x.sno + '</td><td>' + esc(x.code) + '</td><td>' + esc(x.library) + '</td><td>' + esc(x.librarian) + '</td><td>' + esc(x.date) +
-        '</td><td>' + esc(x.phone) + '</td><td style="white-space:pre-line">' + esc(x.address) + '</td></tr>').join('') ||
+        '</td><td>' + esc(x.phone) + '</td><td class="acol" style="white-space:pre-line">' + esc(x.address) + '</td></tr>').join('') ||
         '<tr><td colspan="7" class="ok-c">' + esc(L.none) + '</td></tr>') + '</tbody></table></div>' + bar;
   }).join('');
 }
