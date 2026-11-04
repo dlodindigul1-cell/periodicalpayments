@@ -5498,6 +5498,13 @@ function _pdfHelper(fnName, targetId) {
             <div style="font-size:13px; color:var(--muted); margin-top:3px;">எல்லாத் திரைகளிலும் எந்த Quarter-கள் காட்டப்பட வேண்டும் என்று தேர்வு செய்</div>
           </div>
         </div>
+        <div class="menu-card" onclick="showMastersMagLibs()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
+          <div style="font-size:36px;">🏛️</div>
+          <div>
+            <div style="font-size:16px; font-weight:700; color:var(--navy);">இந்த Quarter இதழ்கள் செல்லும் நூலகம்</div>
+            <div style="font-size:13px; color:var(--muted); margin-top:3px;">இதழைத் தேர்ந்தால் எந்தெந்த நூலகங்களுக்குச் செல்கிறது — வ.எண்., Library Code, Library Name</div>
+          </div>
+        </div>
         <div class="menu-card" onclick="showMastersUsers()" style="text-align:center; justify-content:center; flex-direction:column; gap:10px;">
           <div style="font-size:36px;">🔐</div>
           <div>
@@ -5595,6 +5602,41 @@ function _pdfHelper(fnName, targetId) {
             <button class="btn-primary" id="fyViewSaveBtn" onclick="saveFyView()">💾 சேமி</button>
           </div>
           <div id="fyViewStatus" class="status"></div>
+        </div>
+        <div style="margin-top:8px;">
+          <button class="btn-secondary" onclick="showMastersDashboard()">← Master Data-க்கு</button>
+        </div>
+      </div>
+
+      <!-- ══════════ QUARTER MAGAZINE → LIBRARIES PANEL ══════════ -->
+      <div id="mastersMagLibPanel" class="master-panel" style="display:none;">
+        <div class="card">
+          <div class="card-title">🏛️ இந்த Quarter இதழ்கள் செல்லும் நூலகம்</div>
+          <p style="font-size:13px; color:var(--muted); margin:0 0 12px;">Quarter-ஐயும் இதழையும் தேர்ந்தெடுத்தால், அந்த இதழ் எந்தெந்த நூலகங்களுக்குச் செல்கிறது என்பது வ.எண்., Library Code, Library Name உடன் காட்டப்படும்.</p>
+          <div class="field-row">
+            <div class="field">
+              <label>Quarter</label>
+              <select id="mlQuarter" onchange="mlLoadMagazines()"></select>
+            </div>
+            <div class="field" style="flex:2;">
+              <label>இதழ்</label>
+              <select id="mlMagazine" onchange="mlShow()"><option value="">— இதழைத் தேர்ந்தெடுக்கவும் —</option></select>
+            </div>
+          </div>
+          <div class="btn-row" style="margin:6px 0 10px;">
+            <button class="btn-primary" onclick="mlShow()">🔍 காட்டு</button>
+            <button class="btn-secondary" id="mlHideBtn" onclick="mlHide()" style="display:none;">🔼 மறை</button>
+            <button class="btn-secondary" id="mlXlBtn" onclick="mlDownload('xlsx')" style="display:none;">⬇️ Excel</button>
+            <button class="btn-secondary" id="mlPdfBtn" onclick="mlDownload('pdf')" style="display:none;">⬇️ PDF</button>
+          </div>
+          <div id="mlStatus" class="status"></div>
+          <div id="mlSummary" style="font-size:13.5px; font-weight:600; color:var(--navy); margin-bottom:8px;"></div>
+          <div class="data-table-wrap" style="max-height:520px;">
+            <table class="data-table">
+              <thead id="mlHead"></thead>
+              <tbody id="mlBody"></tbody>
+            </table>
+          </div>
         </div>
         <div style="margin-top:8px;">
           <button class="btn-secondary" onclick="showMastersDashboard()">← Master Data-க்கு</button>
@@ -6051,7 +6093,57 @@ function _pdfHelper(fnName, targetId) {
       document.getElementById('mastersUsersPanel').style.display = 'none';
       document.getElementById('mastersFixPanel').style.display = 'none';
       const _fy = document.getElementById('mastersFyViewPanel'); if (_fy) _fy.style.display = 'none';
+      const _ml = document.getElementById('mastersMagLibPanel'); if (_ml) _ml.style.display = 'none';
     }
+
+    // ─── இந்த Quarter இதழ்கள் செல்லும் நூலகம் ───
+    async function showMastersMagLibs() {
+      hideMasterPanels();
+      document.getElementById('mastersMagLibPanel').style.display = 'block';
+      clearStatus('mlStatus');
+      mlHide();
+      await mlLoadMagazines();
+    }
+    async function mlLoadMagazines() {
+      const qSel = document.getElementById('mlQuarter'), mSel = document.getElementById('mlMagazine');
+      try {
+        const res = await fetch('/api/admin/librarian/quarter-magazines?quarter=' + encodeURIComponent(qSel.value || ''));
+        const d = await res.json();
+        if (!d.success) { setStatus('mlStatus', 'error', '❌ ' + (d.message || 'பிழை')); return; }
+        qSel.innerHTML = d.quarters.map(q => `<option value="${_uEsc(q)}">${_uEsc(q)}</option>`).join('');
+        qSel.value = d.quarter;
+        mSel.innerHTML = '<option value="">— இதழைத் தேர்ந்தெடுக்கவும் —</option>' + d.magazines.map(m =>
+          `<option value="${_uEsc(m.magazine)}">${_uEsc(m.magazine)}${m.periodicity ? ' (' + _uEsc(m.periodicity) + ')' : ''} — ${m.libs}</option>`).join('');
+        mlHide();
+      } catch (e) { setStatus('mlStatus', 'error', '❌ ஏற்ற முடியவில்லை: ' + e); }
+    }
+    function mlHide() {
+      document.getElementById('mlHead').innerHTML = '';
+      document.getElementById('mlBody').innerHTML = '';
+      document.getElementById('mlSummary').textContent = '';
+      ['mlHideBtn', 'mlXlBtn', 'mlPdfBtn'].forEach(i => document.getElementById(i).style.display = 'none');
+    }
+    function mlParams(extra) {
+      const p = new URLSearchParams({ quarter: document.getElementById('mlQuarter').value, magazine: document.getElementById('mlMagazine').value });
+      for (const k in (extra || {})) p.set(k, extra[k]);
+      return p.toString();
+    }
+    async function mlShow() {
+      clearStatus('mlStatus'); mlHide();
+      if (!document.getElementById('mlMagazine').value) { setStatus('mlStatus', 'error', '❌ முதலில் இதழைத் தேர்ந்தெடுக்கவும்.'); return; }
+      try {
+        const res = await fetch('/api/admin/librarian/magazine-libraries?' + mlParams());
+        const d = await res.json();
+        if (!d.success) { setStatus('mlStatus', 'error', '❌ ' + (d.message || 'பிழை')); return; }
+        document.getElementById('mlHead').innerHTML = '<tr><th style="width:70px;">வ.எண்.</th><th>Library Code</th><th>Library Name</th></tr>';
+        document.getElementById('mlBody').innerHTML = d.items.length
+          ? d.items.map((i, n) => `<tr><td>${n + 1}</td><td>${_uEsc(i.code)}</td><td>${_uEsc(i.name)}</td></tr>`).join('')
+          : '<tr><td colspan="3" style="text-align:center; color:var(--muted);">இந்த இதழ் எந்த நூலகத்துக்கும் இல்லை.</td></tr>';
+        document.getElementById('mlSummary').textContent = '📖 ' + d.magazine + ' · Quarter: ' + d.quarter + ' · நூலகங்கள்: ' + d.items.length;
+        ['mlHideBtn', 'mlXlBtn', 'mlPdfBtn'].forEach(i => document.getElementById(i).style.display = '');
+      } catch (e) { setStatus('mlStatus', 'error', '❌ ஏற்ற முடியவில்லை: ' + e); }
+    }
+    function mlDownload(fmt) { location.href = '/api/admin/librarian/magazine-libraries-export?' + mlParams({ fmt: fmt }); }
 
     // ─── பயனர் கணக்கு (admin மட்டும்) ───
     const _uEsc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
