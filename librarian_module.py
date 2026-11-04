@@ -1959,14 +1959,14 @@ async function loadOverview(){
     const c=el('td');const b=el('button',{class:'sm danger',type:'button'},'🗑️ நீக்கு');
     b.onclick=async()=>{if(!confirm(q.quarter+' அட்டவணையையும் அதற்கான '+q.recorded+' நூலகர் பதிவுகளையும் நீக்கவா?'))return;
       const d=await api('/api/admin/librarian/delete-quarter',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({quarter:q.quarter})});
-      say('qmsg',d.success,d.message);loadOverview();loadSummary()};
+      say('qmsg',d.success,d.message);loadOverview();refreshShown()};
     c.appendChild(b);tr.appendChild(c);tb.appendChild(tr)})
 }
 $('qgo').onclick=async()=>{
   const f=$('qfile').files[0];if(!f){say('qmsg',false,'கோப்பைத் தேர்ந்தெடுக்கவும்.');return}
   const fd=new FormData();fd.append('file',f);fd.append('mode',$('qreplace').checked?'replace':'add');
   $('qgo').disabled=true;say('qmsg',true,'ஏற்றுகிறது… (பெரிய கோப்புக்கு சில விநாடிகள் ஆகலாம்)');
-  try{const d=await api('/api/admin/librarian/upload-quarter',{method:'POST',body:fd});say('qmsg',d.success,d.message,d.warnings);if(d.success){$('qfile').value='';loadOverview();loadSummary()}}
+  try{const d=await api('/api/admin/librarian/upload-quarter',{method:'POST',body:fd});say('qmsg',d.success,d.message,d.warnings);if(d.success){$('qfile').value='';loadOverview();refreshShown()}}
   catch(e){say('qmsg',false,'ஏற்ற முடியவில்லை (நேரம் முடிந்திருக்கலாம்): '+e)}finally{$('qgo').disabled=false}};
 $('lgo').onclick=async()=>{
   const f=$('lfile').files[0];if(!f){say('lmsg',false,'கோப்பைத் தேர்ந்தெடுக்கவும்.');return}
@@ -2012,9 +2012,11 @@ function fillFlib(){
   (LIBS||[]).filter(x=>!cat||x.category===cat).forEach(x=>x.libraries.forEach(l=>f.appendChild(el('option',{value:l.code},l.name))));
   if([...f.options].some(o=>o.value===keep))f.value=keep}
 $('fcat').onchange=()=>{$('flib').value='';fillFlib()};
+function refreshShown(){   // தரவு மாறும்போது, ஏற்கனவே காட்டப்பட்டுள்ள அட்டவணைகளை மட்டும் புதுப்பிக்கும்; மறைந்தவை மறைந்தே இருக்கும்
+  if($('fhide').style.display!=='none')loadSummary();
+  if($('phide').style.display!=='none')loadPend()}
 async function loadSummary(){
   $('fhide').style.display='';$('fhidebar').style.display='';
-  if(typeof loadPend==='function')loadPend();
   if($('flib').value)return loadLibDetail();
   SUMD=await api('/api/admin/librarian/summary?'+qs());renderSummary()}
 function renderSummary(){
@@ -2040,7 +2042,7 @@ function renderSummary(){
       c.appendChild(buildDetailTable(r.rows));if(r.rows.length>=2000)c.appendChild(el('div',{class:'muted'},'முதல் 2000 வரிசைகள் மட்டும் — முழுமைக்கு Excel பதிவிறக்கவும்.'))};
     tb.appendChild(tr)})
 }
-function setMode(m){MODE=m;$('t1').classList.toggle('on',m==='received');$('t2').classList.toggle('on',m==='notreceived');$('t3').classList.toggle('on',m==='unregistered');loadSummary()}
+function setMode(m){MODE=m;$('t1').classList.toggle('on',m==='received');$('t2').classList.toggle('on',m==='notreceived');$('t3').classList.toggle('on',m==='unregistered');if($('fhide').style.display!=='none')loadSummary()}
 $('t1').onclick=()=>setMode('received');$('t2').onclick=()=>setMode('notreceived');$('t3').onclick=()=>setMode('unregistered');
 $('fgo').onclick=loadSummary;
 $('fweek').onclick=()=>{$('ffrom').value=OV.weekStart;$('fto').value=OV.weekEnd;loadSummary()};
@@ -2094,14 +2096,14 @@ $('cfno').onclick=()=>{$('cfov').style.display='none'};
 $('cfyes').onclick=async()=>{
   $('cfyes').disabled=true;
   try{const d=await api('/api/admin/librarian/mark-clear-all',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:MCODE})});
-    $('cfov').style.display='none';say('mmsg',d.success,d.message||'');if(d.success){await loadMark();loadSummary()}}
+    $('cfov').style.display='none';say('mmsg',d.success,d.message||'');if(d.success){await loadMark();refreshShown()}}
   catch(e){$('cfov').style.display='none';say('mmsg',false,'நீக்க முடியவில்லை: '+e)}finally{$('cfyes').disabled=false}};
 $('msave').onclick=async()=>{
   const entries=[];MROWS.forEach((r,i)=>{const c=document.querySelector('#mlist input[name="m'+i+'"]:checked');if(c)entries.push({magazine:r.magazine,date:r.date,status:c.value})});
   if(!entries.length){say('mmsg',false,'குறைந்தது ஒரு இதழுக்காவது Received / Not received தேர்ந்தெடுக்கவும்.');return}
   $('msave').disabled=true;
   try{const d=await api('/api/admin/librarian/mark-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:MCODE,entries})});
-    say('mmsg',d.success,d.message||'');if(d.success){await loadMark();loadSummary()}}
+    say('mmsg',d.success,d.message||'');if(d.success){await loadMark();refreshShown()}}
   catch(e){say('mmsg',false,'சேமிக்க முடியவில்லை: '+e)}finally{$('msave').disabled=false}};
 
 /* ---------- சுருக்கம்: பதிவு செய்யாதவை ---------- */
@@ -2110,8 +2112,8 @@ function pq(extra){const p=new URLSearchParams();if($('pcat').value)p.set('categ
 function fillPlib(){const f=$('plib'),keep=f.value,cat=$('pcat').value;f.length=1;
   (LIBS||[]).filter(x=>!cat||x.category===cat).forEach(x=>x.libraries.forEach(l=>f.appendChild(el('option',{value:l.code},l.name))));
   if([...f.options].some(o=>o.value===keep))f.value=keep}
-$('pcat').onchange=()=>{$('plib').value='';fillPlib();loadPend()};
-$('plib').onchange=()=>loadPend();$('pgo').onclick=()=>loadPend();$('pperiod').onclick=()=>{applyRange();loadPend()};
+$('pcat').onchange=()=>{$('plib').value='';fillPlib();if($('phide').style.display!=='none')loadPend()};
+$('plib').onchange=()=>{if($('phide').style.display!=='none')loadPend()};$('pgo').onclick=()=>loadPend();$('pperiod').onclick=()=>{applyRange();loadPend()};
 function hidePend(){
   const th=$('ptab').querySelector('thead'),tb=$('ptab').querySelector('tbody');
   th.innerHTML='';tb.innerHTML='';$('pkpi').innerHTML='';
@@ -2121,7 +2123,7 @@ function hidePend(){
 $('phide').onclick=hidePend;$('phide2').onclick=hidePend;
 $('pxl').onclick=()=>{location.href='/api/admin/librarian/pending-export?'+pq({fmt:'xlsx',code:$('plib').value,flt:$('pflt').value})};
 $('ppdf').onclick=()=>{location.href='/api/admin/librarian/pending-export?'+pq({fmt:'pdf',code:$('plib').value,flt:$('pflt').value})};
-$('pflt').onchange=()=>{if(!$('plib').value&&PSUM)loadPend(true)};
+$('pflt').onchange=()=>{if(!$('plib').value&&PSUM&&$('phide').style.display!=='none')loadPend(true)};
 let PDCUR=null;
 function closePend(){$('pdov').style.display='none';PDCUR=null}
 async function openPendDetail(i){
@@ -2185,9 +2187,9 @@ async function loadRange(apply){
   return d}
 async function postRange(body){
   try{const d=await api('/api/admin/librarian/range',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    say('rmsg',d.success,d.message||'');if(d.success){await loadRange(true);loadSummary();if(MCODE)loadMark()}}
+    say('rmsg',d.success,d.message||'');if(d.success){await loadRange(true);refreshShown();if(MCODE)loadMark()}}
   catch(e){say('rmsg',false,'சேமிக்க முடியவில்லை: '+e)}}
 $('rsave').onclick=()=>postRange({from:$('rfrom').value,to:$('rto').value});
 $('rclr').onclick=()=>postRange({clear:true});
-loadRange(true).catch(()=>{}).then(()=>loadOverview()).then(loadSummary);loadLibs();
+loadRange(true).catch(()=>{}).then(()=>loadOverview());loadLibs();
 </script></body></html>"""

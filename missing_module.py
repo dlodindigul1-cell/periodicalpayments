@@ -111,6 +111,26 @@ def _code_key(v):
     return re.sub(r"[\s\-_./]+", "", v or "").upper()
 
 
+def _loose(v):
+    """இரட்டை மெய் எழுத்துக் குறைப்பு (எ.கா. ரிப்போர்ட்டர் = ரிப்போர்டர்) + இடைவெளி/குறியீடு நீக்கம் — பெயர் எழுத்து வேறுபாட்டுக்கான இரண்டாம் நிலை ஒப்பீடு."""
+    k = re.sub(r"[\s\-_./,()&]+", "", _key(v))
+    return re.sub(r"(.)\u0bcd\1", r"\1", k)
+
+
+class _Resolver(dict):
+    """முதலில் துல்லியப் பொருத்தம்; இல்லையெனில் _loose பொருத்தம் (ஒரே ஒரு Master இதழ் பொருந்தினால் மட்டும்)."""
+    loose = None
+
+    def get(self, k, default=None):
+        if k in self:
+            return dict.get(self, k)
+        if self.loose is not None:
+            hit = self.loose.get(_loose(k))
+            if hit:
+                return hit
+        return default
+
+
 def _load_master(cur):
     """-> (magazines list[dict], resolver {name_key: master_name}, aliases {master: [alias,...]})"""
     cur.execute("SELECT name, language, tnpfts_code, vendor_name, email_id FROM magazines ORDER BY name")
@@ -119,20 +139,24 @@ def _load_master(cur):
         mags.append({"name": r["name"], "lang": _classify(r["language"], r["name"]),
                      "code": (r["tnpfts_code"] or "").strip(), "vendorName": r["vendor_name"] or "",
                      "email": (r["email_id"] or "").strip()})
-    resolver = {_key(m["name"]): m["name"] for m in mags}
+    resolver = _Resolver((_key(m["name"]), m["name"]) for m in mags)
     cur.execute("SELECT alias_name, master_name FROM magazine_aliases")
     aliases = {}
     for a in cur.fetchall():
         if a["master_name"] in {m["name"] for m in mags}:
             resolver.setdefault(_key(a["alias_name"]), a["master_name"])
             aliases.setdefault(a["master_name"], []).append(a["alias_name"])
+    cand = {}
+    for k, v in dict.items(resolver):
+        cand.setdefault(_loose(k), set()).add(v)
+    resolver.loose = {k: next(iter(v)) for k, v in cand.items() if len(v) == 1}   # ஒன்றுக்கு மேற்பட்ட Master பொருந்தினால் சேர்க்கப்படாது
     return mags, resolver, aliases
 
 
 ALL_MAGS = "__all__"
 
 
-def _build_report(cur, magazine, dfrom, dto, lang="", only=False):
+def _build_report(cur, magazine, dfrom, dto, lang="", only=False, unmatched=None):
     """வராத இதழ்கள் (நூலகர் / Admin \"Not received\" எனக் குறித்தவை மட்டும்).
     magazine == ALL_MAGS -> எல்லா இதழ்கள் (lang: ta | en | '' வடிகட்டி; வராத இதழ் உள்ளவை மட்டும்).
     இல்லையெனில் தேர்ந்த இதழ் + அதே Vendor Code உள்ள Group இதழ்கள் (only=True எனில் தேர்ந்த இதழ் மட்டும்)."""
@@ -163,6 +187,8 @@ def _build_report(cur, magazine, dfrom, dto, lang="", only=False):
         mname = resolver.get(_key(r["magazine"]))
         if mname in wanted:
             rows_by[mname].append(r)
+        elif mname is None and unmatched is not None:    # Master / Alias-ல் பொருந்தாத இதழ்ப் பெயர் — அமைதியாக விடாமல் தெரிவிக்க
+            unmatched[r["magazine"]] = unmatched.get(r["magazine"], 0) + 1
 
     cur.execute("SELECT DISTINCT ON (magazine) magazine, sent_at, date_from, date_to FROM missing_mail_log "
                 "WHERE ok ORDER BY magazine, sent_at DESC")
@@ -219,8 +245,10 @@ def api_missing_magazines():
             mags, _res, _al = _load_master(cur)
     finally:
         conn.close()
+    rng = lm._get_range()      # ④ நூலகர் பதிவுக் காலம் — இந்தப் பக்கத்தின் இயல்பு தேதிகள்
     return jsonify({"success": True, "magazines": [
-        {"name": m["name"], "lang": m["lang"], "code": m["code"]} for m in mags]})
+        {"name": m["name"], "lang": m["lang"], "code": m["code"]} for m in mags],
+        "range": {"from": rng[0].isoformat(), "to": rng[1].isoformat()} if rng else None})
 
 
 def _report_args(src):
@@ -234,7 +262,7 @@ def _report_args(src):
     return magazine, lang, only, dfrom, min(dto, lm.today_ist())
 
 
-def _run_report(src):
+def _run_report(src, unmatched=None):
     """-> (groups, dfrom, dto, error_response|None)"""
     magazine, lang, only, dfrom, dto = _report_args(src)
     if not magazine:
@@ -244,7 +272,7 @@ def _run_report(src):
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
-            groups = _build_report(cur, magazine, dfrom, dto, lang, only)
+            groups = _build_report(cur, magazine, dfrom, dto, lang, only, unmatched)
     finally:
         conn.close()
     if groups is None:
@@ -255,10 +283,12 @@ def _run_report(src):
 @miss_bp.route("/api/admin/missing/report")
 @_api
 def api_missing_report():
-    groups, dfrom, dto, err = _run_report(request.args)
+    unmatched = {}
+    groups, dfrom, dto, err = _run_report(request.args, unmatched)
     if err:
         return err
-    return jsonify({"success": True, "from": lm.fmt_d(dfrom), "to": lm.fmt_d(dto), "groups": groups})
+    return jsonify({"success": True, "from": lm.fmt_d(dfrom), "to": lm.fmt_d(dto), "groups": groups,
+                    "unmatched": [{"name": k, "count": v} for k, v in sorted(unmatched.items())]})
 
 
 @miss_bp.route("/api/admin/missing/export")
@@ -1056,6 +1086,7 @@ async function init() {
   $('dto').value = iso(t); $('dfrom').value = iso(f);
   const d = await api('/api/admin/missing/magazines');
   MAGS = d.magazines || []; fillMags();
+  if (d.range) { $('dfrom').value = d.range.from; $('dto').value = d.range.to; }   // ④ நூலகர் பதிவுக் காலம்
 }
 function qs(mag, only) {
   const m = mag || $('mag').value;
@@ -1074,6 +1105,10 @@ async function loadReport() {
   GROUPS = d.groups;
   const total = d.groups.reduce((a, g) => a + g.rows.length, 0);
   msg('rmsg', true, d.from + ' முதல் ' + d.to + ' வரை — மொத்தம் ' + total + ' வராத இதழ் பதிவுகள் (' + d.groups.filter(g => g.rows.length).length + ' இதழ்).');
+  if (d.unmatched && d.unmatched.length) {
+    $('rmsg').innerHTML += '<br>⚠️ Master / Alias-ல் பொருந்தாத இதழ்ப் பெயர்கள் (இவை மேலே காட்டப்படவில்லை): ' +
+      d.unmatched.map(u => esc(u.name) + ' (' + u.count + ')').join(', ') + ' — Master-ல் பெயரைத் திருத்தவும் அல்லது Alias சேர்க்கவும்.';
+  }
   const withRows = d.groups.filter(g => g.rows.length);
   $('rout').innerHTML = (withRows.length > 1 ? '<div class="noprint" style="margin:12px 0"><button onclick="sendMail(-1)">✉️ காட்டிய ' + withRows.length + ' இதழ்களுக்கும் Mail அனுப்பு</button></div>' : '') +
   d.groups.map((g, gi) => {
