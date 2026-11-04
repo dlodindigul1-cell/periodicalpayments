@@ -195,6 +195,13 @@ def _build_report(cur, magazine, dfrom, dto, lang="", only=False, unmatched=None
     last = {x["magazine"]: "%s (%s – %s)" % (x["sent_at"].astimezone(lm.IST).strftime("%d/%m/%Y %H:%M"),
                                               lm.fmt_d(x["date_from"]), lm.fmt_d(x["date_to"])) for x in cur.fetchall()}
 
+    cur.execute("SELECT DISTINCT magazine FROM lib_schedule")
+    sched_names = {}
+    for x in cur.fetchall():
+        mn = resolver.get(_key(x["magazine"]))
+        if mn:
+            sched_names.setdefault(mn, []).append(x["magazine"])
+
     groups = []
     for m in members:
         if magazine == ALL_MAGS and not rows_by[m["name"]]:
@@ -214,6 +221,7 @@ def _build_report(cur, magazine, dfrom, dto, lang="", only=False, unmatched=None
             })
         groups.append({"magazine": m["name"], "lang": m["lang"], "vendorCode": m["code"], "email": m["email"],
                        "aliases": aliases.get(m["name"], []), "labels": lab,
+                       "libNames": [m["name"]] + aliases.get(m["name"], []) + sched_names.get(m["name"], []),
                        "isSelected": bool(sel) and m["name"] == sel["name"], "lastMail": last.get(m["name"], ""),
                        "rows": out})
     return groups
@@ -288,6 +296,7 @@ def api_missing_report():
     if err:
         return err
     return jsonify({"success": True, "from": lm.fmt_d(dfrom), "to": lm.fmt_d(dto), "groups": groups,
+                    "quarter": lm.quarter_label(dto),
                     "unmatched": [{"name": k, "count": v} for k, v in sorted(unmatched.items())]})
 
 
@@ -1087,7 +1096,10 @@ td{padding:7px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} .scroll{
 .gh small{font-weight:500;color:#44506f} .sm{padding:6px 12px;font-size:13px}
 .ok-c{color:#1b6b34;font-weight:700} .bad-c{color:#c0392b;font-weight:700}
 td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
-@media print{.top,.tabs,.noprint{display:none!important} .card{box-shadow:none;border:0}}
+#libModal{display:none;position:fixed;inset:0;background:rgba(15,35,71,.55);z-index:1000;align-items:center;justify-content:center;padding:14px}
+#libBox{background:#fff;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.35);width:min(760px,100%);max-height:86vh;display:flex;flex-direction:column;padding:16px 18px}
+#libBox h3{margin:0;font-size:17px;color:#0f2347} #libBody td:first-child{width:60px}
+@media print{#libModal{display:none!important} .top,.tabs,.noprint{display:none!important} .card{box-shadow:none;border:0}}
 </style></head><body>
 <div class="top"><h1>📭 வராத இதழ்கள் விவரம்</h1><a href="/">← முகப்பு</a></div>
 <div class="wrap">
@@ -1130,6 +1142,22 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
 
 </div>
 
+<div id="libModal" class="noprint" onclick="if(event.target===this)libClose()">
+  <div id="libBox">
+    <h3 id="libTitle"></h3>
+    <div class="muted" style="margin:2px 0 4px">இந்த Quarter இதழ்கள் செல்லும் நூலகம்</div>
+    <div id="libSub" style="font-weight:700;color:#0f2347;margin-bottom:8px"></div>
+    <div class="scroll" style="overflow-y:auto;flex:1">
+      <table><thead><tr><th>வ.எண்.</th><th>Library Code</th><th>Library Name</th></tr></thead><tbody id="libBody"></tbody></table>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;justify-content:flex-end">
+      <button class="alt sm" id="libXl" onclick="libDl('xlsx')" style="display:none">⬇️ Excel</button>
+      <button class="alt sm" id="libPdf" onclick="libDl('pdf')" style="display:none">⬇️ PDF</button>
+      <button class="sm" onclick="libClose()">✖ மூடு</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -1166,7 +1194,35 @@ function qs(mag, only) {
   if (only) q += '&only=1';
   return q;
 }
-let GROUPS = [];
+let GROUPS = [], RQUARTER = '';
+let LIBSEL = null;
+function libClose() { $('libModal').style.display = 'none'; LIBSEL = null; }
+async function viewLibs(gi) {      // இந்த இதழ் செல்லும் நூலகங்கள் — திரை நடுவில் Popup
+  const g = GROUPS[gi], names = Array.from(new Set(g.libNames && g.libNames.length ? g.libNames : [g.magazine]));
+  $('libTitle').textContent = '🏛️ ' + g.magazine;
+  $('libSub').textContent = '';
+  $('libBody').innerHTML = '<tr><td colspan="3" class="muted">ஏற்றப்படுகிறது…</td></tr>';
+  ['libXl', 'libPdf'].forEach(i => $(i).style.display = 'none');
+  $('libModal').style.display = 'flex';
+  let items = [], found = '';
+  try {
+    for (const n of names) {
+      const d = await api('/api/admin/librarian/magazine-libraries?quarter=' + encodeURIComponent(RQUARTER) + '&magazine=' + encodeURIComponent(n));
+      if (d.success && d.items.length) { items = d.items; found = n; break; }
+    }
+  } catch (e) { $('libBody').innerHTML = '<tr><td colspan="3" class="bad-c">❌ ஏற்ற முடியவில்லை: ' + esc(e) + '</td></tr>'; return; }
+  LIBSEL = {quarter: RQUARTER, magazine: found || g.magazine};
+  $('libSub').textContent = 'Quarter: ' + RQUARTER + ' · நூலகங்கள்: ' + items.length;
+  $('libBody').innerHTML = items.length
+    ? items.map((x, n) => '<tr><td>' + (n + 1) + '</td><td>' + esc(x.code) + '</td><td>' + esc(x.name) + '</td></tr>').join('')
+    : '<tr><td colspan="3" class="bad-c">' + esc(RQUARTER) + ' Quarter-ல் இந்த இதழுக்கான நூலக அட்டவணை இல்லை.</td></tr>';
+  if (items.length) ['libXl', 'libPdf'].forEach(i => $(i).style.display = '');
+}
+function libDl(fmt) {
+  if (!LIBSEL) return;
+  location.href = '/api/admin/librarian/magazine-libraries-export?quarter=' + encodeURIComponent(LIBSEL.quarter) + '&magazine=' + encodeURIComponent(LIBSEL.magazine) + '&fmt=' + fmt;
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') libClose(); });
 function renderUnmatched(list) {
   const box = $('unm');
   if (!list.length) { box.innerHTML = ''; return; }
@@ -1193,7 +1249,7 @@ async function loadReport() {
   $('mailres').innerHTML = '';
   const d = await api('/api/admin/missing/report?' + qs());
   if (!d.success) { msg('rmsg', false, esc(d.message)); $('rout').innerHTML = ''; return; }
-  GROUPS = d.groups;
+  GROUPS = d.groups; RQUARTER = d.quarter || '';
   const total = d.groups.reduce((a, g) => a + g.rows.length, 0);
   msg('rmsg', true, d.from + ' முதல் ' + d.to + ' வரை — மொத்தம் ' + total + ' வராத இதழ் பதிவுகள் (' + d.groups.filter(g => g.rows.length).length + ' இதழ்).');
   renderUnmatched(d.unmatched || []);
@@ -1210,7 +1266,8 @@ async function loadReport() {
         (g.lastMail ? ' · கடைசியாக அனுப்பியது: ' + esc(g.lastMail) : '') + '</span>' : '';
     const bar = g.rows.length
       ? '<div class="noprint" style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin:8px 0 4px">' + em + act + '</div>' : '';
-    return '<div class="gh">' + esc(L.mag) + ': ' + esc(g.magazine) + al + ' <small>(' + esc(L.vendor) + ': ' + esc(g.vendorCode || '-') + ' · ' + g.rows.length + ')</small></div>' +
+    return '<div class="gh">' + esc(L.mag) + ': ' + esc(g.magazine) + al + ' <small>(' + esc(L.vendor) + ': ' + esc(g.vendorCode || '-') + ' · ' + g.rows.length + ')</small>' +
+      ' <button class="sm alt noprint" style="margin-left:8px" onclick="viewLibs(' + gi + ')">🏛️ இந்த இதழ் செல்லும் நூலகங்களைப் பார்</button></div>' +
       '<div class="scroll"><table><thead><tr><th>' + [L.sno, L.code, L.lib, L.librarian, L.date, L.phone, L.addr].map(esc).join('</th><th>') + '</th></tr></thead><tbody>' +
       (g.rows.map(x => '<tr><td>' + x.sno + '</td><td>' + esc(x.code) + '</td><td>' + esc(x.library) + '</td><td>' + esc(x.librarian) + '</td><td>' + esc(x.date) +
         '</td><td>' + esc(x.phone) + '</td><td style="white-space:pre-line">' + esc(x.address) + '</td></tr>').join('') ||
