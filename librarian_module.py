@@ -1426,7 +1426,7 @@ def api_admin_libraries():
 @admin_api
 def api_admin_mark_list():
     code = (request.args.get("code") or "").strip()
-    data = _library_week_payload(code, _weeks_arg(request.args.get("weeks")))
+    data = _library_week_payload(code, _weeks_arg(request.args.get("weeks")), apply_range=True)   # ④ பதிவுக் காலம் அமைத்திருந்தால் ③-லும் அதுவே
     if data is None:
         return jsonify({"success": False, "message": "நூலகம் கண்டறியப்படவில்லை."}), 404
     return jsonify(data)
@@ -1906,7 +1906,8 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
 
 <div class="card" id="mcard">
   <h2>③ நூலகத்துக்காக Admin பதிவு (Received / Not received)</h2>
-  <p class="muted" style="margin:0 0 6px">ஒரு நூலகத்தைத் தேர்ந்தெடுத்து, நூலகருக்குப் பதிலாக நீங்களே பதிவு செய்யலாம். இந்த வாரம் மற்றும் அதற்கு முந்தைய தேதிகள் மட்டும்; எதிர்காலத் தேதிகள் முடியாது. இங்கே பதிவானவை "Admin" எனக் குறிக்கப்படும்.</p>
+  <p class="muted" style="margin:0 0 6px">ஒரு நூலகத்தைத் தேர்ந்தெடுத்து, நூலகருக்குப் பதிலாக நீங்களே பதிவு செய்யலாம். ④-இல் பதிவுக் காலம் அமைத்திருந்தால் அந்தத் தேதி வரம்பு இங்கும் காட்டப்படும்; அமைக்காவிட்டால் இந்த வாரம் + முந்தைய வாரங்கள். எதிர்காலத் தேதிகள் முடியாது. இங்கே பதிவானவை "Admin" எனக் குறிக்கப்படும்.</p>
+  <div id="mrange" class="muted" style="margin:0 0 6px"></div>
   <div class="flt">
     <div><label>நூலக வகை</label><select id="mcat"><option value="">— தேர்ந்தெடுக்கவும் —</option></select></div>
     <div><label>நூலகத்தின் பெயர்</label><select id="mlib"><option value="">— நூலகம் —</option></select></div>
@@ -1921,7 +1922,7 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
 </div>
 <div class="card" id="rcard">
   <h2>④ நூலகர் பதிவுக் காலம் (தேதி வரம்பு)</h2>
-  <p class="muted" style="margin:0 0 6px">நூலகர் திரையில் எந்தத் தேதி முதல் எந்தத் தேதி வரையிலான இதழ்கள் பதிவுக்குக் காட்டப்பட வேண்டும் என்பதை இங்கே அமைக்கவும். எதிர்காலத் தேதிகளை நூலகர் பதிய முடியாது. வரம்பு அமைக்காவிட்டால் இந்த வாரம் + முந்தைய வாரங்கள் காட்டப்படும். இது Admin ③ திரையைப் பாதிக்காது.</p>
+  <p class="muted" style="margin:0 0 6px">நூலகர் திரையில் எந்தத் தேதி முதல் எந்தத் தேதி வரையிலான இதழ்கள் பதிவுக்குக் காட்டப்பட வேண்டும் என்பதை இங்கே அமைக்கவும். எதிர்காலத் தேதிகளை நூலகர் பதிய முடியாது. வரம்பு அமைக்காவிட்டால் இந்த வாரம் + முந்தைய வாரங்கள் காட்டப்படும். இந்தக் காலம் Admin ② / ③ திரைகளிலும் பயன்படுத்தப்படும்.</p>
   <div class="flt">
     <div><label>தேதி முதல்</label><input type="date" id="rfrom"></div>
     <div><label>தேதி வரை</label><input type="date" id="rto"></div>
@@ -2059,9 +2060,13 @@ $('mcat').onchange=fillLibs;
 function mcount(){$('mcnt').textContent='தேர்ந்தவை: '+document.querySelectorAll('#mlist .opts input:checked').length+' / '+MROWS.length}
 function renderMark(d){
   const h=$('mhead');h.innerHTML='';h.appendChild(el('span',{style:'font-weight:700;font-size:16px;margin-right:8px'},d.library.name||''));
+  if(d.range)h.appendChild(el('span',{class:'chip'},'📅 பதிவுக் காலம்: '+d.range.from+' – '+d.range.to));
+  $('mrange').textContent=d.range?('📅 ④-இல் அமைத்த நூலகர் பதிவுக் காலம் '+d.range.from+' முதல் '+d.range.to+' வரை இங்கு காட்டப்படுகிறது (‘முந்தைய வாரங்கள்’ தேர்வு இப்போது பொருந்தாது).'):'';
+  $('mweeks').disabled=!!d.range;
+  $('mallrc').textContent=d.range?'பதிவுக் காலம் — எல்லாம் Received':'இந்த வாரம் — எல்லாம் Received';
   h.appendChild(el('span',{class:'chip'},d.library.category||''));h.appendChild(el('span',{class:'chip'},d.library.code||''));
   const box=$('mlist');box.innerHTML='';MROWS=[];
-  [['⚠️ கடந்த வாரங்களில் பதிவு செய்யாதவை','unreg',d.earlierUnregistered],['⏳ முந்தைய வாரங்களில் இன்னும் வராதவை','pend',d.earlierNotReceived],['📅 இந்த வாரம் ('+d.weekStart+' – '+d.weekEnd+')','this',d.rows]].forEach(([t,k,rows])=>{
+  [['⚠️ கடந்த வாரங்களில் பதிவு செய்யாதவை','unreg',d.earlierUnregistered],['⏳ முந்தைய வாரங்களில் இன்னும் வராதவை','pend',d.earlierNotReceived],[d.range?('📅 பதிவுக் காலம் ('+d.range.from+' – '+d.range.to+')'):('📅 இந்த வாரம் ('+d.weekStart+' – '+d.weekEnd+')'),'this',d.rows]].forEach(([t,k,rows])=>{
     if(!rows.length)return;box.appendChild(el('div',{class:'mh '+k},t+' ('+rows.length+')'));let last='';
     rows.forEach(r=>{
       if(r.date!==last){last=r.date;box.appendChild(el('div',{class:'md'},r.day+' — '+r.dateLabel+(r.date===d.today?'  (இன்று)':'')))}
@@ -2180,7 +2185,7 @@ async function loadRange(apply){
   return d}
 async function postRange(body){
   try{const d=await api('/api/admin/librarian/range',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    say('rmsg',d.success,d.message||'');if(d.success){await loadRange(true);loadSummary()}}
+    say('rmsg',d.success,d.message||'');if(d.success){await loadRange(true);loadSummary();if(MCODE)loadMark()}}
   catch(e){say('rmsg',false,'சேமிக்க முடியவில்லை: '+e)}}
 $('rsave').onclick=()=>postRange({from:$('rfrom').value,to:$('rto').value});
 $('rclr').onclick=()=>postRange({clear:true});
