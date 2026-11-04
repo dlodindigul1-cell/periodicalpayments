@@ -1058,6 +1058,88 @@ def api_admin_export():
                     headers={"Content-Disposition": f"attachment; filename={fname}"})
 
 
+# ---- Admin: சுருக்கம் — பதிவு செய்யாதவை (Received / Not received எதுவும் குறிக்காதவை) ----------------- #
+def _pend_range():
+    """(from, to) — to எப்போதும் இன்றைய தேதிக்குள் (எதிர்காலத் தேதிகள் 'பதிவு செய்யாதவை' அல்ல)."""
+    dfrom, dto = parse_iso(request.args.get("from")), parse_iso(request.args.get("to"))
+    cap = today_ist()
+    return dfrom, (min(dto, cap) if dto else cap), dto
+
+
+@lib_bp.route("/api/admin/librarian/pending-summary")
+@admin_api
+def api_admin_pending_summary():
+    """நூலகம் வாரியாக: அனுமதிக்கப்பட்ட இதழ்கள் (தனித்த இதழ் பெயர்கள்), பதிவு செய்தவை, பதிவு செய்யாதவை (இதழ் × தேதி வரிசைகள்)."""
+    dfrom, dto_cap, dto_raw = _pend_range()
+    cat = (request.args.get("category") or "").strip()
+    due_w, due_p = ["s.expected_date <= %s"], [dto_cap]
+    allow_w, allow_p = [], []
+    if dfrom:
+        due_w.append("s.expected_date >= %s"); due_p.append(dfrom)
+        allow_w.append("s0.expected_date >= %s"); allow_p.append(dfrom)
+    if dto_raw:
+        allow_w.append("s0.expected_date <= %s"); allow_p.append(dto_raw)
+    allow_sql = (" AND " + " AND ".join(allow_w)) if allow_w else ""
+    sql = ("SELECT l.code, l.name, l.category, "
+           " (SELECT COUNT(DISTINCT s0.magazine) FROM lib_schedule s0 WHERE s0.code=l.code" + allow_sql + ") AS allowed, "
+           " COALESCE(x.reg, 0) AS reg, COALESCE(x.unreg, 0) AS unreg "
+           "FROM lib_libraries l LEFT JOIN ("
+           " SELECT s.code, COUNT(r.code) AS reg, COUNT(*) - COUNT(r.code) AS unreg "
+           " FROM lib_schedule s LEFT JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine "
+           "  AND r.expected_date=s.expected_date "
+           " WHERE " + " AND ".join(due_w) + " GROUP BY s.code) x ON x.code=l.code "
+           + ("WHERE l.category=%s " if cat else ""))
+    params = allow_p + due_p + ([cat] if cat else [])
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    items = [{"code": r["code"], "name": r["name"], "category": r["category"], "allowed": int(r["allowed"] or 0),
+              "registered": int(r["reg"] or 0), "unregistered": int(r["unreg"] or 0)} for r in rows]
+    items.sort(key=lambda i: (_category_sort_key(i["category"]), i["name"]))
+    return jsonify({"success": True, "items": items, "upTo": fmt_d(dto_cap)})
+
+
+@lib_bp.route("/api/admin/librarian/pending-detail")
+@admin_api
+def api_admin_pending_detail():
+    """ஒரு நூலகம்: இதழ் வாரியாகப் பதிவு செய்யாத தேதிகள்."""
+    code = (request.args.get("code") or "").strip()
+    dfrom, dto_cap, _raw = _pend_range()
+    where, params = ["s.code = %s", "r.code IS NULL", "s.expected_date <= %s"], [code, dto_cap]
+    if dfrom:
+        where.append("s.expected_date >= %s"); params.append(dfrom)
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT name, category FROM lib_libraries WHERE code=%s", (code,))
+            lib = cur.fetchone()
+            if not lib:
+                return jsonify({"success": False, "message": "நூலகம் கண்டறியப்படவில்லை."}), 404
+            cur.execute(
+                "SELECT s.magazine, MAX(s.periodicity) AS periodicity, s.expected_date "
+                "FROM lib_schedule s LEFT JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine "
+                " AND r.expected_date=s.expected_date WHERE " + " AND ".join(where) +
+                " GROUP BY s.magazine, s.expected_date ORDER BY s.magazine, s.expected_date", params)
+            rows = cur.fetchall()
+    finally:
+        conn.close()
+    by = {}
+    for r in rows:
+        g = by.setdefault(r["magazine"], {"magazine": r["magazine"], "periodicity": r["periodicity"] or "", "dates": []})
+        g["dates"].append(r["expected_date"])
+    items = []
+    for m in sorted(by.values(), key=lambda x: x["magazine"].casefold()):
+        d = m["dates"]
+        items.append({"magazine": m["magazine"], "periodicity": m["periodicity"], "count": len(d),
+                      "first": fmt_d(d[0]), "last": fmt_d(d[-1]), "dates": [fmt_d(x) for x in d]})
+    return jsonify({"success": True, "library": {"code": code, "name": lib["name"], "category": lib["category"]},
+                    "items": items, "total": sum(i["count"] for i in items), "upTo": fmt_d(dto_cap)})
+
+
 # ---- Admin: ஒரு நூலகத்துக்காக Admin பதிவு செய்தல் ------------------------------------------------ #
 def _weeks_arg(v, default=CARRY_WEEKS):
     """weeks=0 -> வரம்பின்றி (None)."""
@@ -1529,6 +1611,20 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
   <div class="scroll"><table id="stab"><thead></thead><tbody></tbody></table></div>
 </div>
 
+<div class="card" id="pcard">
+  <h2>📊 சுருக்கம் — பதிவு செய்யாதவை (Received / Not received எதுவும் குறிக்காதவை)</h2>
+  <p class="muted" style="margin:0 0 6px"><b>அனுமதிக்கப்பட்ட இதழ்கள்</b> = அந்த நூலகத்துக்கு அட்டவணையில் உள்ள இதழ்களின் எண்ணிக்கை. <b>பதிவு செய்தவை / செய்யாதவை</b> = இன்று வரை வர வேண்டிய இதழ் வருகைகளில் (இதழ் × தேதி) Received அல்லது Not received குறித்தவை / எதுவுமே குறிக்காதவை. வரிசையைக் கிளிக் செய்தால் அந்த நூலகத்தின் இதழ் விவரம் வரும்.</p>
+  <div class="flt">
+    <div><label>நூலக வகை</label><select id="pcat"><option value="">எல்லாம்</option></select></div>
+    <div><label>நூலகத்தின் பெயர்</label><select id="plib"><option value="">— எல்லா நூலகங்களும் (சுருக்கம்) —</option></select></div>
+    <div><label>தேதி முதல்</label><input type="date" id="pfrom"></div>
+    <div><label>தேதி வரை</label><input type="date" id="pto"></div>
+    <div><button id="pgo" type="button">🔍 காட்டு</button></div>
+  </div>
+  <div class="kpi" id="pkpi"></div>
+  <div class="scroll"><table id="ptab"><thead></thead><tbody></tbody></table></div>
+</div>
+
 <div class="card" id="mcard">
   <h2>③ நூலகத்துக்காக Admin பதிவு (Received / Not received)</h2>
   <p class="muted" style="margin:0 0 6px">ஒரு நூலகத்தைத் தேர்ந்தெடுத்து, நூலகருக்குப் பதிலாக நீங்களே பதிவு செய்யலாம். இந்த வாரம் மற்றும் அதற்கு முந்தைய தேதிகள் மட்டும்; எதிர்காலத் தேதிகள் முடியாது. இங்கே பதிவானவை "Admin" எனக் குறிக்கப்படும்.</p>
@@ -1570,6 +1666,7 @@ async function loadOverview(){
   OV=await api('/api/admin/librarian/overview');
   $('libcnt').textContent=OV.libraries;
   const fc=$('fcat');fc.length=1;OV.categories.forEach(c=>{const o=el('option',{value:c},c);fc.appendChild(o)});
+  const pc=$('pcat'),pk=pc.value;pc.length=1;OV.categories.forEach(c=>pc.appendChild(el('option',{value:c},c)));pc.value=pk;
   const tb=$('qtab').querySelector('tbody');tb.innerHTML='';
   if(!OV.quarters.length){const tr=el('tr');const c=td('இன்னும் எந்த Quarter-ம் ஏற்றப்படவில்லை.','muted');c.colSpan=7;tr.appendChild(c);tb.appendChild(tr)}
   OV.quarters.forEach(q=>{const tr=el('tr');[q.quarter,q.rows,q.from+' – '+q.to,q.libs,q.mags,q.recorded].forEach(v=>tr.appendChild(td(v)));
@@ -1626,6 +1723,7 @@ function fillFlib(){
   if([...f.options].some(o=>o.value===keep))f.value=keep}
 $('fcat').onchange=()=>{$('flib').value='';fillFlib()};
 async function loadSummary(){
+  if(typeof loadPend==='function')loadPend();
   if($('flib').value)return loadLibDetail();
   const d=await api('/api/admin/librarian/summary?'+qs());
   const th=$('stab').querySelector('thead'),tb=$('stab').querySelector('tbody');th.innerHTML='';tb.innerHTML='';
@@ -1658,7 +1756,7 @@ $('fxl').onclick=()=>{location.href='/api/admin/librarian/export?'+qs()};
 /* ---------- ③ Admin பதிவு ---------- */
 async function loadLibs(){
   const d=await api('/api/admin/librarian/libraries');LIBS=d.categories||[];
-  const c=$('mcat');c.length=1;LIBS.forEach(x=>c.appendChild(el('option',{value:x.category},x.category+' ('+x.libraries.length+')')));fillLibs();fillFlib()}
+  const c=$('mcat');c.length=1;LIBS.forEach(x=>c.appendChild(el('option',{value:x.category},x.category+' ('+x.libraries.length+')')));fillLibs();fillFlib();fillPlib()}
 function fillLibs(){const l=$('mlib');l.length=1;const c=LIBS.find(x=>x.category===$('mcat').value);if(c)c.libraries.forEach(x=>l.appendChild(el('option',{value:x.code},x.name)))}
 $('mcat').onchange=fillLibs;
 function mcount(){$('mcnt').textContent='தேர்ந்தவை: '+document.querySelectorAll('#mlist .opts input:checked').length+' / '+MROWS.length}
@@ -1703,6 +1801,43 @@ $('msave').onclick=async()=>{
   try{const d=await api('/api/admin/librarian/mark-save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:MCODE,entries})});
     say('mmsg',d.success,d.message||'');if(d.success){await loadMark();loadSummary()}}
   catch(e){say('mmsg',false,'சேமிக்க முடியவில்லை: '+e)}finally{$('msave').disabled=false}};
+
+/* ---------- சுருக்கம்: பதிவு செய்யாதவை ---------- */
+function pq(extra){const p=new URLSearchParams();if($('pcat').value)p.set('category',$('pcat').value);
+  if($('pfrom').value)p.set('from',$('pfrom').value);if($('pto').value)p.set('to',$('pto').value);for(const k in (extra||{}))p.set(k,extra[k]);return p.toString()}
+function fillPlib(){const f=$('plib'),keep=f.value,cat=$('pcat').value;f.length=1;
+  (LIBS||[]).filter(x=>!cat||x.category===cat).forEach(x=>x.libraries.forEach(l=>f.appendChild(el('option',{value:l.code},l.name))));
+  if([...f.options].some(o=>o.value===keep))f.value=keep}
+$('pcat').onchange=()=>{$('plib').value='';fillPlib();loadPend()};
+$('plib').onchange=()=>loadPend();$('pgo').onclick=()=>loadPend();
+async function loadPend(){
+  const th=$('ptab').querySelector('thead'),tb=$('ptab').querySelector('tbody'),k=$('pkpi');th.innerHTML='';tb.innerHTML='';k.innerHTML='';
+  try{
+    if($('plib').value){
+      const d=await api('/api/admin/librarian/pending-detail?'+pq({code:$('plib').value}));
+      if(!d.success){tb.appendChild(el('tr')).appendChild(td(d.message||'பிழை','muted'));return}
+      k.appendChild(el('div',null,'📚 '+d.library.name));k.appendChild(el('div',null,'பதிவு செய்யாத இதழ் வருகைகள்: '+d.total+' ('+d.upTo+' வரை)'));
+      const hr=el('tr');['வ.எண்.','இதழ் பெயர்','பதிவு செய்யாத காலம்'].forEach(h=>hr.appendChild(el('th',null,h)));th.appendChild(hr);
+      if(!d.items.length){const tr=el('tr'),c=td('✅ பதிவு செய்யாத இதழ்கள் இல்லை.','ok-c');c.colSpan=3;tr.appendChild(c);tb.appendChild(tr)}
+      d.items.forEach((m,i)=>{const tr=el('tr');tr.appendChild(td(i+1));
+        const n=td(m.magazine);if(m.periodicity)n.appendChild(el('div',{class:'muted'},m.periodicity));tr.appendChild(n);
+        const c=el('td');c.appendChild(el('div',{class:'bad-c'},(m.first===m.last?m.first:m.first+' – '+m.last)+'  ('+m.count+' இதழ்)'));
+        c.appendChild(el('div',{class:'muted'},m.dates.join(', ')));tr.appendChild(c);tb.appendChild(tr)});
+      const bt=el('tr'),bc=el('td');bc.colSpan=3;
+      const b1=el('button',{class:'sm alt',type:'button'},'← எல்லா நூலகங்களும்');b1.onclick=()=>{$('plib').value='';loadPend()};
+      const b2=el('button',{class:'sm',type:'button',style:'margin-left:8px'},'✏️ இந்த நூலகத்துக்குப் பதிவு');
+      b2.onclick=()=>openMark(d.library.code,d.library.category);bc.appendChild(b1);bc.appendChild(b2);bt.appendChild(bc);tb.appendChild(bt);
+    }else{
+      const d=await api('/api/admin/librarian/pending-summary?'+pq());
+      const hr=el('tr');['வ.எண்.','நூலகம் பெயர்','அனுமதிக்கப்பட்ட இதழ்கள்','பதிவு செய்தவை','பதிவு செய்யாதவை'].forEach(h=>hr.appendChild(el('th',null,h)));th.appendChild(hr);
+      const tot=d.items.reduce((a,i)=>a+i.unregistered,0),clean=d.items.filter(i=>i.unregistered===0).length;
+      k.appendChild(el('div',null,'நூலகங்கள்: '+d.items.length));k.appendChild(el('div',null,'பதிவு செய்யாதவை (மொத்தம்): '+tot+' ('+d.upTo+' வரை)'));k.appendChild(el('div',null,'எல்லாம் பதிவு செய்த நூலகங்கள்: '+clean));
+      if(!d.items.length){const tr=el('tr'),c=td('நூலகங்கள் இல்லை.','muted');c.colSpan=5;tr.appendChild(c);tb.appendChild(tr)}
+      d.items.forEach((i,n)=>{const tr=el('tr',{class:'lib'});tr.appendChild(td(n+1));tr.appendChild(td(i.name));tr.appendChild(td(i.allowed));
+        tr.appendChild(td(i.registered,'ok-c'));tr.appendChild(td(i.unregistered,i.unregistered?'bad-c':'ok-c'));
+        tr.onclick=()=>{if(!$('pcat').value)$('pcat').value=i.category;fillPlib();$('plib').value=i.code;loadPend()};tb.appendChild(tr)})
+    }
+  }catch(e){if(e!==0)tb.appendChild(el('tr')).appendChild(td('ஏற்ற முடியவில்லை: '+e,'muted'))}}
 function fdot(s){const p=(s||'').split('-');return p.length===3?p[2]+'.'+p[1]+'.'+p[0]:''}
 async function loadRange(){
   const d=await api('/api/admin/librarian/range');$('rfrom').value=d.from||'';$('rto').value=d.to||'';
