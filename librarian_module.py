@@ -1740,6 +1740,10 @@ ADMIN_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 .tabs{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap} .tab{background:#e8eefb;color:#1e4d8c;flex:1;min-width:150px} .tab.on{background:#1e4d8c;color:#fff}
 .flt{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;align-items:end}
 .flt>div{min-width:0} .flt input,.flt select{max-width:100%;box-sizing:border-box} .btnrow{display:flex;flex-wrap:wrap;gap:8px}
+.frow{display:flex;gap:6px;align-items:flex-end;flex-wrap:nowrap} .frow>div{flex:1 1 90px;min-width:0}
+@media(max-width:940px){.frow{flex-wrap:wrap} .frow>div{flex-basis:130px}} .frow>div.dt{flex:0 0 122px} .frow>div.bt{flex:0 0 auto;display:flex;gap:5px}
+.frow label{margin:0 0 4px;font-size:12px;white-space:nowrap} .frow select,.frow input[type=date]{padding:8px 5px;font-size:13px}
+.frow button{padding:8px 9px;font-size:13px;white-space:nowrap}
 table{width:100%;border-collapse:collapse;font-size:14px} th{background:#1e4d8c;color:#fff;text-align:left;padding:8px 10px;position:sticky;top:0}
 td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{cursor:pointer} tr.lib:hover{background:#f3f6fd}
 .sub{background:#f8faff} .sub table th{background:#5b7fb8}
@@ -1787,30 +1791,29 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
 <div class="card">
   <h2>② நூலகர் பதிவு நிலை</h2>
   <div class="tabs"><button class="tab on" id="t1">✅ பதிவு செய்தவை (Received)</button><button class="tab" id="t2">⏳ இன்னும் வராதவை</button><button class="tab" id="t3">⚠️ பதிவே செய்யாதவை</button></div>
-  <div class="flt">
+  <div class="frow">
     <div><label>நூலக வகை</label><select id="fcat"><option value="">எல்லாம்</option></select></div>
     <div><label>நூலகம்</label><select id="flib"><option value="">எல்லா நூலகங்களும் (சுருக்கம்)</option></select></div>
-    <div><label>தேதி முதல்</label><input type="date" id="ffrom"></div>
-    <div><label>தேதி வரை</label><input type="date" id="fto"></div>
-    <div><label>🔎 தேடு (நூலகம் / code)</label><input type="search" id="fq" placeholder="பெயரைத் தட்டச்சு செய்க"></div>
-    <div class="btnrow"><button id="fgo">🔍 காட்டு</button><button id="fweek" class="alt">இந்த வாரம்</button><button id="fperiod" class="alt" type="button" title="நூலகர் பதிவுக் காலத்தை மீண்டும் இடு">↺ பதிவுக் காலம்</button></div>
+    <div class="dt"><label>தேதி முதல்</label><input type="date" id="ffrom"></div>
+    <div class="dt"><label>தேதி வரை</label><input type="date" id="fto"></div>
+    <div class="bt"><button id="fgo">🔍 காட்டு</button><button id="fhide" class="alt" type="button" style="display:none">🔼 மறை</button><button id="fweek" class="alt">இந்த வாரம்</button><button id="fperiod" class="alt" type="button" title="நூலகர் பதிவுக் காலத்தை மீண்டும் இடு">↺ பதிவுக் காலம்</button></div>
   </div>
   <div class="kpi" id="kpi"></div>
   <div style="margin:6px 0 10px"><button id="fxl" class="sm alt">📥 Excel பதிவிறக்கு</button> <button id="fpdf" class="sm alt">📄 PDF பதிவிறக்கு</button> <span class="muted">வரிசையைக் கிளிக் செய்தால் இதழ்கள் விரியும் · "✏️ பதிவு" பொத்தான் அந்த நூலகத்துக்கு Admin பதிவுக்குக் கொண்டு செல்லும்</span></div>
   <div class="scroll"><table id="stab"><thead></thead><tbody></tbody></table></div>
+  <div id="fhidebar" style="display:none;margin-top:10px;text-align:center"><button id="fhide2" class="alt sm" type="button">🔼 மறை</button></div>
 </div>
 
 <div class="card" id="pcard">
   <h2>📊 சுருக்கம் — பதிவு செய்யாதவை (Received / Not received எதுவும் குறிக்காதவை)</h2>
   <p class="muted" style="margin:0 0 6px">எல்லா எண்ணிக்கையும் <b>இதழ்கள்</b> அடிப்படையில் (வார / இருவார / மாத இதழ் எதுவானாலும் ஒரு இதழ் = 1). <b>அனுமதிக்கப்பட்ட இதழ்கள்</b> = அந்த நூலகத்துக்கு அட்டவணையில் உள்ள இதழ்கள். <b>பதிவு செய்யாதவை</b> = இன்று வரை வர வேண்டிய தேதிகளில் குறைந்தது ஒன்றுக்காவது Received / Not received குறிக்காத இதழ்கள். <b>பதிவு செய்தவை</b> = மீதமுள்ளவை (செய்தவை + செய்யாதவை = அனுமதிக்கப்பட்டவை). வரிசையைக் கிளிக் செய்தால் அந்த நூலகத்தின் இதழ் விவரம் வரும்.</p>
-  <div class="flt">
+  <div class="frow">
     <div><label>நூலக வகை</label><select id="pcat"><option value="">எல்லாம்</option></select></div>
     <div><label>நூலகத்தின் பெயர்</label><select id="plib"><option value="">— எல்லா நூலகங்களும் (சுருக்கம்) —</option></select></div>
-    <div><label>தேதி முதல் (நூலகர் பதிவுக் காலம்)</label><input type="date" id="pfrom"></div>
-    <div><label>தேதி வரை</label><input type="date" id="pto"></div>
-    <div><label>🔎 தேடு (நூலகம் / code)</label><input type="search" id="psrch" placeholder="பெயரைத் தட்டச்சு செய்க"></div>
-    <div><label>நிலை வடிகட்டி</label><select id="pflt"><option value="">எல்லாம்</option><option value="pending">பதிவு செய்யாதவை உள்ளவை மட்டும்</option><option value="clean">எல்லாம் பதிவு செய்தவை மட்டும்</option></select></div>
-    <div class="btnrow"><button id="pgo" type="button">🔍 காட்டு</button> <button id="phide" class="alt" type="button" style="display:none">🔼 மறை</button> <button id="pperiod" class="alt" type="button" title="நூலகர் பதிவுக் காலத்தை மீண்டும் இடு">↺ பதிவுக் காலம்</button></div>
+    <div class="dt"><label>தேதி முதல்</label><input type="date" id="pfrom"></div>
+    <div class="dt"><label>தேதி வரை</label><input type="date" id="pto"></div>
+    <div style="flex:0 1 130px"><label>நிலை</label><select id="pflt"><option value="">எல்லாம்</option><option value="pending">பதிவு செய்யாதவை உள்ளவை</option><option value="clean">எல்லாம் பதிவு செய்தவை</option></select></div>
+    <div class="bt"><button id="pgo" type="button">🔍 காட்டு</button><button id="phide" class="alt" type="button" style="display:none">🔼 மறை</button><button id="pperiod" class="alt" type="button" title="நூலகர் பதிவுக் காலத்தை மீண்டும் இடு">↺ பதிவுக் காலம்</button></div>
   </div>
   <div class="btnrow" style="margin:8px 0"><button id="pxl" class="sm alt" type="button">📥 Excel பதிவிறக்கு</button><button id="ppdf" class="sm alt" type="button">📄 PDF பதிவிறக்கு</button></div>
   <div class="kpi" id="pkpi"></div>
@@ -1881,11 +1884,9 @@ $('lgo').onclick=async()=>{
   say('lmsg',d.success,d.message);if(d.success){loadOverview();loadLibs()}};
 
 let SUMD=null,PSUM=null;
-function _mq(i,q){q=(q||'').trim().toLowerCase();return !q||(i.name||'').toLowerCase().includes(q)||(i.code||'').toLowerCase().includes(q)}
-function filterSum(d){const items=d.items.filter(i=>_mq(i,$('fq').value));
-  return Object.assign({},d,{items,totalRows:items.reduce((a,i)=>a+i.count,0),lateTotal:items.reduce((a,i)=>a+(i.late||0),0)})}
+function filterSum(d){return d}
 function filterPend(d){const f=$('pflt').value;
-  return Object.assign({},d,{items:d.items.filter(i=>_mq(i,$('psrch').value)&&(f==='pending'?i.unregistered>0:f==='clean'?i.unregistered===0:true))})}
+  return Object.assign({},d,{items:d.items.filter(i=>(f==='pending'?i.unregistered>0:f==='clean'?i.unregistered===0:true))})}
 function qs(extra){const p=new URLSearchParams({status:MODE});if($('fcat').value)p.set('category',$('fcat').value);if($('flib').value)p.set('code',$('flib').value);
   if($('ffrom').value)p.set('from',$('ffrom').value);if($('fto').value)p.set('to',$('fto').value);for(const k in (extra||{}))p.set(k,extra[k]);return p.toString()}
 const HEADS={
@@ -1922,6 +1923,7 @@ function fillFlib(){
   if([...f.options].some(o=>o.value===keep))f.value=keep}
 $('fcat').onchange=()=>{$('flib').value='';fillFlib()};
 async function loadSummary(){
+  $('fhide').style.display='';$('fhidebar').style.display='';
   if(typeof loadPend==='function')loadPend();
   if($('flib').value)return loadLibDetail();
   SUMD=await api('/api/admin/librarian/summary?'+qs());renderSummary()}
@@ -1953,9 +1955,11 @@ $('t1').onclick=()=>setMode('received');$('t2').onclick=()=>setMode('notreceived
 $('fgo').onclick=loadSummary;
 $('fweek').onclick=()=>{$('ffrom').value=OV.weekStart;$('fto').value=OV.weekEnd;loadSummary()};
 $('fperiod').onclick=()=>{applyRange();loadSummary()};
-$('fxl').onclick=()=>{location.href='/api/admin/librarian/export?'+qs({fmt:'xlsx',q:$('fq').value})};
-$('fpdf').onclick=()=>{location.href='/api/admin/librarian/export?'+qs({fmt:'pdf',q:$('fq').value})};
-$('fq').oninput=()=>{if(!$('flib').value&&SUMD)renderSummary()};
+$('fxl').onclick=()=>{location.href='/api/admin/librarian/export?'+qs({fmt:'xlsx'})};
+$('fpdf').onclick=()=>{location.href='/api/admin/librarian/export?'+qs({fmt:'pdf'})};
+function hideSum(){const th=$('stab').querySelector('thead'),tb=$('stab').querySelector('tbody');th.innerHTML='';tb.innerHTML='';$('kpi').innerHTML='';
+  $('fhide').style.display='none';$('fhidebar').style.display='none';$('fgo').scrollIntoView({behavior:'smooth',block:'center'})}
+$('fhide').onclick=hideSum;$('fhide2').onclick=hideSum;
 
 /* ---------- ③ Admin பதிவு ---------- */
 async function loadLibs(){
@@ -2021,9 +2025,9 @@ function hidePend(){
   $('pcard').scrollIntoView({behavior:'smooth',block:'start'});
 }
 $('phide').onclick=hidePend;$('phide2').onclick=hidePend;
-$('pxl').onclick=()=>{location.href='/api/admin/librarian/pending-export?'+pq({fmt:'xlsx',code:$('plib').value,q:$('psrch').value,flt:$('pflt').value})};
-$('ppdf').onclick=()=>{location.href='/api/admin/librarian/pending-export?'+pq({fmt:'pdf',code:$('plib').value,q:$('psrch').value,flt:$('pflt').value})};
-$('psrch').oninput=()=>{if(!$('plib').value&&PSUM)loadPend(true)};$('pflt').onchange=()=>{if(!$('plib').value&&PSUM)loadPend(true)};
+$('pxl').onclick=()=>{location.href='/api/admin/librarian/pending-export?'+pq({fmt:'xlsx',code:$('plib').value,flt:$('pflt').value})};
+$('ppdf').onclick=()=>{location.href='/api/admin/librarian/pending-export?'+pq({fmt:'pdf',code:$('plib').value,flt:$('pflt').value})};
+$('pflt').onchange=()=>{if(!$('plib').value&&PSUM)loadPend(true)};
 async function loadPend(cached){
   $('phide').style.display='';$('phidebar').style.display='';
   const th=$('ptab').querySelector('thead'),tb=$('ptab').querySelector('tbody'),k=$('pkpi');th.innerHTML='';tb.innerHTML='';k.innerHTML='';
