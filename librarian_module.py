@@ -1327,6 +1327,85 @@ def api_admin_pending_export():
                     mimetype=XLSX_MIME, headers={"Content-Disposition": f"attachment; filename={fname}.xlsx"})
 
 
+# ---- Admin: இந்த Quarter-ல் ஒரு இதழ் எந்தெந்த நூலகங்களுக்குச் செல்கிறது ---------------------------- #
+def _current_quarter(cur):
+    """இன்றைய தேதி அடங்கும் quarter; இல்லையெனில் கடைசி quarter."""
+    t = today_ist()
+    cur.execute("SELECT quarter FROM lib_schedule GROUP BY quarter "
+                "HAVING MIN(expected_date) <= %s AND MAX(expected_date) >= %s ORDER BY MAX(expected_date) DESC LIMIT 1", (t, t))
+    r = cur.fetchone()
+    if r:
+        return r["quarter"]
+    cur.execute("SELECT quarter FROM lib_schedule GROUP BY quarter ORDER BY MAX(expected_date) DESC LIMIT 1")
+    r = cur.fetchone()
+    return r["quarter"] if r else ""
+
+
+@lib_bp.route("/api/admin/librarian/quarter-magazines")
+@admin_api
+def api_admin_quarter_magazines():
+    """quarters பட்டியல், தேர்ந்த quarter (இல்லையெனில் இந்த quarter), அதிலுள்ள இதழ்கள் + நூலக எண்ணிக்கை."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT quarter FROM lib_schedule GROUP BY quarter ORDER BY MIN(expected_date)")
+            quarters = [r["quarter"] for r in cur.fetchall()]
+            q = (request.args.get("quarter") or "").strip()
+            if q not in quarters:
+                q = _current_quarter(cur)
+            cur.execute("SELECT magazine, MAX(periodicity) AS periodicity, COUNT(DISTINCT code) AS libs "
+                        "FROM lib_schedule WHERE quarter=%s GROUP BY magazine", (q,))
+            mags = [{"magazine": r["magazine"], "periodicity": r["periodicity"] or "", "libs": r["libs"]} for r in cur.fetchall()]
+    finally:
+        conn.close()
+    mags.sort(key=lambda m: m["magazine"].casefold())
+    return jsonify({"success": True, "quarters": quarters, "quarter": q, "magazines": mags})
+
+
+def _magazine_libraries(quarter, magazine):
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT l.code, l.name, l.category FROM lib_schedule s JOIN lib_libraries l ON l.code=s.code "
+                        "WHERE s.quarter=%s AND s.magazine=%s", (quarter, magazine))
+            rows = [{"code": r["code"], "name": r["name"], "category": r["category"]} for r in cur.fetchall()]
+    finally:
+        conn.close()
+    rows.sort(key=lambda r: (r["name"] or "").casefold())
+    return rows
+
+
+@lib_bp.route("/api/admin/librarian/magazine-libraries")
+@admin_api
+def api_admin_magazine_libraries():
+    quarter = (request.args.get("quarter") or "").strip()
+    magazine = (request.args.get("magazine") or "").strip()
+    if not quarter or not magazine:
+        return jsonify({"success": False, "message": "Quarter மற்றும் இதழைத் தேர்ந்தெடுக்கவும்."}), 400
+    return jsonify({"success": True, "quarter": quarter, "magazine": magazine, "items": _magazine_libraries(quarter, magazine)})
+
+
+@lib_bp.route("/api/admin/librarian/magazine-libraries-export")
+@admin_api
+def api_admin_magazine_libraries_export():
+    quarter = (request.args.get("quarter") or "").strip()
+    magazine = (request.args.get("magazine") or "").strip()
+    if not quarter or not magazine:
+        return jsonify({"success": False, "message": "Quarter மற்றும் இதழைத் தேர்ந்தெடுக்கவும்."}), 400
+    items = _magazine_libraries(quarter, magazine)
+    hd = ["வ.எண்.", "Library Code", "Library Name"]
+    rows = [[n, i["code"], i["name"]] for n, i in enumerate(items, 1)]
+    fmt = (request.args.get("fmt") or "xlsx").lower()
+    fname = f"magazine_libraries_{quarter}_{today_ist().isoformat()}".replace(" ", "_")
+    if fmt == "pdf":
+        info = ["Quarter: " + quarter, "இதழ்: " + magazine, "நூலகங்கள்: %d" % len(items), "தயாரித்த தேதி: " + fmt_d(today_ist())]
+        body = _pdf_table("இந்த Quarter இதழ்கள் செல்லும் நூலகங்கள்", info, hd, rows, [12, 30, 110],
+                          ["C", "L", "L"], landscape=False)
+        return Response(body, mimetype="application/pdf", headers={"Content-Disposition": f"attachment; filename={fname}.pdf"})
+    return Response(_xlsx_bytes([("Libraries", hd, rows, [8, 16, 50])]), mimetype=XLSX_MIME,
+                    headers={"Content-Disposition": f"attachment; filename={fname}.xlsx"})
+
+
 # ---- Admin: ஒரு நூலகத்துக்காக Admin பதிவு செய்தல் ------------------------------------------------ #
 def _weeks_arg(v, default=CARRY_WEEKS):
     """weeks=0 -> வரம்பின்றி (None)."""
