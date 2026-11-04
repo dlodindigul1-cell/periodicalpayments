@@ -688,6 +688,44 @@ def api_vendor_emails_save():
     return jsonify({"success": True, "message": txt, "alsoSaved": others})
 
 
+@miss_bp.route("/api/admin/missing/link-alias", methods=["POST"])
+@_api
+def api_missing_link_alias():
+    """Master-ல் பொருந்தாத இதழ்ப் பெயரை (alias) ஒரு Master இதழுடன் இணைக்கும் — magazine_aliases-ல் மட்டும் பதிவு.
+    Payments தரவு மாறாது; from_quarter = '-' (தவறான வடிவம்) என்பதால் இன்வாய்ஸ் திரையின் பெயர் மாற்ற விதி பாதிக்கப்படாது.
+    இணைத்த பிறகு Alias பெயரும் Master பெயரும் இரண்டுமே அதே இதழாகக் கணிக்கப்படும்."""
+    body = request.get_json(force=True, silent=True) or {}
+    alias = (body.get("alias") or "").strip()
+    master = (body.get("master") or "").strip()
+    if not alias or not master:
+        return jsonify({"success": False, "message": "பொருந்தாத பெயர் மற்றும் Master இதழ் இரண்டும் அவசியம்."}), 400
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM magazines WHERE name=%s", (master,))
+            if not cur.fetchone():
+                return jsonify({"success": False, "message": "Master இதழ் கிடைக்கவில்லை."}), 404
+            if _key(alias) == _key(master):
+                return jsonify({"success": False, "message": "இரண்டும் ஒரே பெயர்."}), 400
+            cur.execute("SELECT 1 FROM magazines WHERE name=%s", (alias,))
+            if cur.fetchone():
+                return jsonify({"success": False, "message": "'%s' ஏற்கனவே Master இதழ்; Alias ஆக இணைக்க முடியாது." % alias}), 400
+            cur.execute("SELECT master_name FROM magazine_aliases WHERE alias_name=%s", (alias,))
+            old = cur.fetchone()
+            if old and old["master_name"] != master:
+                return jsonify({"success": False, "message": "'%s' ஏற்கனவே '%s' உடன் இணைக்கப்பட்டுள்ளது (Master → தரவு சரிபார்ப்பில் இணைப்பை நீக்கலாம்)." % (alias, old["master_name"])}), 400
+            if not old:
+                cur.execute("INSERT INTO magazine_aliases (alias_name, master_name, from_quarter) VALUES (%s,%s,%s)",
+                            (alias, master, "-"))
+        conn.commit()
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        conn.close()
+    return jsonify({"success": True, "message": "'%s' → '%s' இணைக்கப்பட்டது; இனி இரண்டு பெயர்களும் ஒரே இதழாகக் கணிக்கப்படும்." % (alias, master)})
+
+
 @miss_bp.route("/api/admin/missing/save-email", methods=["POST"])
 @_api
 def api_missing_save_email():
@@ -1046,6 +1084,7 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
     <span class="muted">தேர்ந்த இதழின் கடிதம் இந்த Email-க்கு மட்டும் செல்லும் (இதழ் Email-க்குச் செல்லாது)</span>
   </div>
   <div id="rmsg" class="msg"></div>
+  <div id="unm" class="noprint"></div>
   <div id="mailres" class="noprint"></div>
   <div id="rout"></div>
 </div>
@@ -1096,6 +1135,26 @@ function qs(mag, only) {
   return q;
 }
 let GROUPS = [];
+function renderUnmatched(list) {
+  const box = $('unm');
+  if (!list.length) { box.innerHTML = ''; return; }
+  const opts = '<option value="">-- Master இதழ் --</option>' + MAGS.map(m => '<option value="' + esc(m.name) + '">' + esc(m.name) + '</option>').join('');
+  box.innerHTML = '<div class="msg err" style="display:block;margin-top:8px"><b>⚠️ Master / Alias-ல் பொருந்தாத இதழ்ப் பெயர்கள்</b> — இவை மேலே காட்டப்படவில்லை. அதே இதழ் எனில் Master இதழைத் தேர்ந்து "இணை" அழுத்தவும்:' +
+    list.map((u, i) => '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:6px"><span style="min-width:220px"><b>' + esc(u.name) + '</b> (' + u.count + ')</span>' +
+      '<select id="ua' + i + '" style="max-width:300px">' + opts + '</select>' +
+      '<button class="sm" type="button" onclick="linkAlias(' + i + ')">🔗 இணை</button></div>').join('') + '</div>';
+  UNM = list;
+}
+let UNM = [];
+async function linkAlias(i) {
+  const alias = UNM[i].name, master = $('ua' + i).value;
+  if (!master) { alert('Master இதழைத் தேர்ந்தெடுக்கவும்.'); return; }
+  if (!confirm('"' + alias + '" என்பதை "' + master + '" இதழுடன் இணைக்கவா?\\nஇனி இரண்டு பெயர்களும் ஒரே இதழாகக் கணிக்கப்படும்.')) return;
+  const d = await api('/api/admin/missing/link-alias', {alias, master});
+  if (!d.success) { alert(d.message || 'பிழை'); return; }
+  await loadReport();
+  msg('rmsg', true, '✅ ' + esc(d.message) + ' ' + $('rmsg').innerHTML);
+}
 async function loadReport() {
   if (!$('mag').value) { msg('rmsg', false, 'இதழைத் தேர்ந்தெடுக்கவும்.'); return; }
   msg('rmsg', true, 'ஏற்றப்படுகிறது…');
@@ -1105,10 +1164,7 @@ async function loadReport() {
   GROUPS = d.groups;
   const total = d.groups.reduce((a, g) => a + g.rows.length, 0);
   msg('rmsg', true, d.from + ' முதல் ' + d.to + ' வரை — மொத்தம் ' + total + ' வராத இதழ் பதிவுகள் (' + d.groups.filter(g => g.rows.length).length + ' இதழ்).');
-  if (d.unmatched && d.unmatched.length) {
-    $('rmsg').innerHTML += '<br>⚠️ Master / Alias-ல் பொருந்தாத இதழ்ப் பெயர்கள் (இவை மேலே காட்டப்படவில்லை): ' +
-      d.unmatched.map(u => esc(u.name) + ' (' + u.count + ')').join(', ') + ' — Master-ல் பெயரைத் திருத்தவும் அல்லது Alias சேர்க்கவும்.';
-  }
+  renderUnmatched(d.unmatched || []);
   const withRows = d.groups.filter(g => g.rows.length);
   $('rout').innerHTML = (withRows.length > 1 ? '<div class="noprint" style="margin:12px 0"><button onclick="sendMail(-1)">✉️ காட்டிய ' + withRows.length + ' இதழ்களுக்கும் Mail அனுப்பு</button></div>' : '') +
   d.groups.map((g, gi) => {
