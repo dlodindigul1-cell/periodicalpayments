@@ -1286,7 +1286,7 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
     <div class="bx rc"><h3 id="rcT">🟢 இந்த மாதம் வந்த இதழ்கள்</h3><div class="mq" id="mqRc"></div></div>
     <div class="bx nr"><h3 id="nrT">🔴 இந்த மாதம் வராத இதழ்கள்</h3><div class="mq" id="mqNr"></div></div>
   </div>
-  <div class="card tools"><input type="search" id="q" placeholder="🔍 இதழின் பெயரைத் தேடுக…" autocomplete="off"><div class="hint2">💡 "வரவில்லை" எனக் குறித்த இதழ் பின்னர் வந்தால்: இங்கே பெயரைத் தேடி, ✅ Received தேர்ந்து, 💾 சேமி அழுத்தவும்.</div></div>
+  <div class="card tools"><input type="search" id="q" placeholder="🔍 இதழின் பெயரைத் தேடுக…" autocomplete="off"><div class="hint2">💡 "வரவில்லை" எனக் குறித்த இதழ் பின்னர் வந்தால்: இங்கே பெயரைத் தேடி, ✅ Received தேர்ந்து, 💾 சேமி அழுத்தவும்.<br>🔄 ஒவ்வொரு 5 தேர்வுகளுக்கும் தானாகச் சேமிக்கப்படும்; எல்லா இதழ்களையும் தேர்ந்து முடித்ததும் மீதமுள்ளவையும் தானாகச் சேமிக்கப்படும். 💾 சேமி பொத்தானும் உள்ளது.</div></div>
   <div id="list"></div>
   <div id="msg" class="msg"></div>
 </div>
@@ -1303,8 +1303,24 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
 <script>
 const list=document.getElementById('list'),msg=document.getElementById('msg'),bar=document.getElementById('bar'),cnt=document.getElementById('cnt');
 let ROWS=[];
+const AUTO_N=5,dirty=new Map();let autoBusy=false;
 function el(t,a,x){const e=document.createElement(t);if(a)for(const k in a)e.setAttribute(k,a[k]);if(x!==undefined)e.textContent=x;return e}
-function update(){const n=ROWS.length,m=document.querySelectorAll('.opts input:checked').length;cnt.textContent='தேர்ந்தவை: '+m+' / '+n}
+function update(){const n=ROWS.length,m=document.querySelectorAll('.opts input:checked').length;
+  cnt.textContent='தேர்ந்தவை: '+m+' / '+n+(dirty.size?'  ·  சேமிக்கப்படாதவை: '+dirty.size:'')}
+function allPicked(){return ROWS.length>0&&document.querySelectorAll('.opts input:checked').length===ROWS.length}
+function maybeAuto(){if(dirty.size&&(dirty.size>=AUTO_N||allPicked()))autoSave()}
+function onPick(i,r,v){dirty.set(i,{magazine:r.magazine,date:r.date,status:v});update();maybeAuto()}
+async function autoSave(){
+  if(autoBusy||!dirty.size)return;autoBusy=true;
+  const snap=Array.from(dirty.entries());
+  try{const r=await fetch('/api/librarian/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entries:snap.map(x=>x[1])})});
+    const d=await r.json();
+    if(d.success){snap.forEach(([k,e])=>{const c=dirty.get(k);if(c&&c.status===e.status)dirty.delete(k)});
+      msg.className='msg';msg.textContent='';update();toast('✅ '+snap.length+' இதழ்கள் தானாகச் சேமிக்கப்பட்டன');loadBoxes()}
+    else{msg.className='msg err';msg.textContent='தானாகச் சேமிக்க முடியவில்லை: '+(d.message||'பிழை')}}
+  catch(e){msg.className='msg err';msg.textContent='தானாகச் சேமிக்க முடியவில்லை: '+e}
+  finally{autoBusy=false;if(!msg.classList.contains('err'))maybeAuto()}}
+window.addEventListener('beforeunload',e=>{if(dirty.size){e.preventDefault();e.returnValue=''}});
 function fillBox(id,t,title,names){
   const b=document.getElementById(id);b.innerHTML='';b.scrollTop=0;document.getElementById(t).textContent=title+' ('+names.length+')';
   if(!names.length){b.appendChild(el('div',{class:'none'},'— இல்லை —'));return}
@@ -1355,7 +1371,7 @@ function render(d){
   s.appendChild(el('span',{class:'chip'},d.range?('📅 பதிவுக் காலம்: '+d.range.from+' – '+d.range.to):('📅 இந்த வாரம்: '+d.weekStart+' – '+d.weekEnd)));h.appendChild(s);
   const early=d.earlierUnregistered.length+d.earlierNotReceived.length;
   if(early&&!d.range)h.appendChild(el('div',{class:'muted',style:'margin-top:8px'},'முந்தைய வாரங்களின் இதழ்கள் அதிகபட்சம் '+d.carryWeeks+' வாரங்கள் வரை இங்கே தெரியும்.'));
-  ROWS=[];list.innerHTML='';
+  ROWS=[];dirty.clear();list.innerHTML='';
   function addRows(parent,rows,k,early){
     let last='';
     rows.forEach(r=>{
@@ -1364,7 +1380,7 @@ function render(d){
       const row=el('div',{class:'row','data-n':r.magazine.toLowerCase()});const nm=el('div',{class:'nm'},r.magazine);if(r.periodicity)nm.appendChild(el('small',null,r.periodicity));row.appendChild(nm);
       const o=el('div',{class:'opts'});
       [['Received','rc','✅ Received'],['Not received','nr','❌ Not received']].forEach(([v,c,t])=>{
-        const l=el('label');const inp=el('input',{type:'radio',name:'r'+i,value:v,'data-sec':k});if(r.status===v)inp.checked=true;inp.onchange=update;
+        const l=el('label');const inp=el('input',{type:'radio',name:'r'+i,value:v,'data-sec':k});if(r.status===v)inp.checked=true;inp.onchange=()=>onPick(i,r,v);
         const locked=(v==='Not received'&&!r.nrAllowed&&r.status!=='Not received');
         l.appendChild(inp);l.appendChild(el('span',{class:c+(locked?' lock':'')},(locked?'🔒 ':'')+t));
         if(locked)l.addEventListener('click',ev=>{ev.preventDefault();showNR(r)});
@@ -1397,7 +1413,10 @@ document.getElementById('q').addEventListener('input',applyFilter);
 document.getElementById('mCur').onclick=()=>setMonth(0);
 document.getElementById('mPrev').onclick=()=>setMonth(1);
 document.getElementById('ordBtn').onclick=()=>document.getElementById('dl').classList.toggle('show');
-document.getElementById('allRc').onclick=()=>{document.querySelectorAll('.opts input[value="Received"][data-sec="this"]').forEach(i=>i.checked=true);update()};
+document.getElementById('allRc').onclick=()=>{
+  document.querySelectorAll('.opts input[value="Received"][data-sec="this"]').forEach(inp=>{
+    if(!inp.checked){inp.checked=true;const i=parseInt(inp.name.slice(1),10);dirty.set(i,{magazine:ROWS[i].magazine,date:ROWS[i].date,status:'Received'})}});
+  update();maybeAuto()};
 document.getElementById('save').onclick=async()=>{
   const entries=[];ROWS.forEach((r,i)=>{const c=document.querySelector('input[name="r'+i+'"]:checked');if(c)entries.push({magazine:r.magazine,date:r.date,status:c.value})});
   if(!entries.length){msg.className='msg err';msg.textContent='குறைந்தது ஒரு இதழுக்காவது Received / Not received தேர்ந்தெடுக்கவும்.';return}
