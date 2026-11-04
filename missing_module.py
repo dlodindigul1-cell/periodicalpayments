@@ -1099,7 +1099,7 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
 #libModal{display:none;position:fixed;inset:0;background:rgba(15,35,71,.55);z-index:1000;align-items:center;justify-content:center;padding:14px}
 #libBox{background:#fff;border-radius:14px;box-shadow:0 12px 40px rgba(0,0,0,.35);width:min(760px,100%);max-height:86vh;display:flex;flex-direction:column;padding:16px 18px}
 #libBox h3{margin:0;font-size:17px;color:#0f2347} #libBody td:first-child{width:60px}
-@media print{#libModal{display:none!important} .top,.tabs,.noprint{display:none!important} .card{box-shadow:none;border:0}}
+@media print{ #libModal{display:none!important} .top,.tabs,.noprint{display:none!important} .card{box-shadow:none;border:0}}
 </style></head><body>
 <div class="top"><h1>📭 வராத இதழ்கள் விவரம்</h1><a href="/">← முகப்பு</a></div>
 <div class="wrap">
