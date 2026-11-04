@@ -1042,11 +1042,15 @@ def _xlsx_bytes(sheets):
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(buf, {"in_memory": True})
     head = wb.add_format({"bold": True, "bg_color": "#1e4d8c", "font_color": "#ffffff", "border": 1, "text_wrap": True})
+    grp = wb.add_format({"bold": True, "bg_color": "#e8eefb", "border": 1})
     for name, headers, rows, widths in sheets:
         ws = wb.add_worksheet(name[:31])
         for c, h in enumerate(headers):
             ws.write(0, c, h, head)
         for i, r in enumerate(rows, start=1):
+            if isinstance(r, dict):      # {"head": text} — நூலகத் தலைப்பு வரிசை (எல்லா நெடுவரிசைகளிலும் பரவும்)
+                ws.merge_range(i, 0, i, max(len(headers) - 1, 0), r["head"], grp)
+                continue
             for c, v in enumerate(r):
                 ws.write(i, c, "" if v is None else v)
         for c, w in enumerate(widths):
@@ -1086,8 +1090,12 @@ def _pdf_table(title, info_lines, headers, rows, widths, aligns=None, landscape=
             h.cell(c)
         if not rows:
             t.row().cell("— பதிவுகள் இல்லை —", colspan=len(headers), align="C")
+        grpstyle = FontFace(emphasis="BOLD", fill_color=(232, 238, 251))
         for r in rows:
             row = t.row()
+            if isinstance(r, dict):      # {"head": text} — நூலகத் தலைப்பு வரிசை
+                row.cell(r["head"], colspan=len(headers), style=grpstyle)
+                continue
             for v in r:
                 row.cell("" if v is None else str(v))
     return bytes(pdf.output())
@@ -1281,6 +1289,99 @@ def api_admin_pending_detail():
                     "items": items, "total": sum(i["count"] for i in items), "upTo": fmt_d(dto_cap)})
 
 
+def _pending_groups_data():
+    """நூலகம் வாரியாக: ஒவ்வொரு நூலகத்திலும் பதிவு செய்யாத இதழ்களும் தேதிகளும்.
+    வடிகட்டிகள்: category, from, to; codes = காற்புள்ளியால் பிரித்த நூலகக் குறியீடுகள் (காலி = எல்லா நூலகங்களும்).
+    codes கொடுத்தால் பதிவு செய்யாதவை இல்லாத நூலகமும் (items=[]) இடம்பெறும்; இல்லையெனில் பதிவு செய்யாதவை உள்ளவை மட்டும்."""
+    dfrom, dto_cap, _raw = _pend_range()
+    cat = (request.args.get("category") or "").strip()
+    codes = [c.strip() for c in (request.args.get("codes") or "").split(",") if c.strip()]
+    where, params = ["r.code IS NULL", "s.expected_date <= %s"], [dto_cap]
+    if dfrom:
+        where.append("s.expected_date >= %s"); params.append(dfrom)
+    if cat:
+        where.append("l.category = %s"); params.append(cat)
+    if codes:
+        where.append("l.code = ANY(%s)"); params.append(codes)
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT l.code, l.name, l.category, s.magazine, MAX(s.periodicity) AS periodicity, s.expected_date "
+                "FROM lib_schedule s JOIN lib_libraries l ON l.code = s.code "
+                "LEFT JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine AND r.expected_date=s.expected_date "
+                "WHERE " + " AND ".join(where) +
+                " GROUP BY l.code, l.name, l.category, s.magazine, s.expected_date "
+                "ORDER BY l.code, s.magazine, s.expected_date", params)
+            rows = cur.fetchall()
+            libs = []
+            if codes:
+                lw, lp = ["code = ANY(%s)"], [codes]
+                if cat:
+                    lw.append("category = %s"); lp.append(cat)
+                cur.execute("SELECT code, name, category FROM lib_libraries WHERE " + " AND ".join(lw), lp)
+                libs = cur.fetchall()
+    finally:
+        conn.close()
+    by = {}
+    for l in libs:
+        by[l["code"]] = {"code": l["code"], "name": l["name"], "category": l["category"], "mags": {}}
+    for r in rows:
+        g = by.setdefault(r["code"], {"code": r["code"], "name": r["name"], "category": r["category"], "mags": {}})
+        m = g["mags"].setdefault(r["magazine"], {"magazine": r["magazine"], "periodicity": r["periodicity"] or "", "dates": []})
+        m["dates"].append(r["expected_date"])
+    groups = []
+    for g in by.values():
+        items = []
+        for m in sorted(g["mags"].values(), key=lambda x: x["magazine"].casefold()):
+            d = m["dates"]
+            items.append({"magazine": m["magazine"], "periodicity": m["periodicity"], "count": len(d),
+                          "first": fmt_d(d[0]), "last": fmt_d(d[-1]), "dates": [fmt_d(x) for x in d]})
+        groups.append({"code": g["code"], "name": g["name"], "category": g["category"], "items": items,
+                       "total": sum(i["count"] for i in items)})
+    groups.sort(key=lambda g: (_category_sort_key(g["category"]), g["name"]))
+    return groups, fmt_d(dto_cap), bool(codes)
+
+
+@lib_bp.route("/api/admin/librarian/pending-groups")
+@admin_api
+def api_admin_pending_groups():
+    groups, upto, explicit = _pending_groups_data()
+    shown = [g for g in groups if g["items"] or explicit]
+    return jsonify({"success": True, "groups": shown, "upTo": upto, "explicit": explicit,
+                    "mags": sum(len(g["items"]) for g in shown), "dates": sum(g["total"] for g in shown)})
+
+
+def _pending_groups_export(fmt, stamp):
+    groups, upto, explicit = _pending_groups_data()
+    hd = ["வ.எண்.", "இதழ் பெயர்", "எண்ணிக்கை", "பதிவு செய்யாத தேதிகள்"]
+    trs = []
+    for g in groups:
+        if not g["items"] and not explicit:
+            continue
+        trs.append({"head": "நூலகம்: %s (%s) — பதிவு செய்யாத இதழ்கள்: %d · தேதிகள்: %d" %
+                    (g["name"], g["category"] or "-", len(g["items"]), g["total"])})
+        if not g["items"]:
+            trs.append(["", "— பதிவு செய்யாதவை இல்லை —", "", ""])
+        for n, m in enumerate(g["items"], 1):
+            trs.append([n, m["magazine"] + ((" (" + m["periodicity"] + ")") if m["periodicity"] else ""),
+                        m["count"], ", ".join(m["dates"])])
+    shown = [g for g in groups if g["items"] or explicit]
+    extra = ["நூலகங்கள்: %d · பதிவு செய்யாத இதழ்கள்: %d · தேதிகள் (மொத்தம்): %d (%s வரை)" %
+             (len(shown), sum(len(g["items"]) for g in shown), sum(g["total"] for g in shown), upto)]
+    if explicit:
+        extra.insert(0, "தேர்ந்தெடுத்த நூலகங்கள் மட்டும்")
+    info = _export_info(extra)
+    widths, al = [11, 80, 20, 150], ["C", "L", "C", "L"]
+    title = "சுருக்கம் — பதிவு செய்யாதவை: நூலகம் வாரியாக இதழ் விவரம்"
+    fname = "pending_by_library_" + stamp
+    if fmt == "pdf":
+        return Response(_pdf_table(title, info, hd, trs, widths, al, landscape=True), mimetype="application/pdf",
+                        headers={"Content-Disposition": f"attachment; filename={fname}.pdf"})
+    return Response(_xlsx_bytes([("நூலகம் வாரியாக", hd, trs, [max(8, int(w * 0.8)) for w in widths])]),
+                    mimetype=XLSX_MIME, headers={"Content-Disposition": f"attachment; filename={fname}.xlsx"})
+
+
 @lib_bp.route("/api/admin/librarian/pending-export")
 @admin_api
 def api_admin_pending_export():
@@ -1290,6 +1391,8 @@ def api_admin_pending_export():
     q = (request.args.get("q") or "").strip().lower()
     flt = (request.args.get("flt") or "").strip()
     stamp = today_ist().isoformat()
+    if (request.args.get("mode") or "") == "groups":      # நூலகம் வாரியாக இதழ் + தேதி விவரம் (எல்லா / தேர்ந்த நூலகங்கள்)
+        return _pending_groups_export(fmt, stamp)
     if code:
         d = _json_of(api_admin_pending_detail())
         if not d.get("success"):
@@ -1902,6 +2005,25 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
   <div class="kpi" id="pkpi"></div>
   <div class="scroll"><table id="ptab"><thead></thead><tbody></tbody></table></div>
   <div id="phidebar" style="display:none;margin-top:10px;text-align:center"><button id="phide2" class="alt sm" type="button">🔼 மறை</button></div>
+
+  <div id="pgbox" style="margin-top:16px;padding:12px;border:1px dashed #c5cee3;border-radius:12px">
+    <h3 style="margin:0 0 6px;font-size:15px;color:#0f2347">📋 நூலகம் வாரியாக இதழ் விவரம் (வ.எண். · இதழ் பெயர் · பதிவு செய்யாத தேதிகள்)</h3>
+    <p class="muted" style="margin:0 0 6px">மேலே உள்ள நூலக வகை, தேதி முதல் / வரை வடிகட்டிகள் இதற்கும் பொருந்தும். "காட்டு" அழுத்தினால் மட்டுமே பட்டியல் வரும்.</p>
+    <label style="display:block;margin-bottom:6px"><input type="checkbox" id="pgall" checked> எல்லா நூலகங்களும் (பதிவு செய்யாதவை உள்ள நூலகங்கள் மட்டும் வரும்)</label>
+    <div id="pgpick" style="display:none;margin-bottom:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <input type="text" id="pgq" placeholder="நூலகப் பெயர் தேடு…" style="max-width:260px">
+        <button id="pgsel" class="sm alt" type="button">காட்டியவை எல்லாம் தேர்</button>
+        <button id="pgclr" class="sm alt" type="button">தேர்வை நீக்கு</button>
+        <span id="pgcnt" class="muted"></span>
+      </div>
+      <div id="pglist" style="max-height:220px;overflow:auto;border:1px solid #e3e8f4;border-radius:8px;padding:6px 10px;background:#fff"></div>
+    </div>
+    <div class="btnrow"><button id="pggo" type="button">🔍 காட்டு</button><button id="pghide" class="alt" type="button" style="display:none">🔼 மறை</button><button id="pgxl" class="sm alt" type="button">📥 Excel பதிவிறக்கு</button><button id="pgpdf" class="sm alt" type="button">📄 PDF பதிவிறக்கு</button></div>
+    <div id="pgmsg" class="msg"></div>
+    <div class="kpi" id="pgkpi"></div>
+    <div id="pgout"></div>
+  </div>
 </div>
 
 <div class="card" id="mcard">
@@ -2014,7 +2136,8 @@ function fillFlib(){
 $('fcat').onchange=()=>{$('flib').value='';fillFlib()};
 function refreshShown(){   // தரவு மாறும்போது, ஏற்கனவே காட்டப்பட்டுள்ள அட்டவணைகளை மட்டும் புதுப்பிக்கும்; மறைந்தவை மறைந்தே இருக்கும்
   if($('fhide').style.display!=='none')loadSummary();
-  if($('phide').style.display!=='none')loadPend()}
+  if($('phide').style.display!=='none')loadPend();
+  if($('pghide').style.display!=='none')loadPG()}
 async function loadSummary(){
   $('fhide').style.display='';$('fhidebar').style.display='';
   if($('flib').value)return loadLibDetail();
@@ -2109,9 +2232,56 @@ $('msave').onclick=async()=>{
 /* ---------- சுருக்கம்: பதிவு செய்யாதவை ---------- */
 function pq(extra){const p=new URLSearchParams();if($('pcat').value)p.set('category',$('pcat').value);
   if($('pfrom').value)p.set('from',$('pfrom').value);if($('pto').value)p.set('to',$('pto').value);for(const k in (extra||{}))p.set(k,extra[k]);return p.toString()}
+/* ---------- சுருக்கம்: நூலகம் வாரியாக இதழ் + தேதி ---------- */
+let PGSEL=new Set();
+function pgcnt(){$('pgcnt').textContent='தேர்ந்தவை: '+PGSEL.size}
+function fillPgList(){
+  const box=$('pglist'),cat=$('pcat').value,q=($('pgq').value||'').trim().toLowerCase();box.innerHTML='';
+  (LIBS||[]).filter(x=>!cat||x.category===cat).forEach(c=>c.libraries.forEach(l=>{
+    if(q&&!(l.name||'').toLowerCase().includes(q))return;
+    const lb=el('label',{style:'display:block;padding:2px 0'});const cb=el('input',{type:'checkbox',value:l.code});cb.checked=PGSEL.has(l.code);
+    cb.onchange=()=>{if(cb.checked)PGSEL.add(l.code);else PGSEL.delete(l.code);pgcnt()};
+    lb.appendChild(cb);lb.appendChild(document.createTextNode(' '+l.name+(cat?'':'  ('+c.category+')')));box.appendChild(lb)}));
+  pgcnt()}
+function pgp(extra){   // வினவல் சரம்; தேர்வு தவறெனில் null
+  if(!$('pgall').checked&&!PGSEL.size){say('pgmsg',false,'குறைந்தது ஒரு நூலகத்தைத் தேர்ந்தெடுக்கவும் (அல்லது "எல்லா நூலகங்களும்" என்பதை டிக் செய்யவும்).');return null}
+  $('pgmsg').className='msg';const e=extra||{};if(!$('pgall').checked)e.codes=[...PGSEL].join(',');return pq(e)}
+$('pgall').onchange=()=>{$('pgpick').style.display=$('pgall').checked?'none':'block';if(!$('pgall').checked)fillPgList()};
+$('pgq').oninput=fillPgList;
+$('pgsel').onclick=()=>{$('pglist').querySelectorAll('input').forEach(i=>{i.checked=true;PGSEL.add(i.value)});pgcnt()};
+$('pgclr').onclick=()=>{PGSEL.clear();fillPgList()};
+function hidePG(){$('pgout').innerHTML='';$('pgkpi').innerHTML='';$('pghide').style.display='none'}
+$('pghide').onclick=hidePG;
+async function loadPG(){
+  const p=pgp();if(p===null)return;
+  $('pgout').innerHTML='';$('pgkpi').innerHTML='';$('pghide').style.display='';
+  try{
+    const d=await api('/api/admin/librarian/pending-groups?'+p);
+    if(!d.success){say('pgmsg',false,d.message||'பிழை');return}
+    $('pgkpi').appendChild(el('div',null,'நூலகங்கள்: '+d.groups.length));$('pgkpi').appendChild(el('div',null,'பதிவு செய்யாத இதழ்கள்: '+d.mags));
+    $('pgkpi').appendChild(el('div',null,'பதிவு செய்யாத தேதிகள் (மொத்தம்): '+d.dates+' ('+d.upTo+' வரை)'));
+    const box=$('pgout');
+    if(!d.groups.length){box.appendChild(el('div',{class:'ok-c',style:'margin-top:10px'},'✅ பதிவு செய்யாத இதழ்கள் எதுவும் இல்லை.'));return}
+    d.groups.forEach(g=>{
+      const h=el('div',{style:'background:#e8eefb;padding:8px 10px;margin-top:14px;border-radius:8px;font-weight:700;color:#0f2347'});
+      h.appendChild(document.createTextNode(g.name+'  '));h.appendChild(el('span',{class:'chip'},g.category||''));
+      h.appendChild(el('span',{class:'muted',style:'margin-left:8px;font-weight:400'},g.items.length+' இதழ்கள் · '+g.total+' தேதிகள்'));
+      const mk=el('button',{class:'sm alt',type:'button',style:'float:right'},'✏️ பதிவு செய்');mk.onclick=()=>openMark(g.code,g.category);h.appendChild(mk);box.appendChild(h);
+      const sc=el('div',{class:'scroll'}),t=el('table'),th=el('thead'),tb=el('tbody'),hr=el('tr');
+      ['வ.எண்.','இதழ் பெயர்','பதிவு செய்யாத தேதிகள்'].forEach(x=>hr.appendChild(el('th',null,x)));th.appendChild(hr);t.appendChild(th);t.appendChild(tb);sc.appendChild(t);box.appendChild(sc);
+      if(!g.items.length){const tr=el('tr'),c=td('✅ பதிவு செய்யாதவை இல்லை.','ok-c');c.colSpan=3;tr.appendChild(c);tb.appendChild(tr)}
+      g.items.forEach((m,n)=>{const tr=el('tr');tr.appendChild(td(n+1));
+        const nm=td(m.magazine);if(m.periodicity)nm.appendChild(el('div',{class:'muted'},m.periodicity));tr.appendChild(nm);
+        const c=el('td');c.appendChild(el('div',{class:'bad-c'},m.dates.join(', ')+'  ('+m.count+' இதழ்)'));tr.appendChild(c);tb.appendChild(tr)})})
+  }catch(e){say('pgmsg',false,'ஏற்ற முடியவில்லை: '+e)}}
+$('pggo').onclick=loadPG;
+$('pgxl').onclick=()=>{const p=pgp({mode:'groups',fmt:'xlsx'});if(p!==null)location.href='/api/admin/librarian/pending-export?'+p};
+$('pgpdf').onclick=()=>{const p=pgp({mode:'groups',fmt:'pdf'});if(p!==null)location.href='/api/admin/librarian/pending-export?'+p};
+
 function fillPlib(){const f=$('plib'),keep=f.value,cat=$('pcat').value;f.length=1;
   (LIBS||[]).filter(x=>!cat||x.category===cat).forEach(x=>x.libraries.forEach(l=>f.appendChild(el('option',{value:l.code},l.name))));
-  if([...f.options].some(o=>o.value===keep))f.value=keep}
+  if([...f.options].some(o=>o.value===keep))f.value=keep;
+  if($('pgall')&&!$('pgall').checked)fillPgList()}
 $('pcat').onchange=()=>{$('plib').value='';fillPlib();if($('phide').style.display!=='none')loadPend()};
 $('plib').onchange=()=>{if($('phide').style.display!=='none')loadPend()};$('pgo').onclick=()=>loadPend();$('pperiod').onclick=()=>{applyRange();loadPend()};
 function hidePend(){
