@@ -179,11 +179,12 @@ def _build_report(cur, magazine, dfrom, dto, lang="", only=False):
         for i, r in enumerate(rows_by[m["name"]], start=1):
             out.append({
                 "sno": i, "code": r["lcode"],
-                "library": (r["name_en"] or r["lname"]) if en else r["lname"],
-                "librarian": ((r["librarian_name_en"] or r["librarian_name"]) if en else r["librarian_name"]) or "",
+                # மெயில் / கடிதம் / முன்னோட்டம்: இதழ் தமிழ் ஆனாலும் நூலகப் பெயர், நூலகர், முகவரி — English (காலி எனில் மட்டும் தமிழ்)
+                "library": r["name_en"] or r["lname"],
+                "librarian": (r["librarian_name_en"] or r["librarian_name"]) or "",
                 "date": lm.fmt_d(r["expected_date"]),
                 "phone": r["phone"] or "",
-                "address": _addr((r["address_en"] or r["address"]) if en else r["address"]),
+                "address": _addr(r["address_en"] or r["address"]),
             })
         groups.append({"magazine": m["name"], "lang": m["lang"], "vendorCode": m["code"], "email": m["email"],
                        "aliases": aliases.get(m["name"], []), "labels": lab,
@@ -503,10 +504,10 @@ def api_missing_send_sample():
         finally:
             conn.close()
         g["rows"] = [{
-            "sno": i, "code": r["code"], "library": (r["name_en"] or r["name"]) if en else r["name"],
-            "librarian": ((r["librarian_name_en"] or r["librarian_name"]) if en else r["librarian_name"]) or "",
+            "sno": i, "code": r["code"], "library": r["name_en"] or r["name"],
+            "librarian": (r["librarian_name_en"] or r["librarian_name"]) or "",
             "date": lm.fmt_d(dto - timedelta(days=7 * i)), "phone": r["phone"] or "",
-            "address": _addr((r["address_en"] or r["address"]) if en else r["address"]),
+            "address": _addr(r["address_en"] or r["address"]),
         } for i, r in enumerate(libs, start=1)]
         if not g["rows"]:
             return jsonify({"success": False, "message": "நூலகப் பட்டியல் காலியாக உள்ளது; Sample உருவாக்க முடியவில்லை."}), 400
