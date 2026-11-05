@@ -153,6 +153,27 @@ def _load_master(cur):
     return mags, resolver, aliases
 
 
+def _alias_groups(cur, names):
+    """magazine_aliases இணைப்புகளால் இணைந்த Master இதழ்களின் குழுக்கள் -> {name: set(இணைந்த எல்லா பெயர்கள், தன்னுடன்)}.
+    alias பெயரிலும் master பெயரிலும் Master வரிசை இருந்தால் மட்டுமே குழுவில் சேரும்."""
+    names = set(names)
+    parent = {n: n for n in names}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    cur.execute("SELECT alias_name, master_name FROM magazine_aliases")
+    for a in cur.fetchall():
+        if a["alias_name"] in names and a["master_name"] in names:
+            parent[find(a["alias_name"])] = find(a["master_name"])
+    groups = {}
+    for n in names:
+        groups.setdefault(find(n), set()).add(n)
+    return {n: groups[find(n)] for n in names}
+
+
 ALL_MAGS = "__all__"
 
 
@@ -653,10 +674,14 @@ def api_missing_no_email():
     try:
         with conn.cursor() as cur:
             mags, _r, _a = _load_master(cur)
+            grp = _alias_groups(cur, [m["name"] for m in mags])
     finally:
         conn.close()
-    items = [{"name": m["name"], "vendorName": m["vendorName"], "code": m["code"], "lang": m["lang"]}
-             for m in mags if not m["email"]]
+    has_email = {m["name"] for m in mags if m["email"]}
+    # இணைக்கப்பட்ட இதழ்களில் ஏதேனும் ஒன்றில் Email இருந்தால் இரண்டுக்கும் உள்ளதாகவே கொள்ளப்படும்
+    items = [{"name": m["name"], "vendorName": m["vendorName"], "code": m["code"], "lang": m["lang"],
+              "linked": sorted(grp.get(m["name"], {m["name"]}) - {m["name"]})}
+             for m in mags if not (grp.get(m["name"], {m["name"]}) & has_email)]
     items.sort(key=lambda x: (_vendor_key(x["code"]) or "~", x["name"]))   # ஒரே Vendor Code குழு அருகருகே
     return jsonify({"success": True, "items": items, "total": len(mags)})
 
@@ -680,6 +705,14 @@ def _apply_email(cur, name, email, overwrite_group=False):
             others = [r["name"] for r in cur.fetchall() if _vendor_key(r["tnpfts_code"]) == key]
             if others:
                 cur.execute("UPDATE magazines SET email_id=%s WHERE name = ANY(%s)", (email, others))
+        # இணைக்கப்பட்ட (🔗 பெயர் மாற்றம்) இதழ்களில் காலியாக உள்ளவற்றிலும் அதே Email
+        cur.execute("SELECT name FROM magazines")
+        grp = _alias_groups(cur, [r["name"] for r in cur.fetchall()])
+        linked = [n for n in grp.get(name, set()) if n != name and n not in others]
+        if linked:
+            cur.execute("UPDATE magazines SET email_id=%s WHERE name = ANY(%s) AND COALESCE(TRIM(email_id),'')=''",
+                        (email, linked))
+            others += [n for n in linked]
     return True, others
 
 
@@ -1319,7 +1352,7 @@ async function loadNoEmail() {
   const d = await api('/api/admin/missing/no-email');
   if (!d.success) { msg('emsg', false, esc(d.message)); return; }
   msg('emsg', d.items.length === 0, d.items.length ? ('Email இல்லாத இதழ்கள்: ' + d.items.length + ' / ' + d.total) : '✅ எல்லா இதழ்களுக்கும் Email உள்ளது.');
-  $('etb').innerHTML = d.items.map((m, i) => '<tr><td>' + (i + 1) + '</td><td>' + esc(m.name) + '</td><td>' + esc(m.vendorName) + '</td><td>' + esc(m.code) +
+  $('etb').innerHTML = d.items.map((m, i) => '<tr><td>' + (i + 1) + '</td><td>' + esc(m.name) + (m.linked && m.linked.length ? '<br><small class="muted">🔗 இணைந்தது: ' + esc(m.linked.join(', ')) + '</small>' : '') + '</td><td>' + esc(m.vendorName) + '</td><td>' + esc(m.code) +
     '</td><td><input id="em' + i + '" type="text" placeholder="name@example.com"></td><td><button class="sm" onclick="saveEmail(' + i + ',\\'' + encodeURIComponent(m.name) + '\\')">சேமி</button></td></tr>').join('');
 }
 async function saveEmail(i, enc) {
