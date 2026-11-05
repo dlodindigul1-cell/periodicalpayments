@@ -2047,8 +2047,18 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
 #cfov h3{margin:0 0 10px;font-size:18px;color:#a12b20} #cfov p{margin:0 0 14px;font-size:15px;line-height:1.55}
 .mbar{position:sticky;bottom:0;background:#fff;border-top:1px solid #d6ddee;padding:10px 0;margin-top:12px;display:none;gap:10px;align-items:center;flex-wrap:wrap}
 .chip{display:inline-block;background:#e8eefb;color:#1e4d8c;border-radius:999px;padding:3px 10px;font-size:12px;margin-right:6px}
+.onl{flex:0 1 480px;min-width:220px;display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.25);border-radius:10px;padding:5px 10px;overflow:hidden}
+.onl .ol-lbl{font-size:12.5px;font-weight:700;white-space:nowrap}
+.onl .ol-cnt{background:#2ecc71;color:#06361a;border-radius:10px;padding:0 8px;font-size:12px;font-weight:700}
+.onl .ol-vp{flex:1;min-width:0;overflow:hidden;position:relative;height:22px}
+.onl .ol-tr{position:absolute;left:0;top:0;white-space:nowrap;line-height:22px;font-size:13.5px;will-change:transform}
+.onl .ol-tr.run{animation:olscroll var(--ol-dur,20s) linear infinite}
+.onl .ol-vp:hover .ol-tr.run{animation-play-state:paused}
+.onl .ol-it{margin-right:28px}
+@keyframes olscroll{from{transform:translateX(0)}to{transform:translateX(var(--ol-end,-50%))}}
+@media (prefers-reduced-motion:reduce){.onl .ol-tr.run{animation:none}.onl .ol-vp{overflow-x:auto}.onl .ol-tr{position:static}}
 </style></head><body>
-<div class="top"><h1>🧑‍💼 நூலகர் பதிவு (இதழ் வருகை)</h1><a href="/">← முகப்பு</a></div>
+<div class="top"><h1>🧑‍💼 நூலகர் பதிவு (இதழ் வருகை)</h1><div class="onl" id="onl"><span class="ol-lbl">🟢 இப்போது login-இல்</span><span class="ol-cnt" id="olCnt">0</span><div class="ol-vp" id="olVp"><div class="ol-tr" id="olTr">…</div></div></div><a href="/">← முகப்பு</a></div>
 <div class="wrap">
 
 <div class="card">
@@ -2156,6 +2166,23 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
 </div></div>
 <div id="cfov"><div class="box"><h3>⚠️ பதிவுகளை நீக்கவா?</h3><p id="cftxt"></p>
 <div style="display:flex;gap:10px"><button id="cfno" class="alt" style="flex:1" type="button">ரத்து</button><button id="cfyes" class="danger" style="flex:1" type="button">ஆம், நீக்கு</button></div></div></div>
+<script>
+/* இப்போது login-இல் உள்ள நூலகர்கள் — தலைப்பு அருகே ஓடும் பட்டி */
+async function loadOnline(){
+  const tr=document.getElementById('olTr'),vp=document.getElementById('olVp');if(!tr)return;
+  try{
+    const r=await fetch('/api/admin/librarian-online');const d=await r.json();
+    if(!d.success)throw 0;
+    const rows=d.rows||[];document.getElementById('olCnt').textContent=rows.length;
+    tr.classList.remove('run');tr.style.transform='';
+    if(!rows.length){tr.textContent='தற்போது யாரும் login-இல் இல்லை';return}
+    const one=rows.map(x=>'<span class="ol-it">🟢 '+String(x.name).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+' <small style="opacity:.75">('+x.since+')</small></span>').join('');
+    tr.innerHTML=one;const w=tr.scrollWidth;
+    if(w>vp.clientWidth){tr.innerHTML=one+one;tr.style.setProperty('--ol-end',(-w)+'px');tr.style.setProperty('--ol-dur',Math.max(10,Math.round(w/60))+'s');void tr.offsetWidth;tr.classList.add('run')}
+  }catch(e){tr.textContent='பட்டியலை ஏற்ற இயலவில்லை'}
+}
+loadOnline();setInterval(()=>{if(!document.hidden)loadOnline()},30000);
+</script>
 <script>
 let MODE='received',OV=null,LIBS=[],MROWS=[],MCODE='';
 const $=id=>document.getElementById(id);
