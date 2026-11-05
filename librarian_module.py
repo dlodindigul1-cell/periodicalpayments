@@ -1557,6 +1557,68 @@ def api_admin_quarter_magazines():
     return jsonify({"success": True, "quarters": quarters, "quarter": q, "magazines": mags})
 
 
+def _schedule_dates(dfrom, dto):
+    """நூலகர் பதிவுக் காலத்தில் (dfrom–dto) உள்ள இதழ்கள் + ஒவ்வொன்றும் வரும் தேதிகள் (ஒரே வரிசையில்)."""
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT magazine, MAX(periodicity) AS periodicity, COUNT(DISTINCT code) AS libs "
+                        "FROM lib_schedule WHERE expected_date BETWEEN %s AND %s GROUP BY magazine", (dfrom, dto))
+            mags = {r["magazine"]: {"magazine": r["magazine"], "periodicity": r["periodicity"] or "",
+                                    "libs": r["libs"], "dates": []} for r in cur.fetchall()}
+            cur.execute("SELECT magazine, expected_date, COUNT(DISTINCT code) AS libs FROM lib_schedule "
+                        "WHERE expected_date BETWEEN %s AND %s GROUP BY magazine, expected_date "
+                        "ORDER BY magazine, expected_date", (dfrom, dto))
+            for r in cur.fetchall():
+                mags[r["magazine"]]["dates"].append((r["expected_date"], r["libs"]))
+    finally:
+        conn.close()
+    same_year = dfrom.year == dto.year
+    items = []
+    for x in sorted(mags.values(), key=lambda v: v["magazine"].casefold()):
+        parts = []
+        for d, n in x["dates"]:
+            t = d.strftime("%d/%m") if same_year else d.strftime("%d/%m/%y")
+            parts.append(t if n == x["libs"] else "%s (%d)" % (t, n))   # சில நூலகங்களுக்கு மட்டும் உள்ள தேதி எனில் எண்ணிக்கை
+        items.append({"magazine": x["magazine"], "periodicity": x["periodicity"], "libs": x["libs"],
+                      "count": len(x["dates"]), "text": ", ".join(parts)})
+    return items
+
+
+@lib_bp.route("/api/admin/librarian/schedule-dates")
+@admin_api
+def api_admin_schedule_dates():
+    rng = _get_range()
+    if not rng:
+        return jsonify({"success": True, "range": None, "items": []})
+    return jsonify({"success": True, "range": {"from": rng[0].isoformat(), "to": rng[1].isoformat()},
+                    "items": _schedule_dates(*rng)})
+
+
+@lib_bp.route("/api/admin/librarian/schedule-dates-export")
+@admin_api
+def api_admin_schedule_dates_export():
+    rng = _get_range()
+    if not rng:
+        return jsonify({"success": False, "message": "நூலகர் பதிவுக் காலம் (தேதி வரம்பு) அமைக்கப்படவில்லை."}), 400
+    q = (request.args.get("q") or "").strip().casefold()
+    items = [i for i in _schedule_dates(*rng) if not q or q in i["magazine"].casefold()]
+    hd = ["வ.எண்.", "இதழ்", "Periodicity", "நூலகங்கள்", "வரும் தேதிகள்"]
+    rows = [[n, i["magazine"], i["periodicity"], i["libs"], i["text"]] for n, i in enumerate(items, 1)]
+    fmt = (request.args.get("fmt") or "xlsx").lower()
+    fname = "magazine_dates_%s_%s" % (rng[0].isoformat(), rng[1].isoformat())
+    if fmt == "pdf":
+        info = ["நூலகர் பதிவுக் காலம்: %s – %s" % (fmt_d(rng[0]), fmt_d(rng[1])), "இதழ்கள்: %d" % len(items)]
+        if q:
+            info.append("தேடல்: " + request.args.get("q").strip())
+        info.append("தயாரித்த தேதி: " + fmt_d(today_ist()))
+        body = _pdf_table("இதழ்களும் அவை வரும் தேதிகளும்", info, hd, rows, [12, 62, 26, 24, 150],
+                          ["C", "L", "L", "C", "L"], landscape=True)
+        return Response(body, mimetype="application/pdf", headers={"Content-Disposition": "attachment; filename=%s.pdf" % fname})
+    return Response(_xlsx_bytes([("Magazine dates", hd, rows, [8, 40, 16, 12, 140])]), mimetype=XLSX_MIME,
+                    headers={"Content-Disposition": "attachment; filename=%s.xlsx" % fname})
+
+
 def _magazine_libraries(quarter, magazine):
     conn = _get_conn()
     try:
@@ -2158,6 +2220,17 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
   <div id="rmsg" class="msg"></div>
   <div id="rstat" class="muted" style="margin-top:8px"></div>
 </div>
+<div class="card" id="scard">
+  <h2>⑤ இதழ்களும் அவை வரும் தேதிகளும் (பதிவுக் காலத்துக்கு)</h2>
+  <p class="muted" style="margin:0 0 6px">④-இல் அமைத்த தேதி வரம்பில் உள்ள இதழ்களும், ஒவ்வொரு இதழும் வரும் தேதிகளும் (நாள்/மாதம்). தேதிக்குப் பக்கத்தில் (எண்) இருந்தால், அந்தத் தேதியை அத்தனை நூலகங்கள் மட்டுமே பெறும்.</p>
+  <div class="flt">
+    <div><label>இதழ் தேடல்</label><input type="text" id="sq" placeholder="இதழ் பெயர்"></div>
+    <div style="display:flex;gap:8px"><button id="sxl" class="alt sm" type="button">📥 Excel</button><button id="spdf" class="alt sm" type="button">📄 PDF</button></div>
+  </div>
+  <div id="smsg" class="msg"></div>
+  <div id="sstat" class="muted" style="margin:8px 0"></div>
+  <div class="scroll"><table id="stab"><thead><tr><th>வ.எண்.</th><th>இதழ்</th><th>Periodicity</th><th>நூலகங்கள்</th><th>வரும் தேதிகள்</th></tr></thead><tbody></tbody></table></div>
+</div>
 </div>
 <div id="pdov"><div class="box">
   <div class="hd"><h3 id="pdtitle"></h3><span class="chip" id="pdcat"></span><button id="pdx1" class="alt sm" type="button">✖ மூடு</button></div>
@@ -2193,7 +2266,7 @@ function say(id,ok,t,warn){const m=$(id);m.className='msg '+(ok?'ok':'err');m.te
 async function api(u,o){const r=await fetch(u,o);if(r.status===401){location.href='/login';throw 0}return r.json()}
 
 async function loadOverview(){
-  OV=await api('/api/admin/librarian/overview');
+  OV=await api('/api/admin/librarian/overview');loadSched().catch(()=>{});
   $('libcnt').textContent=OV.libraries;
   const fc=$('fcat');fc.length=1;OV.categories.forEach(c=>{const o=el('option',{value:c},c);fc.appendChild(o)});
   const pc=$('pcat'),pk=pc.value;pc.length=1;OV.categories.forEach(c=>pc.appendChild(el('option',{value:c},c)));pc.value=pk;
@@ -2479,9 +2552,29 @@ async function loadRange(apply){
   return d}
 async function postRange(body){
   try{const d=await api('/api/admin/librarian/range',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    say('rmsg',d.success,d.message||'');if(d.success){await loadRange(true);refreshShown();if(MCODE)loadMark()}}
+    say('rmsg',d.success,d.message||'');if(d.success){await loadRange(true);loadSched();refreshShown();if(MCODE)loadMark()}}
   catch(e){say('rmsg',false,'சேமிக்க முடியவில்லை: '+e)}}
 $('rsave').onclick=()=>postRange({from:$('rfrom').value,to:$('rto').value});
 $('rclr').onclick=()=>postRange({clear:true});
+let SCHED=[],SRANGE=null;
+function renderSched(){
+  const tb=$('stab').querySelector('tbody');tb.innerHTML='';
+  const q=$('sq').value.trim().toLowerCase();
+  const rows=SCHED.filter(x=>!q||x.magazine.toLowerCase().indexOf(q)>=0);
+  rows.forEach((x,i)=>{const tr=el('tr');[i+1,x.magazine,x.periodicity,x.libs,x.text].forEach(v=>tr.appendChild(td(v)));tb.appendChild(tr)});
+  if(!rows.length){const tr=el('tr');const c=td(SRANGE?'இந்த வரம்பில் இதழ்கள் இல்லை.':'','muted');c.colSpan=5;tr.appendChild(c);tb.appendChild(tr)}
+  $('sstat').textContent=SRANGE?(fdot(SRANGE.from)+' முதல் '+fdot(SRANGE.to)+' வரை — '+rows.length+' இதழ்கள்'):'';
+}
+async function loadSched(){
+  const d=await api('/api/admin/librarian/schedule-dates');
+  SRANGE=d.range;SCHED=d.items||[];
+  const m=$('smsg');
+  if(!d.range){m.className='msg err';m.textContent='முதலில் ④-இல் நூலகர் பதிவுக் காலத்தை (தேதி வரம்பு) அமைத்துச் சேமிக்கவும்.'}
+  else{m.className='msg';m.textContent=''}
+  renderSched();
+}
+$('sq').oninput=renderSched;
+$('sxl').onclick=()=>{if(SRANGE)location.href='/api/admin/librarian/schedule-dates-export?fmt=xlsx&q='+encodeURIComponent($('sq').value.trim())};
+$('spdf').onclick=()=>{if(SRANGE)location.href='/api/admin/librarian/schedule-dates-export?fmt=pdf&q='+encodeURIComponent($('sq').value.trim())};
 loadRange(true).catch(()=>{}).then(()=>loadOverview());loadLibs();
 </script></body></html>"""
