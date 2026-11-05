@@ -181,26 +181,6 @@
       .pend-track { position: static; }
     }
 
-    /* ───── நூலகர் பதிவு அருகே: இப்போது login-இல் உள்ள நூலகர்கள் (scroll) ───── */
-    .lo-box { background: var(--card); border: 2px solid var(--border); border-radius: var(--radius);
-      box-shadow: var(--shadow); display: flex; flex-direction: column; overflow: hidden; min-height: 118px; }
-    .lo-head { padding: 8px 14px; background: linear-gradient(135deg, var(--navy), var(--blue)); color: #fff;
-      display: flex; justify-content: space-between; align-items: center; font-size: 13.5px; font-weight: 700; }
-    .lo-count { background: rgba(255,255,255,.22); border-radius: 12px; padding: 1px 10px; font-size: 13px; }
-    .lo-viewport { position: relative; flex: 1 1 auto; min-height: 76px; overflow: hidden; background: #fbfcfe; }
-    .lo-track { position: absolute; left: 0; right: 0; top: 0; will-change: transform; }
-    .lo-track.run { animation: pendScroll var(--lo-dur, 20s) linear infinite; }
-    .lo-viewport:hover .lo-track.run, .lo-viewport:active .lo-track.run { animation-play-state: paused; }
-    .lo-item { padding: 7px 14px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; gap: 10px; align-items: center; }
-    .lo-item .lo-name { font-size: 13px; font-weight: 700; color: var(--navy); line-height: 1.35; }
-    .lo-item .lo-since { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
-    .lo-empty { padding: 26px 14px; text-align: center; color: var(--muted); font-size: 13px; }
-    @media (prefers-reduced-motion: reduce) {
-      .lo-track.run { animation: none; }
-      .lo-viewport { overflow-y: auto; }
-      .lo-track { position: static; }
-    }
-
     /* ───── CONTENT AREA ───── */
     .content { display: none; }
 
@@ -837,10 +817,6 @@
             <h3>நூலகர் பதிவு</h3>
             <span>இதழ் வருகைப் பதிவு &amp; Quarter ஏற்றுதல்</span>
           </div>
-        </div>
-        <div class="lo-box" id="libOnlineBox" style="display:none;">
-          <div class="lo-head"><span>🟢 இப்போது login-இல் உள்ள நூலகர்கள்</span><span class="lo-count" id="loCount">0</span></div>
-          <div class="lo-viewport" id="loViewport"><div class="lo-track" id="loTrack"><div class="lo-empty">ஏற்றப்படுகிறது...</div></div></div>
         </div>
         <div class="menu-card" id="menuMissingCard" style="display:none;" onclick="location.href='/admin/missing'">
           <div class="menu-icon">📭</div>
@@ -7774,48 +7750,6 @@ async function loadPendingTicker() {
     track.innerHTML = '<div class="pend-empty" style="color:#a32020;">பட்டியலை ஏற்ற இயலவில்லை</div>';
   }
 }
-// ───── நூலகர் பதிவு அருகே: இப்போது login-இல் உள்ள நூலகர்கள் scrolling box (admin மட்டும்) ─────
-async function loadLibOnline() {
-  const box = document.getElementById('libOnlineBox');
-  const track = document.getElementById('loTrack');
-  if (!box || !track || !window.ME || window.ME.role !== 'admin') return;
-  box.style.display = '';
-  try {
-    const r = await fetch('/api/admin/librarian-online');
-    if (r.status === 401) return;
-    const d = await r.json();
-    if (!d.success) throw new Error(d.message || 'error');
-    const rows = d.rows || [];
-    document.getElementById('loCount').textContent = rows.length;
-    track.classList.remove('run');
-    track.style.removeProperty('--lo-dur');
-    if (!rows.length) { track.innerHTML = '<div class="lo-empty">தற்போது யாரும் login-இல் இல்லை</div>'; return; }
-    const html = rows.map(x => '<div class="lo-item"><span class="lo-name">🟢 ' + _pendEsc(x.name) +
-      '</span><span class="lo-since">' + _pendEsc(x.since) + '</span></div>').join('');
-    track.innerHTML = html;
-    const vp = document.getElementById('loViewport');
-    const h = track.scrollHeight;
-    if (h > vp.clientHeight) {
-      track.innerHTML = html + html;
-      track.style.setProperty('--pend-start', '0px');
-      track.style.setProperty('--pend-end', (-h) + 'px');
-      track.style.setProperty('--lo-dur', Math.max(8, Math.round(h / 28)) + 's');
-      void track.offsetWidth;
-      track.classList.add('run');
-    }
-  } catch (e) {
-    track.innerHTML = '<div class="lo-empty" style="color:#a32020;">பட்டியலை ஏற்ற இயலவில்லை</div>';
-  }
-}
-(function () {
-  const _b = window.backToWelcome;
-  if (typeof _b === 'function') window.backToWelcome = function () { const x = _b.apply(this, arguments); loadLibOnline(); return x; };
-  window.addEventListener('load', () => setTimeout(loadLibOnline, 600));
-  setInterval(() => {
-    const w = document.getElementById('welcomeScreen');
-    if (w && w.style.display !== 'none' && !document.hidden) loadLibOnline();
-  }, 30 * 1000);
-})();
 (function () {
   const _b = window.backToWelcome;
   if (typeof _b === 'function') window.backToWelcome = function () { const x = _b.apply(this, arguments); loadPendingTicker(); return x; };
@@ -7844,7 +7778,6 @@ async function loadMeAndApplyRole() {
     if (ld) ld.style.display = (d.role === 'admin') ? '' : 'none';
     const rc = document.getElementById('mailResetCard');
     if (rc) rc.style.display = (d.role === 'admin') ? '' : 'none';
-    if (d.role === 'admin' && typeof loadLibOnline === 'function') loadLibOnline();
   } catch (e) { /* புறக்கணி */ }
 }
 (function () {
