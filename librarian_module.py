@@ -111,6 +111,10 @@ def ensure_schema():
                 cur.execute("ALTER TABLE lib_libraries ADD COLUMN IF NOT EXISTS %s TEXT NOT NULL DEFAULT ''" % _c)
             # Admin அமைப்புகள் (எ.கா. நூலகர் பதிவுக் காலம்): key → value
             cur.execute("CREATE TABLE IF NOT EXISTS lib_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS lib_presence ("
+                " sid TEXT PRIMARY KEY, code TEXT NOT NULL, name TEXT NOT NULL,"
+                " login_at TIMESTAMPTZ NOT NULL DEFAULT now(), last_seen TIMESTAMPTZ NOT NULL DEFAULT now())")
             cur.execute("SELECT COUNT(*) AS n FROM lib_libraries")
             if cur.fetchone()["n"] == 0 and os.path.exists(SEED_CSV):
                 with open(SEED_CSV, newline="", encoding="utf-8-sig") as f:
@@ -172,6 +176,59 @@ def admin_api(f):
     return w
 
 
+# --------------------------------------------------------------------------- #
+# இப்போது login-இல் உள்ள நூலகர்கள் (presence)
+# --------------------------------------------------------------------------- #
+PRESENCE_MINUTES = 5      # இத்தனை நிமிடங்களுக்குள் செயல்பட்டவர் = login-இல் உள்ளவர்
+
+
+def _presence_touch(force=False):
+    """நூலகர் நூலகம் தேர்ந்து இருந்தால் last_seen புதுப்பி (60 வினாடிக்கு ஒருமுறை மட்டும்)."""
+    import secrets, time
+    code, name = session.get("lib_code"), session.get("lib_name")
+    if _user().get("role") != "librarian" or not code:
+        return
+    now = time.time()
+    if not force and now - session.get("_pt", 0) < 60:
+        return
+    sid = session.get("lib_sid")
+    if not sid:
+        sid = session["lib_sid"] = secrets.token_hex(12)
+    session["_pt"] = now
+    try:
+        conn = _get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO lib_presence (sid, code, name) VALUES (%s,%s,%s) "
+                    "ON CONFLICT (sid) DO UPDATE SET code=EXCLUDED.code, name=EXCLUDED.name, last_seen=now()",
+                    (sid, code, name or code))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001 — presence பிழை முக்கிய பணியைத் தடுக்கக் கூடாது
+        pass
+
+
+def presence_remove(sid=None):
+    """logout / நூலகம் மாற்றும்போது பதிவை நீக்கு (app.py logout-லிருந்தும் அழைக்கப்படும்)."""
+    sid = sid or session.get("lib_sid")
+    if not sid:
+        return
+    try:
+        conn = _get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM lib_presence WHERE sid=%s", (sid,))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+    session.pop("lib_sid", None)
+    session.pop("_pt", None)
+
+
 def _category_sort_key(c):
     return (CATEGORY_ORDER.index(c) if c in CATEGORY_ORDER else len(CATEGORY_ORDER), c)
 
@@ -179,6 +236,11 @@ def _category_sort_key(c):
 # =========================================================================== #
 # 1. நூலகர் பக்கங்கள்
 # =========================================================================== #
+@lib_bp.before_request
+def _lib_presence_hook():
+    _presence_touch()
+
+
 @lib_bp.route("/librarian/select")
 @librarian_page
 def librarian_select_page():
@@ -188,6 +250,7 @@ def librarian_select_page():
 @lib_bp.route("/librarian/change")
 @librarian_page
 def librarian_change():
+    presence_remove()
     session.pop("lib_code", None)
     session.pop("lib_name", None)
     return redirect("/librarian/select")
@@ -228,8 +291,37 @@ def api_librarian_select():
         conn.close()
     if not row:
         return jsonify({"success": False, "message": "நூலகம் கண்டறியப்படவில்லை."}), 404
+    presence_remove()          # முந்தைய நூலகப் பதிவு இருந்தால் நீக்கு
     session["lib_code"], session["lib_name"] = row["code"], row["name"]
+    _presence_touch(force=True)
     return jsonify({"success": True})
+
+
+@lib_bp.route("/api/librarian/ping", methods=["POST", "GET"])
+@librarian_api(need_library=False)
+def api_librarian_ping():
+    _presence_touch()
+    return jsonify({"success": True})
+
+
+@lib_bp.route("/api/admin/librarian-online")
+@admin_api
+def api_admin_librarian_online():
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM lib_presence WHERE last_seen < now() - interval '1 day'")
+            cur.execute(
+                "SELECT code, name, MIN(login_at) AS login_at, MAX(last_seen) AS last_seen "
+                "FROM lib_presence WHERE last_seen > now() - (%s || ' minutes')::interval "
+                "GROUP BY code, name ORDER BY MIN(login_at)", (str(PRESENCE_MINUTES),))
+            rows = cur.fetchall()
+        conn.commit()
+    finally:
+        conn.close()
+    out = [{"code": r["code"], "name": r["name"],
+            "since": r["login_at"].astimezone(IST).strftime("%I:%M %p")} for r in rows]
+    return jsonify({"success": True, "count": len(out), "rows": out})
 
 
 @lib_bp.route("/librarian/dashboard")
@@ -1752,6 +1844,8 @@ DASH_HTML = """<!DOCTYPE html><html lang="ta"><head><meta charset="utf-8">
   <button id="save" type="button">💾 சேமி</button>
 </div>
 <script>
+/* login-இல் உள்ளதை admin-க்குத் தெரிவிக்கும் heartbeat — ஒவ்வொரு 60 வினாடிக்கும் */
+setInterval(function(){fetch('/api/librarian/ping',{method:'POST'}).catch(function(){})},60000);
 const list=document.getElementById('list'),msg=document.getElementById('msg'),bar=document.getElementById('bar'),cnt=document.getElementById('cnt');
 let ROWS=[];
 const AUTO_N=5,dirty=new Map();let autoBusy=false;

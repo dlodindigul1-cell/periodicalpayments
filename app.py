@@ -552,6 +552,11 @@ def login():
 
 @app.route("/logout")
 def logout():
+    try:
+        from librarian_module import presence_remove
+        presence_remove()
+    except Exception:  # noqa: BLE001
+        pass
     session.clear()
     return redirect("/login")
 
