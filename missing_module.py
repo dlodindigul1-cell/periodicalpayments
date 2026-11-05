@@ -1148,7 +1148,7 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
     <div class="muted" style="margin:2px 0 4px">இந்த Quarter இதழ்கள் செல்லும் நூலகம்</div>
     <div id="libSub" style="font-weight:700;color:#0f2347;margin-bottom:8px"></div>
     <div class="scroll" style="overflow-y:auto;flex:1">
-      <table><thead><tr><th>வ.எண்.</th><th>Library Code</th><th>Library Name</th></tr></thead><tbody id="libBody"></tbody></table>
+      <table><thead><tr><th>வ.எண்.</th><th>நூலகம் பெயர்</th><th>Received (தேதிகள்)</th><th>Not received (தேதிகள்)</th></tr></thead><tbody id="libBody"></tbody></table>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;justify-content:flex-end">
       <button class="alt sm" id="libXl" onclick="libDl('xlsx')" style="display:none">⬇️ Excel</button>
@@ -1160,6 +1160,7 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:110px}
 
 <script>
 const $ = id => document.getElementById(id);
+const ab = s => String(s == null ? '' : s).replace(/முழுநேர கிளை நூலகம்/g,'மு.நே.நூ').replace(/மாவட்ட மைய நூலகம்/g,'மா.மை.நூ').replace(/ஊர்ப்புற நூலகம்/g,'ஊ.நூ').replace(/கிளை நூலகம்/g,'கி.நூ');   // பார்வைக்கு மட்டும் — PDF / Mail / Excel மாறாது
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 async function api(url, body) {
   const opt = body ? {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)} : {};
@@ -1206,21 +1207,22 @@ async function viewLibs(gi) {      // இந்த இதழ் செல்ல�
   const g = GROUPS[gi], names = Array.from(new Set(g.libNames && g.libNames.length ? g.libNames : [g.magazine]));
   $('libTitle').textContent = '🏛️ ' + g.magazine;
   $('libSub').textContent = '';
-  $('libBody').innerHTML = '<tr><td colspan="3" class="muted">ஏற்றப்படுகிறது…</td></tr>';
+  $('libBody').innerHTML = '<tr><td colspan="4" class="muted">ஏற்றப்படுகிறது…</td></tr>';
   ['libXl', 'libPdf'].forEach(i => $(i).style.display = 'none');
   $('libModal').style.display = 'flex';
-  let items = [], found = '';
+  let items = [], found = '', rg = null;
   try {
     for (const n of names) {
       const d = await api('/api/admin/librarian/magazine-libraries?quarter=' + encodeURIComponent(RQUARTER) + '&magazine=' + encodeURIComponent(n));
-      if (d.success && d.items.length) { items = d.items; found = n; break; }
+      if (d.success && d.items.length) { items = d.items; found = n; rg = d.range; break; }
     }
-  } catch (e) { $('libBody').innerHTML = '<tr><td colspan="3" class="bad-c">❌ ஏற்ற முடியவில்லை: ' + esc(e) + '</td></tr>'; return; }
+  } catch (e) { $('libBody').innerHTML = '<tr><td colspan="4" class="bad-c">❌ ஏற்ற முடியவில்லை: ' + esc(e) + '</td></tr>'; return; }
   LIBSEL = {quarter: RQUARTER, magazine: found || g.magazine};
-  $('libSub').textContent = 'Quarter: ' + RQUARTER + ' · நூலகங்கள்: ' + items.length;
+  $('libSub').textContent = 'Quarter: ' + RQUARTER + ' · ' + (rg ? 'பதிவுக் காலம்: ' + rg.from + ' – ' + rg.to : 'பதிவுக் காலம் அமைக்கப்படவில்லை (Quarter முழுவதும்)') + ' · நூலகங்கள்: ' + items.length;
+  const dt = a => a.length ? esc(a.join(', ')) : '<span class="muted">—</span>';
   $('libBody').innerHTML = items.length
-    ? items.map((x, n) => '<tr><td>' + (n + 1) + '</td><td>' + esc(x.code) + '</td><td>' + esc(x.name) + '</td></tr>').join('')
-    : '<tr><td colspan="3" class="bad-c">' + esc(RQUARTER) + ' Quarter-ல் இந்த இதழுக்கான நூலக அட்டவணை இல்லை.</td></tr>';
+    ? items.map((x, n) => '<tr><td>' + (n + 1) + '</td><td>' + esc(x.name) + (x.category ? ' <small class="muted">(' + esc(ab(x.category)) + ')</small>' : '') + '</td><td class="ok-c">' + dt(x.received) + '</td><td class="bad-c">' + dt(x.notReceived) + '</td></tr>').join('')
+    : '<tr><td colspan="4" class="bad-c">' + esc(RQUARTER) + (rg ? ' Quarter-ன் பதிவுக் காலத்தில்' : ' Quarter-ல்') + ' இந்த இதழுக்கான நூலக அட்டவணை இல்லை.</td></tr>';
   if (items.length) ['libXl', 'libPdf'].forEach(i => $(i).style.display = '');
 }
 function libDl(fmt) {
@@ -1371,6 +1373,7 @@ td input{padding:5px 7px;font-size:13px;width:100%;min-width:120px} .sm{padding:
 </div>
 <script>
 const $ = id => document.getElementById(id);
+const ab = s => String(s == null ? '' : s).replace(/முழுநேர கிளை நூலகம்/g,'மு.நே.நூ').replace(/மாவட்ட மைய நூலகம்/g,'மா.மை.நூ').replace(/ஊர்ப்புற நூலகம்/g,'ஊ.நூ').replace(/கிளை நூலகம்/g,'கி.நூ');   // பார்வைக்கு மட்டும் — PDF / Mail / Excel மாறாது
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function msg(id, ok, t) { const e = $(id); e.className = 'msg ' + (ok ? 'ok' : 'err'); e.innerHTML = t; e.style.display = t ? 'block' : 'none'; }
 async function api(url, body) {
@@ -1386,7 +1389,7 @@ async function load() {
   if (!d.success) { msg('lmsg', false, esc(d.message)); return; }
   LIBS = d.items;
   const cats = [...new Set(LIBS.map(x => x.category).filter(Boolean))].sort();
-  $('fcat').innerHTML = '<option value="">எல்லா வகைகளும்</option>' + cats.map(c => '<option>' + esc(c) + '</option>').join('');
+  $('fcat').innerHTML = '<option value="">எல்லா வகைகளும்</option>' + cats.map(c => '<option value="' + esc(c) + '">' + esc(ab(c)) + '</option>').join('');
   render();
 }
 function dl(fmt) {
