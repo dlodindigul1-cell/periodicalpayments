@@ -2047,14 +2047,15 @@ td{padding:8px 10px;border-bottom:1px solid #e3e8f4;vertical-align:top} tr.lib{c
 #cfov h3{margin:0 0 10px;font-size:18px;color:#a12b20} #cfov p{margin:0 0 14px;font-size:15px;line-height:1.55}
 .mbar{position:sticky;bottom:0;background:#fff;border-top:1px solid #d6ddee;padding:10px 0;margin-top:12px;display:none;gap:10px;align-items:center;flex-wrap:wrap}
 .chip{display:inline-block;background:#e8eefb;color:#1e4d8c;border-radius:999px;padding:3px 10px;font-size:12px;margin-right:6px}
-.onl{flex:0 1 480px;min-width:220px;display:flex;align-items:center;gap:8px;background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.25);border-radius:10px;padding:5px 10px;overflow:hidden}
-.onl .ol-lbl{font-size:12.5px;font-weight:700;white-space:nowrap}
-.onl .ol-cnt{background:#2ecc71;color:#06361a;border-radius:10px;padding:0 8px;font-size:12px;font-weight:700}
-.onl .ol-vp{flex:1;min-width:0;overflow:hidden;position:relative;height:22px}
-.onl .ol-tr{position:absolute;left:0;top:0;white-space:nowrap;line-height:22px;font-size:13.5px;will-change:transform}
+.top h1{flex:0 0 auto;min-width:0}
+.onl{flex:1 1 320px;min-width:240px;display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.25);border-radius:12px;padding:8px 14px;overflow:hidden}
+.onl .ol-lbl{font-size:16px;font-weight:700;white-space:nowrap}
+.onl .ol-cnt{background:#2ecc71;color:#06361a;border-radius:12px;padding:1px 11px;font-size:15px;font-weight:700}
+.onl .ol-vp{flex:1;min-width:0;overflow:hidden;position:relative;height:30px}
+.onl .ol-tr{position:absolute;left:0;top:0;white-space:nowrap;line-height:30px;font-size:18px;font-weight:600;will-change:transform}
 .onl .ol-tr.run{animation:olscroll var(--ol-dur,20s) linear infinite}
 .onl .ol-vp:hover .ol-tr.run{animation-play-state:paused}
-.onl .ol-it{margin-right:28px}
+.onl .ol-it{margin-right:40px}
 @keyframes olscroll{from{transform:translateX(0)}to{transform:translateX(var(--ol-end,-50%))}}
 @media (prefers-reduced-motion:reduce){.onl .ol-tr.run{animation:none}.onl .ol-vp{overflow-x:auto}.onl .ol-tr{position:static}}
 </style></head><body>
@@ -2176,9 +2177,9 @@ async function loadOnline(){
     const rows=d.rows||[];document.getElementById('olCnt').textContent=rows.length;
     tr.classList.remove('run');tr.style.transform='';
     if(!rows.length){tr.textContent='தற்போது யாரும் login-இல் இல்லை';return}
-    const one=rows.map(x=>'<span class="ol-it">🟢 '+String(x.name).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+' <small style="opacity:.75">('+x.since+')</small></span>').join('');
+    const one=rows.map(x=>'<span class="ol-it">🟢 '+String(x.name).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))+' <small style="opacity:.8;font-size:13px;font-weight:500">('+x.since+')</small></span>').join('');
     tr.innerHTML=one;const w=tr.scrollWidth;
-    if(w>vp.clientWidth){tr.innerHTML=one+one;tr.style.setProperty('--ol-end',(-w)+'px');tr.style.setProperty('--ol-dur',Math.max(10,Math.round(w/60))+'s');void tr.offsetWidth;tr.classList.add('run')}
+    if(w>vp.clientWidth){tr.innerHTML=one+one;tr.style.setProperty('--ol-end',(-w)+'px');tr.style.setProperty('--ol-dur',Math.max(12,Math.round(w/50))+'s');void tr.offsetWidth;tr.classList.add('run')}
   }catch(e){tr.textContent='பட்டியலை ஏற்ற இயலவில்லை'}
 }
 loadOnline();setInterval(()=>{if(!document.hidden)loadOnline()},30000);
