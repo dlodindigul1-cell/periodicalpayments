@@ -5786,9 +5786,15 @@ function _pdfHelper(fnName, targetId) {
               <input type="text" id="masterMagSearch" placeholder="இதழ் பெயர் தேடுங்கள்..." oninput="filterMasterMagazinesTable()"
                 style="padding-left:38px; width:100%;">
             </div>
+            <select id="masterMagStatusFilter" onchange="filterMasterMagazinesTable()" style="padding:8px 10px;">
+              <option value="all">அனைத்து இதழ்கள்</option>
+              <option value="active">செயலில் உள்ளவை</option>
+              <option value="disc">⛔ நிறுத்தப்பட்டவை</option>
+            </select>
             <button class="btn-secondary" onclick="openBulkAddQuarter()">📅 Quarter சேர்</button>
             <button class="btn-secondary" onclick="loadMasterMagazinesList()">🔄 புதுப்பி</button>
           </div>
+          <div id="masterMagDiscSummary" style="margin-bottom:14px;"></div>
           <div id="masterMagListStatus" class="status"></div>
           <div class="data-table-wrap" style="max-height:480px;">
             <table class="data-table" id="masterMagTable">
@@ -6959,6 +6965,34 @@ function _pdfHelper(fnName, targetId) {
       }
     }
 
+    // ─── Magazine Master: இதழ் நிறுத்தம் / மீண்டும் செயல்படுத்துதல் ───
+    async function toggleMagazineDiscontinued(name, discontinue) {
+      let reason = '';
+      let dateStr = '';
+      if (discontinue) {
+        if (!confirm('\'' + name + '\' இதழை "நிறுத்தப்பட்டது" எனக் குறிக்கவா?\n\n• நூலகர் லாகினில் இந்த இதழ் இனி எங்கும் காட்டப்படாது.\n• Admin பக்கம், Payments, வவுச்சர்கள், அறிக்கைகள் மாறாது.\n• தேவைப்பட்டால் பின்னர் மீண்டும் செயல்படுத்தலாம்.')) return;
+        const r = prompt('நிறுத்தப்பட்டதற்கான காரணம் (விருப்பம்):', 'காகித விலையேற்றம்');
+        if (r === null) return;
+        reason = r.trim();
+        const t = new Date();
+        dateStr = t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0');
+      } else {
+        if (!confirm('\'' + name + '\' இதழை மீண்டும் செயலில் கொண்டுவரவா? நூலகர் லாகினில் மீண்டும் காட்டப்படும்.')) return;
+      }
+      try {
+        const res = await fetch('/api/admin/magazine-status', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: name, discontinued: !!discontinue, reason: reason, date: dateStr })
+        });
+        const result = await res.json();
+        alert(result.message || (result.success ? 'சேமிக்கப்பட்டது' : 'பிழை'));
+        if (result.success) loadMasterMagazinesList();
+      } catch (e) {
+        alert('பிழை: ' + e.message);
+      }
+    }
+
     // ─── Magazine Master: List ───
     async function loadMasterMagazinesList() {
       const tbody = document.getElementById('masterMagTableBody');
@@ -6968,7 +7002,8 @@ function _pdfHelper(fnName, targetId) {
         const result = await res.json();
         if (!result.success) { tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:24px;color:#c0392b;">பிழை ஏற்பட்டது</td></tr>'; return; }
         allMasterMagazines = result.rows || [];
-        renderMasterMagazinesTable(allMasterMagazines);
+        renderMasterDiscSummary();
+        filterMasterMagazinesTable();
       } catch (e) {
         tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:24px;color:#c0392b;">பிழை: ' + e.message + '</td></tr>';
       }
@@ -6985,9 +7020,11 @@ function _pdfHelper(fnName, targetId) {
         return;
       }
       tbody.innerHTML = rows.map((r, i) => (
-        '<tr>' +
+        '<tr' + (r.discontinued ? ' style="background:#fdecea;color:#7b241c;"' : '') + '>' +
           '<td class="ctr">' + (i + 1) + '</td>' +
-          '<td>' + r.name + '</td>' +
+          '<td>' + r.name +
+            (r.discontinued ? ' <span title="' + (r.discontinuedReason || '').replace(/"/g, '&quot;') + '" style="display:inline-block;margin-left:6px;padding:1px 8px;border-radius:10px;background:#c0392b;color:#fff;font-size:11px;white-space:nowrap;">⛔ நிறுத்தப்பட்டது' + (r.discontinuedOn ? ' (' + r.discontinuedOn.split('-').reverse().join('.') + ')' : '') + '</span>' : '') +
+          '</td>' +
           '<td>' + (r.language || '-') + '</td>' +
           '<td>' + (r.periodicity || '-') + '</td>' +
           '<td class="ctr">' + r.quarterCount + '</td>' +
@@ -6997,6 +7034,9 @@ function _pdfHelper(fnName, targetId) {
           '<td class="num-cell"><b>' + fmtMasterNum(r.issuePrice) + '</b></td>' +
           '<td class="ctr">' + _qtrAddSelectHtml(r) + '</td>' +
           '<td class="ctr">' +
+            (r.discontinued
+              ? '<button class="btn-secondary" title="மீண்டும் செயலுக்குக் கொண்டுவா (நூலகர் லாகினில் மீண்டும் காட்டப்படும்)" style="padding:4px 10px;font-size:12px;color:#1e8449;" onclick="toggleMagazineDiscontinued(\'' + r.name.replace(/'/g, "\\'") + '\', false)">▶️ செயல்படுத்து</button> '
+              : '<button class="btn-secondary" title="இதழ் நிறுத்தப்பட்டது எனக் குறி (நூலகர் லாகினில் காட்டப்படாது)" style="padding:4px 10px;font-size:12px;color:#b9770e;" onclick="toggleMagazineDiscontinued(\'' + r.name.replace(/'/g, "\\'") + '\', true)">⛔ நிறுத்து</button> ') +
             '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="editMasterMagazine(\'' + r.name.replace(/'/g, "\\'") + '\')">✏️</button> ' +
             '<button class="btn-secondary" style="padding:4px 10px;font-size:12px;" onclick="deleteMasterMagazineQuarters(\'' + r.name.replace(/'/g, "\\'") + '\')">🗑️</button> ' +
             '<button class="btn-secondary" title="இதழை முழுமையாக நீக்கு" style="padding:4px 10px;font-size:12px;color:#c0392b;" onclick="deleteMasterMagazineFully(\'' + r.name.replace(/'/g, "\\'") + '\')">❌</button>' +
@@ -7131,7 +7171,35 @@ function _pdfHelper(fnName, targetId) {
 
     function filterMasterMagazinesTable() {
       const q = document.getElementById('masterMagSearch').value.trim().toLowerCase();
-      renderMasterMagazinesTable(allMasterMagazines.filter(r => r.name.toLowerCase().includes(q)));
+      const st = (document.getElementById('masterMagStatusFilter') || {}).value || 'all';
+      renderMasterMagazinesTable(allMasterMagazines.filter(r =>
+        r.name.toLowerCase().includes(q) &&
+        (st === 'all' || (st === 'disc' ? r.discontinued : !r.discontinued))));
+    }
+
+    // நிறுத்தப்பட்ட இதழ்களின் சுருக்கம் (பட்டியலுக்கு மேலே)
+    function renderMasterDiscSummary() {
+      const box = document.getElementById('masterMagDiscSummary');
+      if (!box) return;
+      const disc = (allMasterMagazines || []).filter(r => r.discontinued);
+      const total = (allMasterMagazines || []).length;
+      const esc = t => String(t || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      if (!disc.length) {
+        box.innerHTML = '<div style="padding:8px 12px;border-radius:8px;background:#eafaf1;color:#1e8449;font-size:13px;">✅ நிறுத்தப்பட்ட இதழ்கள் எதுவும் இல்லை (மொத்தம் ' + total + ' இதழ்கள் செயலில்).</div>';
+        return;
+      }
+      box.innerHTML =
+        '<div style="padding:10px 14px;border-radius:8px;background:#fdecea;border:1px solid #f5b7b1;">' +
+          '<div style="font-weight:700;color:#922b21;margin-bottom:6px;">⛔ நிறுத்தப்பட்ட இதழ்கள்: ' + disc.length + ' / ' + total +
+            ' <a href="javascript:void(0)" onclick="document.getElementById(\'masterMagStatusFilter\').value=\'disc\';filterMasterMagazinesTable();" style="font-weight:400;font-size:12px;margin-left:10px;">இவற்றை மட்டும் காட்டு</a></div>' +
+          '<div style="display:flex;flex-wrap:wrap;gap:6px;">' +
+            disc.map(r =>
+              '<span style="background:#fff;border:1px solid #e6b0aa;border-radius:14px;padding:2px 10px;font-size:12px;color:#7b241c;" title="' + esc(r.discontinuedReason) + '">' +
+                esc(r.name) + (r.discontinuedOn ? ' · ' + r.discontinuedOn.split('-').reverse().join('.') : '') +
+                (r.discontinuedReason ? ' · ' + esc(r.discontinuedReason) : '') +
+              '</span>').join('') +
+          '</div>' +
+        '</div>';
     }
 
     // ─── Vendor Master: CSV Import ───
