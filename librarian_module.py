@@ -86,6 +86,7 @@ def ensure_schema():
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT pg_advisory_xact_lock(7712001)")   # பல worker ஒரே நேரத்தில் உருவாக்குவதைத் தடுக்க
+            cur.execute("ALTER TABLE IF EXISTS magazines ADD COLUMN IF NOT EXISTS is_discontinued BOOLEAN NOT NULL DEFAULT FALSE")
             cur.execute(
                 "CREATE TABLE IF NOT EXISTS lib_libraries ("
                 " code TEXT PRIMARY KEY, name TEXT NOT NULL, category TEXT NOT NULL DEFAULT '',"
@@ -355,7 +356,16 @@ def _get_range():
     return (a, b) if a and b and a <= b else None
 
 
-def _library_week_payload(code, weeks_back, apply_range=False, include_received=False):
+def _not_discontinued(col):
+    """SQL நிபந்தனை: `col` (lib_schedule-ன் இதழ் பெயர்) நிறுத்தப்பட்ட இதழ் அல்ல.
+    பெயர் ஒப்பீடு: இடைவெளி / எழுத்து வடிவ வேறுபாடு பாராது. நூலகர் பார்வைக்கு மட்டும் பயன்படுத்தவும்;
+    Admin திரைகள் / அறிக்கைகளில் நிறுத்தப்பட்ட இதழ்களும் தொடர்ந்து தெரியும்."""
+    return ("NOT EXISTS (SELECT 1 FROM magazines dm WHERE dm.is_discontinued "
+            "AND lower(regexp_replace(btrim(dm.name), '\\s+', ' ', 'g')) = "
+            "lower(regexp_replace(btrim(" + col + "), '\\s+', ' ', 'g')))")
+
+
+def _library_week_payload(code, weeks_back, apply_range=False, include_received=False, hide_discontinued=False):
     """ஒரு நூலகத்துக்கு: இந்த வாரம் + முந்தைய வாரங்களில் (weeks_back வாரம் வரை; None = வரம்பின்றி)
     'இன்னும் வராதவை' (Not received) மற்றும் 'பதிவு செய்யாதவை'. நூலகர் திரையும் Admin பதிவுத் திரையும் இதையே பயன்படுத்தும்."""
     today = today_ist()
@@ -365,6 +375,7 @@ def _library_week_payload(code, weeks_back, apply_range=False, include_received=
         r_lo, r_hi = rng[0], min(rng[1], today)     # எதிர்காலத் தேதிகள் எப்போதும் தடை
     join = ("LEFT JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine "
             "AND r.expected_date=s.expected_date ")
+    nd = (" AND " + _not_discontinued("s.magazine")) if hide_discontinued else ""   # நூலகர்: நிறுத்தப்பட்ட இதழ்கள் மறைப்பு
     conn = _get_conn()
     try:
         with conn.cursor() as cur:
@@ -377,11 +388,11 @@ def _library_week_payload(code, weeks_back, apply_range=False, include_received=
             if a <= b:
                 cur.execute(
                     "SELECT s.magazine, s.periodicity, s.expected_date, r.status FROM lib_schedule s " + join +
-                    "WHERE s.code=%s AND s.expected_date BETWEEN %s AND %s ORDER BY s.expected_date, s.magazine",
+                    "WHERE s.code=%s AND s.expected_date BETWEEN %s AND %s" + nd + " ORDER BY s.expected_date, s.magazine",
                     (code, a, b))
                 this_rows = cur.fetchall()
             sql = ("SELECT s.magazine, s.periodicity, s.expected_date, r.status FROM lib_schedule s " + join +
-                   "WHERE s.code=%s AND s.expected_date < %s")
+                   "WHERE s.code=%s AND s.expected_date < %s" + nd)
             params = [code, ws]
             if rng:
                 sql += " AND s.expected_date >= %s AND s.expected_date <= %s"
@@ -438,7 +449,8 @@ def _save_entries(code, entries, weeks_back, by):  # by="librarian" எனில
     try:
         with conn.cursor() as cur:
             # அட்டவணையில் உள்ள இதழ்களை மட்டுமே ஏற்கும்
-            cur.execute("SELECT magazine, expected_date FROM lib_schedule WHERE code=%s AND expected_date BETWEEN %s AND %s",
+            cur.execute("SELECT magazine, expected_date FROM lib_schedule s WHERE s.code=%s AND s.expected_date BETWEEN %s AND %s"
+                        + ((" AND " + _not_discontinued("s.magazine")) if by != "admin" else ""),   # நூலகர்: நிறுத்தப்பட்ட இதழைப் பதிவு செய்ய முடியாது
                         (code, min(r[2] for r in rows), max(r[2] for r in rows)))
             valid = {(r["magazine"], r["expected_date"]) for r in cur.fetchall()}
             rows = [r for r in rows if (r[1], r[2]) in valid]
@@ -503,7 +515,7 @@ def _save_entries(code, entries, weeks_back, by):  # by="librarian" எனில
 @lib_bp.route("/api/librarian/week")
 @librarian_api()
 def api_librarian_week():
-    data = _library_week_payload(session["lib_code"], CARRY_WEEKS, apply_range=True)
+    data = _library_week_payload(session["lib_code"], CARRY_WEEKS, apply_range=True, hide_discontinued=True)
     if data is None:
         return jsonify({"success": False, "needLibrary": True, "message": "நூலகம் கண்டறியப்படவில்லை."}), 400
     return jsonify(data)
@@ -599,12 +611,13 @@ def _ordered_magazines(code):
             lib = cur.fetchone()
             if not lib:
                 return None
-            cur.execute("SELECT magazine, MAX(periodicity) AS periodicity FROM lib_schedule "
-                        "WHERE code=%s AND quarter=%s GROUP BY magazine", (code, quarter_label(today_ist())))
+            cur.execute("SELECT magazine, MAX(periodicity) AS periodicity FROM lib_schedule s "
+                        "WHERE code=%s AND quarter=%s AND " + _not_discontinued("s.magazine") + " GROUP BY magazine",
+                        (code, quarter_label(today_ist())))
             rows = cur.fetchall()
             if not rows:
-                cur.execute("SELECT magazine, MAX(periodicity) AS periodicity FROM lib_schedule "
-                            "WHERE code=%s GROUP BY magazine", (code,))
+                cur.execute("SELECT magazine, MAX(periodicity) AS periodicity FROM lib_schedule s "
+                            "WHERE code=%s AND " + _not_discontinued("s.magazine") + " GROUP BY magazine", (code,))
                 rows = cur.fetchall()
     finally:
         conn.close()
@@ -732,8 +745,8 @@ def api_librarian_month():
             cur.execute(
                 "SELECT s.magazine, s.expected_date, r.status FROM lib_schedule s "
                 "JOIN lib_receipts r ON r.code=s.code AND r.magazine=s.magazine AND r.expected_date=s.expected_date "
-                "WHERE s.code=%s AND s.expected_date BETWEEN %s AND %s "
-                "ORDER BY s.expected_date DESC, s.magazine", (session["lib_code"], first, last))
+                "WHERE s.code=%s AND s.expected_date BETWEEN %s AND %s AND " + _not_discontinued("s.magazine") +
+                " ORDER BY s.expected_date DESC, s.magazine", (session["lib_code"], first, last))
             rows = cur.fetchall()
     finally:
         conn.close()

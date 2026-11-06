@@ -110,6 +110,10 @@ def ensure_part_schema():
             cur.execute("ALTER TABLE magazine_quarters ADD COLUMN IF NOT EXISTS periodicity TEXT")
             # படி 3: vouchers வரிசையும் எந்த Part-க்குரியது என்பதை அறிய (பழையவை எல்லாம் Part 1)
             cur.execute("ALTER TABLE vouchers ADD COLUMN IF NOT EXISTS part INTEGER NOT NULL DEFAULT 1")
+            # இதழ் நிறுத்தப்பட்டதா (காகித விலையேற்றம் போன்ற காரணங்களால்) — நூலகர் லாகினில் மறைக்க
+            cur.execute("ALTER TABLE magazines ADD COLUMN IF NOT EXISTS is_discontinued BOOLEAN NOT NULL DEFAULT FALSE")
+            cur.execute("ALTER TABLE magazines ADD COLUMN IF NOT EXISTS discontinued_on DATE")
+            cur.execute("ALTER TABLE magazines ADD COLUMN IF NOT EXISTS discontinued_reason TEXT")
             # பழைய UNIQUE (magazine, quarter) constraint / index-ஐ கண்டறிந்து நீக்கு
             cur.execute(
                 """
@@ -2592,6 +2596,7 @@ def api_admin_magazines_list():
             cur.execute(
                 """
                 SELECT m.id, m.name, m.language, m.periodicity,
+                       m.is_discontinued, m.discontinued_on, m.discontinued_reason,
                        (SELECT COUNT(*) FROM magazine_quarters c WHERE c.magazine_id = m.id) AS quarter_count,
                        ARRAY(SELECT c2.quarter FROM magazine_quarters c2
                              WHERE c2.magazine_id = m.id ORDER BY c2.quarter) AS quarters,
@@ -2617,6 +2622,9 @@ def api_admin_magazines_list():
                         "name": r["name"],
                         "language": r["language"] or "",
                         "periodicity": r["periodicity"] or "",
+                        "discontinued": bool(r["is_discontinued"]),
+                        "discontinuedOn": r["discontinued_on"].isoformat() if r["discontinued_on"] else "",
+                        "discontinuedReason": r["discontinued_reason"] or "",
                         "quarterCount": r["quarter_count"],
                         "quarters": list(r["quarters"] or []),
                         "latestQuarter": r["latest_quarter"] or "",
@@ -2628,6 +2636,51 @@ def api_admin_magazines_list():
                 ],
             }
         )
+    finally:
+        conn.close()
+
+
+@app.route("/api/admin/magazine-status", methods=["POST"])
+def api_admin_magazine_status():
+    """இதழை 'நிறுத்தப்பட்டது' எனக் குறிக்க / மீண்டும் செயலுக்குக் கொண்டுவர (Admin மட்டும் — /api/admin/ வழி).
+    body: {name, discontinued: true|false, reason?, date? (YYYY-MM-DD)}
+    நிறுத்தப்பட்ட இதழ் நூலகர் லாகினில் எங்கும் காட்டப்படாது; Admin / Payments / அறிக்கைகளில் தொடர்ந்து இருக்கும்.
+    எந்தப் பதிவும் (payments, vouchers, lib_schedule, lib_receipts) நீக்கப்படாது — மீண்டும் செயலுக்குக் கொண்டுவந்தால் அனைத்தும் திரும்பத் தெரியும்."""
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    flag = bool(data.get("discontinued"))
+    reason = (data.get("reason") or "").strip()[:300]
+    if not name:
+        return jsonify({"success": False, "message": "Magazine Name அவசியம்."}), 400
+    on = None
+    if flag:
+        raw = (data.get("date") or "").strip()
+        try:
+            on = datetime.strptime(raw, "%Y-%m-%d").date() if raw else date.today()
+        except ValueError:
+            return jsonify({"success": False, "message": "தேதி வடிவம் தவறு (YYYY-MM-DD)."}), 400
+    conn = get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM magazines WHERE name=%s", (name,))
+            mag = cur.fetchone()
+            if not mag:
+                return jsonify({"success": False, "message": "இதழ் கிடைக்கவில்லை."}), 404
+            if flag:
+                cur.execute(
+                    "UPDATE magazines SET is_discontinued=TRUE, discontinued_on=%s, discontinued_reason=%s WHERE id=%s",
+                    (on, reason or None, mag["id"]))
+            else:
+                cur.execute(
+                    "UPDATE magazines SET is_discontinued=FALSE, discontinued_on=NULL, discontinued_reason=NULL WHERE id=%s",
+                    (mag["id"],))
+            conn.commit()
+        msg = (f"'{name}' இதழ் நிறுத்தப்பட்டதாகக் குறிக்கப்பட்டது — நூலகர் லாகினில் இனி காட்டப்படாது."
+               if flag else f"'{name}' இதழ் மீண்டும் செயலில் உள்ளது — நூலகர் லாகினில் மீண்டும் காட்டப்படும்.")
+        return jsonify({"success": True, "message": msg})
+    except Exception as e:  # noqa: BLE001
+        conn.rollback()
+        return jsonify({"success": False, "message": str(e)}), 500
     finally:
         conn.close()
 
